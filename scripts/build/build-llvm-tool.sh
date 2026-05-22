@@ -179,6 +179,7 @@ prune_llvm_package_bins() {
 build_llvm_tool() {
     local source_dir="$1"
     local build_dir="$CUP_BUILD_DIR/llvm-$TOOL-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
+    LLVM_BUILD_DIR="$build_dir"
     local cmake_extra_args=()
 
     if is_cross_build "$HOST_PLATFORM" "$TARGET_PLATFORM"; then
@@ -238,7 +239,7 @@ build_llvm_tool() {
     prune_llvm_package_bins
 
     if is_windows_platform "$HOST_PLATFORM" && [ "$TOOL" = "lldb" ]; then
-        copy_windows_python_runtime
+        copy_windows_python_runtime "$build_dir"
     fi
 
     copy_windows_runtime_dlls "$PREFIX/bin"
@@ -296,6 +297,59 @@ append_lld_frontend_info() {
 }
 
 write_llvm_info() {
+    local has_clang
+    local has_clangpp
+    local has_resource_dir
+    local has_lld
+    local has_lld_link
+    local has_wasm_ld
+    local has_ld64_lld
+    local has_lldb
+    local has_lldb_server
+    local has_lldb_dap
+    local has_clangd
+    local has_clangd_indexer
+    local has_clang_format
+    local has_git_clang_format
+    local has_clang_tidy
+    local has_clang_apply_replacements
+    local has_run_clang_tidy
+    local has_clang_tidy_diff
+    local cmake_python
+    local cmake_libxml2
+    local cmake_lzma
+    local cmake_libedit
+    local cmake_curses
+    local cmake_zlib
+    local cmake_zstd
+
+    has_clang="$(metadata_bool_for_executable "$PREFIX" clang)"
+    has_clangpp="$(metadata_bool_for_executable "$PREFIX" clang++)"
+    has_resource_dir="$(metadata_bool_for_dirs "$PREFIX" 'clang')"
+    has_lld="$(metadata_bool_for_executable "$PREFIX" ld.lld)"
+    has_lld_link="$(metadata_bool_for_executable "$PREFIX" lld-link)"
+    has_wasm_ld="$(metadata_bool_for_executable "$PREFIX" wasm-ld)"
+    has_ld64_lld="$(metadata_bool_for_executable "$PREFIX" ld64.lld)"
+    has_lldb="$(metadata_bool_for_executable "$PREFIX" lldb)"
+    has_lldb_server="$(metadata_bool_for_executable "$PREFIX" lldb-server)"
+    has_lldb_dap="$(metadata_bool_for_executable "$PREFIX" lldb-dap)"
+    has_clangd="$(metadata_bool_for_executable "$PREFIX" clangd)"
+    has_clangd_indexer="$(metadata_bool_for_executable "$PREFIX" clangd-indexer)"
+    has_clang_format="$(metadata_bool_for_executable "$PREFIX" clang-format)"
+    has_git_clang_format="$(metadata_bool_for_executable "$PREFIX" git-clang-format)"
+    has_clang_tidy="$(metadata_bool_for_executable "$PREFIX" clang-tidy)"
+    has_clang_apply_replacements="$(metadata_bool_for_executable "$PREFIX" clang-apply-replacements)"
+    has_run_clang_tidy="$(metadata_bool_for_executable "$PREFIX" run-clang-tidy)"
+    has_clang_tidy_diff="$(metadata_bool_for_executable "$PREFIX" clang-tidy-diff)"
+
+    cmake_python="$(cmake_cache_bool "${LLVM_BUILD_DIR:-}" LLDB_ENABLE_PYTHON)"
+    cmake_libxml2="$(cmake_cache_bool "${LLVM_BUILD_DIR:-}" LLDB_ENABLE_LIBXML2)"
+    cmake_lzma="$(cmake_cache_bool "${LLVM_BUILD_DIR:-}" LLDB_ENABLE_LZMA)"
+    cmake_libedit="$(cmake_cache_bool "${LLVM_BUILD_DIR:-}" LLDB_ENABLE_LIBEDIT)"
+    cmake_curses="$(cmake_cache_bool "${LLVM_BUILD_DIR:-}" LLDB_ENABLE_CURSES)"
+    cmake_zlib="$(cmake_cache_bool "${LLVM_BUILD_DIR:-}" LLVM_ENABLE_ZLIB)"
+    cmake_zstd="$(cmake_cache_bool "${LLVM_BUILD_DIR:-}" LLVM_ENABLE_ZSTD)"
+
     local info=(
         "package.component=$COMPONENT"
         "package.tool=$TOOL"
@@ -317,6 +371,8 @@ write_llvm_info() {
         "source.primary.url=$SOURCE_URL"
         "config.llvm_projects=$LLVM_PROJECTS"
         "config.llvm_targets=$LLVM_TARGETS"
+        "config.zlib=$cmake_zlib"
+        "config.zstd=$cmake_zstd"
         "contents.self_contained=true"
     )
 
@@ -324,22 +380,99 @@ write_llvm_info() {
 
     append_lld_frontend_info info
 
-    if [ "$TOOL" = "lldb" ]; then
-        if is_windows_platform "$HOST_PLATFORM"; then
-            info+=("contents.python_runtime=packaged")
-        else
-            info+=("contents.python_runtime=system")
-        fi
-
-        if [ "$HOST_PLATFORM" = "windows-x64" ]; then
-            info+=("config.libedit=false" "config.curses=false")
-        else
-            info+=("config.libedit=true" "config.curses=true")
-        fi
-    fi
+    case "$TOOL" in
+        clang)
+            info+=(
+                "entry.clang=bin/clang"
+                "entry.clang++=bin/clang++"
+                "entry.lld=bin/ld.lld"
+                "features.c=$has_clang"
+                "features.cpp=$has_clangpp"
+                "features.resource_dir=$has_resource_dir"
+                "features.lld_integration=$has_lld"
+                "features.lto=$has_lld"
+                "features.llvm_ar=$(metadata_bool_for_executable "$PREFIX" llvm-ar)"
+                "features.llvm_ranlib=$(metadata_bool_for_executable "$PREFIX" llvm-ranlib)"
+                "features.llvm_objdump=$(metadata_bool_for_executable "$PREFIX" llvm-objdump)"
+                "features.target_x86=true"
+                "features.target_linux_x64=$( [ "$TARGET_PLATFORM" = "linux-x64" ] && printf true || printf false )"
+                "features.target_windows_x64=$( [ "$TARGET_PLATFORM" = "windows-x64" ] && printf true || printf false )"
+            )
+            ;;
+        lld)
+            info+=(
+                "entry.ld_lld=bin/ld.lld"
+                "entry.lld_link=bin/lld-link"
+                "entry.wasm_ld=bin/wasm-ld"
+                "features.link_elf=$has_lld"
+                "features.link_coff=$has_lld_link"
+                "features.link_wasm=$has_wasm_ld"
+                "features.link_macho=$has_ld64_lld"
+            )
+            ;;
+        lldb)
+            if is_windows_platform "$HOST_PLATFORM"; then
+                info+=("contents.python_runtime=packaged")
+            else
+                info+=("contents.python_runtime=system")
+            fi
+            info+=(
+                "entry.lldb=bin/lldb"
+                "entry.lldb_server=bin/lldb-server"
+                "entry.lldb_dap=bin/lldb-dap"
+                "config.python=$cmake_python"
+                "config.libxml2=$cmake_libxml2"
+                "config.lzma=$cmake_lzma"
+                "config.libedit=$cmake_libedit"
+                "config.curses=$cmake_curses"
+                "features.python=$cmake_python"
+                "features.target_create=$has_lldb"
+                "features.breakpoints=$has_lldb"
+                "features.symbol_lookup=$has_lldb"
+                "features.process_launch=$has_lldb"
+                "features.lldb_server=$has_lldb_server"
+                "features.lldb_dap=$has_lldb_dap"
+                "features.remote_debugging=$has_lldb_server"
+            )
+            ;;
+        clangd)
+            info+=(
+                "entry.clangd=bin/clangd"
+                "entry.clangd_indexer=bin/clangd-indexer"
+                "features.check_compile_commands=$has_clangd"
+                "features.background_index=$has_clangd"
+                "features.indexer=$has_clangd_indexer"
+            )
+            ;;
+        clang-format)
+            info+=(
+                "entry.clang_format=bin/clang-format"
+                "entry.git_clang_format=bin/git-clang-format"
+                "features.format_file=$has_clang_format"
+                "features.style_config=$has_clang_format"
+                "features.dry_run_werror=$has_clang_format"
+                "features.git_clang_format=$has_git_clang_format"
+            )
+            ;;
+        clang-tidy)
+            info+=(
+                "entry.clang_tidy=bin/clang-tidy"
+                "entry.clang_apply_replacements=bin/clang-apply-replacements"
+                "entry.run_clang_tidy=bin/run-clang-tidy"
+                "entry.clang_tidy_diff=bin/clang-tidy-diff"
+                "features.list_checks=$has_clang_tidy"
+                "features.analyze_c=$has_clang_tidy"
+                "features.clang_analyzer=$has_clang_tidy"
+                "features.apply_replacements=$has_clang_apply_replacements"
+                "features.run_clang_tidy=$has_run_clang_tidy"
+                "features.clang_tidy_diff=$has_clang_tidy_diff"
+            )
+            ;;
+    esac
 
     write_info_file "$PREFIX" "${info[@]}"
 }
+
 
 main() {
     make_dirs

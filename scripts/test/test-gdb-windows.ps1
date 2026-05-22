@@ -60,6 +60,45 @@ function Assert-OutputContains {
     }
 }
 
+function Read-InfoValue {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Root,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Key
+    )
+
+    $infoPath = Join-Path $Root 'info.txt'
+    if (-not (Test-Path $infoPath)) {
+        return ''
+    }
+
+    $line = Get-Content $infoPath | Where-Object { $_ -like "$Key=*" } | Select-Object -First 1
+    if (-not $line) {
+        return ''
+    }
+
+    return ($line -replace "^$([regex]::Escape($Key))=", '')
+}
+
+function Test-FeatureEnabled {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Root,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Key
+    )
+
+    return (Read-InfoValue -Root $Root -Key $Key) -eq 'true'
+}
+
+function To-ForwardSlashPath {
+    param([Parameter(Mandatory = $true)][string] $Path)
+    return $Path.Replace('\', '/')
+}
+
 $releaseEnv = Get-Content dist/release.env
 $packageBase = ($releaseEnv | Where-Object { $_ -like 'package_base=*' }) -replace '^package_base=', ''
 if (-not $packageBase) { throw 'package_base not found in dist/release.env' }
@@ -69,54 +108,61 @@ New-Item -ItemType Directory -Force dist/package-test | Out-Null
 Expand-Archive -Force "dist/$packageBase.zip" dist/package-test
 
 $root = Join-Path (Resolve-Path dist/package-test) $packageBase
+Get-Content "$root\info.txt"
 
-$testSource = @(
-  '#include <stdio.h>',
-  '',
-  'static int add(int a, int b) {',
-  '    return a + b;',
-  '}',
-  '',
-  'int main(void) {',
-  '    int x = add(20, 22);',
-  '    printf("x = %d\n", x);',
-  '    return 0;',
-  '}'
-)
-$testSource | Set-Content "$env:TEMP\cup-gdb-test.c"
+pwsh scripts/test/package-capabilities-windows.ps1 -Root $root -Tool 'gdb'
+
+$testDir = Join-Path $env:TEMP 'cup-gdb-windows-test'
+Remove-Item -Recurse -Force $testDir -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force $testDir | Out-Null
+
+$testSource = Join-Path $testDir 'cup-gdb-test.c'
+$testExe = Join-Path $testDir 'cup-gdb-test.exe'
+@'
+#include <stdio.h>
+
+static int add(int a, int b) {
+    return a + b;
+}
+
+int main(void) {
+    int x = add(20, 22);
+    printf("x = %d\n", x);
+    return 0;
+}
+'@ | Set-Content $testSource
 
 $gcc = (Get-Command gcc.exe -ErrorAction Stop).Source
 Invoke-Native -FilePath $gcc -ArgumentList @(
     '-g',
     '-O0',
     '-static',
-    "$env:TEMP\cup-gdb-test.c",
+    $testSource,
     '-o',
-    "$env:TEMP\cup-gdb-test.exe"
+    $testExe
 )
-Assert-FileExists "$env:TEMP\cup-gdb-test.exe"
+Assert-FileExists $testExe
 
-$gdbTestExe = "$env:TEMP\cup-gdb-test.exe".Replace('\', '/')
+$gdbTestExe = To-ForwardSlashPath $testExe
 
-$env:Path = "$env:SystemRoot\System32;$env:SystemRoot"
+$env:Path = "$root\bin;$env:SystemRoot\System32;$env:SystemRoot"
 
 Invoke-Native -FilePath "$root\bin\gdb.exe" -ArgumentList @('--version')
 Invoke-Native -FilePath "$root\bin\gdb.exe" -ArgumentList @('--configuration')
 
-Get-Content "$root\info.txt" | Select-String 'config.python=true'
-Get-Content "$root\info.txt" | Select-String 'config.readline=system'
-Get-Content "$root\info.txt" | Select-String 'config.expat=true'
-Get-Content "$root\info.txt" | Select-String 'config.zlib=true'
-Get-Content "$root\info.txt" | Select-String 'config.lzma=true'
-Get-Content "$root\info.txt" | Select-String 'config.zstd=true'
-
-$output = Invoke-NativeCapture -FilePath "$root\bin\gdb.exe" -ArgumentList @(
-    '-q',
-    '-batch',
-    '-ex',
-    'python import sys, gdb; print("python-ok", sys.version_info[0], sys.version_info[1])'
-)
-Assert-OutputContains -Output $output -Pattern 'python-ok'
+# Python is a major user-facing GDB capability when declared by the package.
+# We intentionally do not assert every configure-time library from info.txt.
+if ((Test-FeatureEnabled -Root $root -Key 'features.python') -or (Test-FeatureEnabled -Root $root -Key 'config.python') -or (Test-FeatureEnabled -Root $root -Key 'contents.uses_python')) {
+    $output = Invoke-NativeCapture -FilePath "$root\bin\gdb.exe" -ArgumentList @(
+        '-q',
+        '-batch',
+        '-ex',
+        'python import sys, gdb; print("python-ok", sys.version_info[0], sys.version_info[1])'
+    )
+    Assert-OutputContains -Output $output -Pattern 'python-ok'
+} else {
+    Write-Host 'warning: GDB Python support not declared in info.txt'
+}
 
 $output = Invoke-NativeCapture -FilePath "$root\bin\gdb.exe" -ArgumentList @(
     '-q',
@@ -136,3 +182,4 @@ $output = Invoke-NativeCapture -FilePath "$root\bin\gdb.exe" -ArgumentList @(
 )
 Assert-OutputContains -Output $output -Pattern '\$1 = 20'
 Assert-OutputContains -Output $output -Pattern '\$2 = 22'
+Assert-OutputContains -Output $output -Pattern '#0'

@@ -273,6 +273,100 @@ write_info_file() {
     done
 }
 
+info_bool() {
+    if "$@" >/dev/null 2>&1; then
+        printf 'true\n'
+    else
+        printf 'false\n'
+    fi
+}
+
+prefix_executable_exists() {
+    local prefix="$1"
+    local name="$2"
+
+    [ -x "$prefix/bin/$name" ] || [ -x "$prefix/bin/$name.exe" ]
+}
+
+prefix_file_exists_any() {
+    local prefix="$1"
+    shift
+
+    local pattern
+    for pattern in "$@"; do
+        if find "$prefix" -type f -name "$pattern" -print -quit | grep -q .; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+prefix_dir_exists_any() {
+    local prefix="$1"
+    shift
+
+    local pattern
+    for pattern in "$@"; do
+        if find "$prefix" -type d -name "$pattern" -print -quit | grep -q .; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+metadata_bool_for_executable() {
+    local prefix="$1"
+    local name="$2"
+    info_bool prefix_executable_exists "$prefix" "$name"
+}
+
+metadata_bool_for_files() {
+    local prefix="$1"
+    shift
+    info_bool prefix_file_exists_any "$prefix" "$@"
+}
+
+metadata_bool_for_dirs() {
+    local prefix="$1"
+    shift
+    info_bool prefix_dir_exists_any "$prefix" "$@"
+}
+
+cmake_cache_value() {
+    local cache_dir="$1"
+    local key="$2"
+    local cache_file="$cache_dir/CMakeCache.txt"
+
+    [ -f "$cache_file" ] || return 0
+    grep -E "^${key}(:[^=]*)?=" "$cache_file" | sed 's/^[^=]*=//' | tail -n 1 || true
+}
+
+cmake_cache_bool() {
+    local cache_dir="$1"
+    local key="$2"
+    local value
+
+    value="$(cmake_cache_value "$cache_dir" "$key" | tr '[:upper:]' '[:lower:]')"
+
+    case "$value" in
+        on|yes|true|1) printf 'true\n' ;;
+        off|no|false|0|'') printf 'false\n' ;;
+        *) printf '%s\n' "$value" ;;
+    esac
+}
+
+append_info_if_not_empty() {
+    local -n out_ref="$1"
+    local key="$2"
+    local value="$3"
+
+    if [ -n "$value" ]; then
+        out_ref+=("$key=$value")
+    fi
+}
+
 package_formats_for_host() {
     local host_platform="$1"
 
@@ -394,6 +488,9 @@ copy_windows_runtime_dlls() {
 }
 
 copy_windows_python_runtime() {
+    local cmake_cache="${1:-}"
+    local python_executable=""
+    local python_library=""
     local version
     local major
     local minor
@@ -407,30 +504,53 @@ copy_windows_python_runtime() {
         return 0
     fi
 
-    if ! command -v python >/dev/null 2>&1; then
-        die "python is required to package Windows Python support"
+    if [ -n "$cmake_cache" ] && [ -f "$cmake_cache/CMakeCache.txt" ]; then
+        python_executable="$(grep -E '^Python3_EXECUTABLE:FILEPATH=' "$cmake_cache/CMakeCache.txt" | sed 's/^[^=]*=//' | head -n 1 || true)"
+        python_library="$(grep -E '^Python3_LIBRARY[^=]*=' "$cmake_cache/CMakeCache.txt" | sed 's/^[^=]*=//' | head -n 1 || true)"
     fi
 
-    version="$(python - <<'PYSCRIPT'
+    if [ -z "$python_executable" ]; then
+        if ! command -v python >/dev/null 2>&1; then
+            die "python is required to package Windows Python support"
+        fi
+        python_executable="$(command -v python)"
+    fi
+
+    if command -v cygpath >/dev/null 2>&1; then
+        python_executable="$(cygpath -u "$python_executable" 2>/dev/null || printf '%s\n' "$python_executable")"
+        if [ -n "$python_library" ]; then
+            python_library="$(cygpath -u "$python_library" 2>/dev/null || printf '%s\n' "$python_library")"
+        fi
+    fi
+
+    if [ ! -x "$python_executable" ]; then
+        die "Python executable used by LLDB was not found: $python_executable"
+    fi
+
+    version="$($python_executable - <<'PYSCRIPT'
 import sys
 print(f"{sys.version_info.major}.{sys.version_info.minor}")
 PYSCRIPT
 )"
-    major="$(python - <<'PYSCRIPT'
+    major="$($python_executable - <<'PYSCRIPT'
 import sys
 print(sys.version_info.major)
 PYSCRIPT
 )"
-    minor="$(python - <<'PYSCRIPT'
+    minor="$($python_executable - <<'PYSCRIPT'
 import sys
 print(sys.version_info.minor)
 PYSCRIPT
 )"
-    stdlib="$(python - <<'PYSCRIPT'
+    stdlib="$($python_executable - <<'PYSCRIPT'
 import sysconfig
 print(sysconfig.get_paths().get('stdlib', ''))
 PYSCRIPT
 )"
+
+    if command -v cygpath >/dev/null 2>&1; then
+        stdlib="$(cygpath -u "$stdlib" 2>/dev/null || printf '%s\n' "$stdlib")"
+    fi
 
     if [ -z "$version" ] || [ -z "$stdlib" ] || [ ! -d "$stdlib" ]; then
         die "could not locate Python standard library for Windows package"
@@ -471,25 +591,11 @@ PYSCRIPT
                 copied_any=1
             fi
         done
-    done < <(python - <<'PYSCRIPT'
-import os
-import sys
-import sysconfig
-
-dirs = []
-for value in [
-    os.path.dirname(sys.executable),
-    os.path.join(sys.prefix, "bin"),
-    os.path.join(getattr(sys, "base_prefix", sys.prefix), "bin"),
-    os.environ.get("MINGW_PREFIX", "") and os.path.join(os.environ["MINGW_PREFIX"], "bin"),
-]:
-    if value and value not in dirs:
-        dirs.append(value)
-
-for value in dirs:
-    print(value)
-PYSCRIPT
-)
+    done < <(
+        dirname "$python_executable"
+        [ -n "$python_library" ] && dirname "$python_library"
+        [ -n "${MINGW_PREFIX:-}" ] && printf '%s\n' "$MINGW_PREFIX/bin"
+    )
 
     if [ "$copied_any" -eq 0 ]; then
         die "could not locate Python runtime DLLs for Windows package"

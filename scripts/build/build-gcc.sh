@@ -850,13 +850,36 @@ write_gcc_info() {
     local includes_sanitizers
     local includes_asan
     local includes_ubsan
+    local has_gcc
+    local has_gpp
+    local has_cpp
+    local has_lto_dump
+    local has_gcov
+    local has_plugin
+    local has_pthread
+    local has_sysroot
+    local has_target_prefix
 
-    includes_libstdcxx="$(gcc_bool_for_files 'libstdc++*')"
-    includes_lto="$(gcc_bool_for_files 'liblto_plugin*')"
-    includes_openmp="$(gcc_bool_for_files 'libgomp*')"
-    includes_sanitizers="$(gcc_bool_for_files 'libasan*' 'libubsan*' 'libtsan*' 'liblsan*')"
-    includes_asan="$(gcc_bool_for_files 'libasan*')"
-    includes_ubsan="$(gcc_bool_for_files 'libubsan*')"
+    includes_libstdcxx="$(metadata_bool_for_files "$PREFIX" 'libstdc++*')"
+    includes_lto="$(metadata_bool_for_files "$PREFIX" 'liblto_plugin*' 'lto1*')"
+    includes_openmp="$(metadata_bool_for_files "$PREFIX" 'libgomp*' 'omp.h')"
+    includes_sanitizers="$(metadata_bool_for_files "$PREFIX" 'libasan*' 'libubsan*' 'libtsan*' 'liblsan*')"
+    includes_asan="$(metadata_bool_for_files "$PREFIX" 'libasan*')"
+    includes_ubsan="$(metadata_bool_for_files "$PREFIX" 'libubsan*')"
+    has_gcc="$(metadata_bool_for_executable "$PREFIX" gcc)"
+    has_gpp="$(metadata_bool_for_executable "$PREFIX" g++)"
+    has_cpp="$(metadata_bool_for_executable "$PREFIX" cpp)"
+    has_lto_dump="$(metadata_bool_for_executable "$PREFIX" lto-dump)"
+    has_gcov="$(metadata_bool_for_executable "$PREFIX" gcov)"
+    has_plugin="$(metadata_bool_for_files "$PREFIX" 'liblto_plugin*')"
+    has_sysroot="$(metadata_bool_for_dirs "$PREFIX" "$TARGET_TRIPLE")"
+    has_target_prefix="$(metadata_bool_for_executable "$PREFIX" "$TARGET_TRIPLE-gcc")"
+
+    if [ "$TARGET_PLATFORM" = "linux-x64" ]; then
+        has_pthread="true"
+    else
+        has_pthread="$(metadata_bool_for_files "$PREFIX" 'libwinpthread*' 'pthread.h')"
+    fi
 
     if is_windows_platform "$TARGET_PLATFORM"; then
         bundle_components="binutils,mingw-w64"
@@ -899,6 +922,10 @@ write_gcc_info() {
         "config.tool_naming=$tool_naming"
         "config.openmp=attempted"
         "config.sanitizers=attempted"
+        "entry.gcc=bin/gcc"
+        "entry.g++=bin/g++"
+        "entry.cpp=bin/cpp"
+        "entry.gcov=bin/gcov"
         "contents.self_contained=true"
         "contents.libstdcxx=$includes_libstdcxx"
         "contents.lto=$includes_lto"
@@ -907,23 +934,41 @@ write_gcc_info() {
         "contents.sanitizers=$includes_sanitizers"
         "contents.asan=$includes_asan"
         "contents.ubsan=$includes_ubsan"
+        "features.c=$has_gcc"
+        "features.cpp=$has_gpp"
+        "features.preprocessor=$has_cpp"
+        "features.gcov=$has_gcov"
+        "features.lto=$includes_lto"
+        "features.lto_dump=$has_lto_dump"
+        "features.openmp=$includes_openmp"
+        "features.pthread=$has_pthread"
+        "features.sanitizers=$includes_sanitizers"
+        "features.asan=$includes_asan"
+        "features.ubsan=$includes_ubsan"
+        "features.plugin=$has_plugin"
+        "features.binutils=$includes_binutils"
+        "features.target_prefixed_tools=$has_target_prefix"
+        "features.sysroot=$has_sysroot"
     )
 
     if [ "$HOST_PLATFORM" = "windows-x64" ]; then
-        info+=(
-            "build.gcc_prerequisites=msys2"
-        )
+        info+=("build.gcc_prerequisites=msys2")
     else
-        info+=(
-            "build.gcc_prerequisites=contrib-download_prerequisites"
-        )
+        info+=("build.gcc_prerequisites=contrib-download_prerequisites")
     fi
 
     if is_windows_platform "$TARGET_PLATFORM"; then
         info+=(
             "config.sysroot=$TARGET_TRIPLE"
             "config.native_system_header_dir=/include"
+            "entry.target_gcc=bin/$TARGET_TRIPLE-gcc"
+            "entry.target_g++=bin/$TARGET_TRIPLE-g++"
+            "entry.target_ar=bin/$TARGET_TRIPLE-ar"
+            "entry.target_ld=bin/$TARGET_TRIPLE-ld"
+            "features.windows_target=true"
         )
+    else
+        info+=("features.windows_target=false")
     fi
 
     if [ -n "$bundle_components" ]; then
@@ -939,13 +984,14 @@ write_gcc_info() {
             info+=(
                 "bundle.mingw-w64.version=$MINGW_VERSION"
                 "bundle.mingw-w64.url=$MINGW_SOURCE_URL"
-                "features.winpthreads=true"
+                "features.winpthreads=$has_pthread"
             )
         fi
     fi
 
     write_info_file "$PREFIX" "${info[@]}"
 }
+
 
 main() {
     local gcc_src

@@ -42,6 +42,21 @@ function Invoke-NativeCapture {
     return $output
 }
 
+function Invoke-OptionalNative {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $FilePath,
+
+        [string[]] $ArgumentList = @()
+    )
+
+    if (Test-Path $FilePath) {
+        Invoke-Native -FilePath $FilePath -ArgumentList $ArgumentList
+    } else {
+        Write-Host "warning: optional executable not present: $FilePath"
+    }
+}
+
 function Assert-FileExists {
     param([Parameter(Mandatory = $true)][string] $Path)
 
@@ -70,21 +85,6 @@ function To-ForwardSlashPath {
     return $Path.Replace('\', '/')
 }
 
-function Invoke-OptionalNative {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $FilePath,
-
-        [string[]] $ArgumentList = @()
-    )
-
-    if (Test-Path $FilePath) {
-        Invoke-Native -FilePath $FilePath -ArgumentList $ArgumentList
-    } else {
-        Write-Host "warning: optional executable not present: $FilePath"
-    }
-}
-
 $releaseEnv = Get-Content dist/release.env
 $packageBase = ($releaseEnv | Where-Object { $_ -like 'package_base=*' }) -replace '^package_base=', ''
 if (-not $packageBase) { throw 'package_base not found in dist/release.env' }
@@ -96,7 +96,18 @@ Expand-Archive -Force "dist/$packageBase.zip" dist/package-test
 $root = Join-Path (Resolve-Path dist/package-test) $packageBase
 Get-Content "$root\info.txt"
 
+pwsh scripts/test/package-capabilities-windows.ps1 -Root $root -Tool $Tool
+
 $env:Path = "$root\bin;$env:SystemRoot\System32;$env:SystemRoot"
+
+$pythonDirs = Get-ChildItem -Directory -Path (Join-Path $root 'lib') -Filter 'python*' -ErrorAction SilentlyContinue
+if ($pythonDirs) {
+    $env:PYTHONPATH = ($pythonDirs | Select-Object -First 1).FullName
+}
+
+$testDir = Join-Path $env:TEMP "cup-llvm-$Tool-test"
+Remove-Item -Recurse -Force $testDir -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force $testDir | Out-Null
 
 switch ($Tool) {
     'clang' {
@@ -110,31 +121,19 @@ switch ($Tool) {
             throw "clang resource directory does not exist: $resourceDir"
         }
 
-        'int add(int a, int b) { return a + b; } int main(void) { return add(20, 22) == 42 ? 0 : 1; }' | Set-Content "$env:TEMP\cup-clang-test.c"
-        Invoke-Native -FilePath "$root\bin\clang.exe" -ArgumentList @(
-            '-fsyntax-only',
-            "$env:TEMP\cup-clang-test.c"
-        )
-        Invoke-Native -FilePath "$root\bin\clang.exe" -ArgumentList @(
-            '-c',
-            "$env:TEMP\cup-clang-test.c",
-            '-o',
-            "$env:TEMP\cup-clang-test.o"
-        )
-        Assert-FileExists "$env:TEMP\cup-clang-test.o"
+        $cSource = Join-Path $testDir 'clang-test.c'
+        $cObject = Join-Path $testDir 'clang-test.o'
+        'int add(int a, int b) { return a + b; } int main(void) { return add(20, 22) == 42 ? 0 : 1; }' | Set-Content $cSource
+        Invoke-Native -FilePath "$root\bin\clang.exe" -ArgumentList @('-fsyntax-only', $cSource)
+        Invoke-Native -FilePath "$root\bin\clang.exe" -ArgumentList @('-c', $cSource, '-o', $cObject)
+        Assert-FileExists $cObject
 
-        'int add(int a, int b) { return a + b; } int main() { return add(20, 22) == 42 ? 0 : 1; }' | Set-Content "$env:TEMP\cup-clang-cpp-test.cpp"
-        Invoke-Native -FilePath "$root\bin\clang++.exe" -ArgumentList @(
-            '-fsyntax-only',
-            "$env:TEMP\cup-clang-cpp-test.cpp"
-        )
-        Invoke-Native -FilePath "$root\bin\clang++.exe" -ArgumentList @(
-            '-c',
-            "$env:TEMP\cup-clang-cpp-test.cpp",
-            '-o',
-            "$env:TEMP\cup-clang-cpp-test.o"
-        )
-        Assert-FileExists "$env:TEMP\cup-clang-cpp-test.o"
+        $cppSource = Join-Path $testDir 'clang-cpp-test.cpp'
+        $cppObject = Join-Path $testDir 'clang-cpp-test.o'
+        'int add(int a, int b) { return a + b; } int main() { return add(20, 22) == 42 ? 0 : 1; }' | Set-Content $cppSource
+        Invoke-Native -FilePath "$root\bin\clang++.exe" -ArgumentList @('-fsyntax-only', $cppSource)
+        Invoke-Native -FilePath "$root\bin\clang++.exe" -ArgumentList @('-c', $cppSource, '-o', $cppObject)
+        Assert-FileExists $cppObject
     }
 
     'lld' {
@@ -153,14 +152,50 @@ switch ($Tool) {
             '-o',
             'quit'
         )
-        Invoke-Native -FilePath "$root\bin\lldb.exe" -ArgumentList @('-b', '-o', 'help', '-o', 'quit')
+
+        $gcc = Get-Command gcc.exe -ErrorAction SilentlyContinue
+        if ($gcc) {
+            $source = Join-Path $testDir 'lldb-test.c'
+            $exe = Join-Path $testDir 'lldb-test.exe'
+@'
+#include <stdio.h>
+
+static int add(int a, int b) {
+    return a + b;
+}
+
+int main(void) {
+    int x = add(20, 22);
+    printf("x = %d\n", x);
+    return 0;
+}
+'@ | Set-Content $source
+            Invoke-Native -FilePath $gcc.Source -ArgumentList @('-g', '-O0', '-static', $source, '-o', $exe)
+            Assert-FileExists $exe
+            $exeForLldb = To-ForwardSlashPath $exe
+            $output = Invoke-NativeCapture -FilePath "$root\bin\lldb.exe" -ArgumentList @(
+                '-b',
+                '-o',
+                "target create $exeForLldb",
+                '-o',
+                'breakpoint set --name add',
+                '-o',
+                'image lookup -n add',
+                '-o',
+                'quit'
+            )
+            Assert-OutputContains -Output $output -Pattern 'Breakpoint|breakpoint'
+            Assert-OutputContains -Output $output -Pattern 'add'
+        } else {
+            Write-Host 'warning: gcc.exe not available; skipping LLDB target creation test'
+            Invoke-Native -FilePath "$root\bin\lldb.exe" -ArgumentList @('-b', '-o', 'help', '-o', 'quit')
+        }
     }
 
     'clangd' {
         Invoke-Native -FilePath "$root\bin\clangd.exe" -ArgumentList @('--version')
 
-        $projectDir = Join-Path $env:TEMP 'cup-clangd-project'
-        Remove-Item -Recurse -Force $projectDir -ErrorAction SilentlyContinue
+        $projectDir = Join-Path $testDir 'clangd-project'
         New-Item -ItemType Directory -Force $projectDir | Out-Null
         $sourcePath = Join-Path $projectDir 'main.c'
         'int main(void) { return 0; }' | Set-Content $sourcePath
@@ -183,12 +218,12 @@ switch ($Tool) {
     'clang-format' {
         Invoke-Native -FilePath "$root\bin\clang-format.exe" -ArgumentList @('--version')
 
-        $source = Join-Path $env:TEMP 'cup-format-test.c'
+        $source = Join-Path $testDir 'format-test.c'
         'int main( void ){return 0;}' | Set-Content $source
         $output = Invoke-NativeCapture -FilePath "$root\bin\clang-format.exe" -ArgumentList @($source)
         Assert-OutputContains -Output $output -Pattern 'int main\(void\)'
 
-        $styleSource = Join-Path $env:TEMP 'cup-format-style-test.c'
+        $styleSource = Join-Path $testDir 'style-test.c'
 @'
 int main(void) {
 return 0;
@@ -200,8 +235,7 @@ return 0;
         )
         Assert-OutputContains -Output $styleOutput -Pattern '    return 0;'
 
-        $projectDir = Join-Path $env:TEMP 'cup-format-project'
-        Remove-Item -Recurse -Force $projectDir -ErrorAction SilentlyContinue
+        $projectDir = Join-Path $testDir 'format-project'
         New-Item -ItemType Directory -Force $projectDir | Out-Null
 @'
 BasedOnStyle: LLVM
@@ -221,17 +255,14 @@ return 0;
         }
         Assert-OutputContains -Output $projectOutput -Pattern '   return 0;'
 
-        $badSource = Join-Path $env:TEMP 'cup-format-bad.c'
+        $badSource = Join-Path $testDir 'bad-format.c'
         'int main( void ){return 0;}' | Set-Content $badSource
-        & "$root\bin\clang-format.exe" --dry-run --Werror $badSource *> (Join-Path $env:TEMP 'cup-format-dryrun.txt')
+        & "$root\bin\clang-format.exe" --dry-run --Werror $badSource *> (Join-Path $testDir 'format-dryrun.txt')
         if ($LASTEXITCODE -eq 0) {
             throw 'clang-format dry-run unexpectedly succeeded on unformatted file'
         }
 
-        Invoke-Native -FilePath "$root\bin\clang-format.exe" -ArgumentList @(
-            '--assume-filename=test.cpp',
-            $source
-        )
+        Invoke-Native -FilePath "$root\bin\clang-format.exe" -ArgumentList @('--assume-filename=test.cpp', $source)
     }
 
     'clang-tidy' {
@@ -239,14 +270,15 @@ return 0;
 
         $checksOutput = Invoke-NativeCapture -FilePath "$root\bin\clang-tidy.exe" -ArgumentList @(
             '--list-checks',
-            '-checks=clang-analyzer-*'
+            '--checks=clang-analyzer-*'
         )
         Assert-OutputContains -Output $checksOutput -Pattern 'clang-analyzer-core'
 
-        'int main(void) { return 0; }' | Set-Content "$env:TEMP\cup-tidy-test.c"
+        $source = Join-Path $testDir 'tidy-test.c'
+        'int main(void) { return 0; }' | Set-Content $source
         Invoke-Native -FilePath "$root\bin\clang-tidy.exe" -ArgumentList @(
-            '-checks=clang-analyzer-*',
-            "$env:TEMP\cup-tidy-test.c",
+            '--checks=clang-analyzer-*',
+            $source,
             '--',
             '-std=c11'
         )

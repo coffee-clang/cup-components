@@ -126,6 +126,10 @@ write_gdb_info() {
     local xxhash=false
     local babeltrace=false
     local intel_pt=false
+    local has_gdb
+    local has_gdbserver
+    local has_python=true
+    local has_tui=true
 
     if ! is_windows_platform "$HOST_PLATFORM"; then
         debuginfod=true
@@ -133,7 +137,12 @@ write_gdb_info() {
         xxhash=true
         babeltrace=true
         intel_pt=true
+    else
+        has_tui=false
     fi
+
+    has_gdb="$(metadata_bool_for_executable "$PREFIX" gdb)"
+    has_gdbserver="$(metadata_bool_for_executable "$PREFIX" gdbserver)"
 
     local info=(
         "package.component=$COMPONENT"
@@ -155,7 +164,7 @@ write_gdb_info() {
         "source.primary.version=$VERSION"
         "source.primary.url=$SOURCE_URL"
         "config.cross=false"
-        "config.python=true"
+        "config.python=$has_python"
         "config.readline=system"
         "config.expat=true"
         "config.zlib=true"
@@ -166,8 +175,10 @@ write_gdb_info() {
         "config.xxhash=$xxhash"
         "config.babeltrace=$babeltrace"
         "config.intel_pt=$intel_pt"
+        "entry.gdb=bin/gdb"
+        "entry.gdbserver=bin/gdbserver"
         "contents.self_contained=true"
-        "contents.uses_python=true"
+        "contents.uses_python=$has_python"
         "contents.uses_readline=true"
         "contents.uses_expat=true"
         "contents.uses_zlib=true"
@@ -178,10 +189,20 @@ write_gdb_info() {
         "contents.uses_xxhash=$xxhash"
         "contents.uses_babeltrace=$babeltrace"
         "contents.uses_intel_pt=$intel_pt"
+        "features.debug_native=$has_gdb"
+        "features.breakpoints=$has_gdb"
+        "features.backtrace=$has_gdb"
+        "features.python=$has_python"
+        "features.tui=$has_tui"
+        "features.gdbserver=$has_gdbserver"
+        "features.remote_debugging=$has_gdbserver"
+        "features.debuginfod=$debuginfod"
+        "features.source_highlight=$source_highlight"
     )
 
     write_info_file "$PREFIX" "${info[@]}"
 }
+
 
 main() {
     make_dirs

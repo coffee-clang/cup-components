@@ -76,6 +76,8 @@ log_optional_feature() {
     return 1
 }
 
+bash scripts/test/package-capabilities.sh "$root" gcc
+
 if [ "$HOST_PLATFORM" != "linux-x64" ]; then
     echo "unsupported host platform for this test script: $HOST_PLATFORM" >&2
     exit 2
@@ -159,7 +161,7 @@ LTO_EOF
     "$root/bin/gcc" -flto "$tmpdir/lto-test.c" -o "$tmpdir/lto-test"
     "$tmpdir/lto-test"
 
-    if log_optional_feature "OpenMP" "contents.openmp"; then
+    if log_optional_feature "OpenMP" "features.openmp"; then
         cat > "$tmpdir/openmp-test.c" <<'OMP_EOF'
 #include <omp.h>
 #include <stdio.h>
@@ -176,7 +178,7 @@ OMP_EOF
         "$tmpdir/openmp-test" | grep -F "openmp"
     fi
 
-    if log_optional_feature "sanitizers" "contents.sanitizers"; then
+    if log_optional_feature "sanitizers" "features.sanitizers"; then
         cat > "$tmpdir/sanitizer-test.c" <<'SAN_EOF'
 #include <stdio.h>
 
@@ -252,7 +254,7 @@ LTO_EOF
     "$root/bin/$target_prefix-gcc" -flto "$tmpdir/windows-lto-test.c" -o "$tmpdir/windows-lto-test.exe"
     require_pe_file "$tmpdir/windows-lto-test.exe"
 
-    if log_optional_feature "OpenMP" "contents.openmp"; then
+    if log_optional_feature "OpenMP" "features.openmp"; then
         cat > "$tmpdir/windows-openmp-test.c" <<'OMP_EOF'
 #include <omp.h>
 
@@ -267,7 +269,7 @@ OMP_EOF
         require_pe_file "$tmpdir/windows-openmp-test.exe"
     fi
 
-    if log_optional_feature "sanitizers" "contents.sanitizers"; then
+    if log_optional_feature "sanitizers" "features.sanitizers"; then
         cat > "$tmpdir/windows-sanitizer-test.c" <<'SAN_EOF'
 int main(void) {
     int x = 1;

@@ -60,6 +60,12 @@ function Assert-OutputContains {
     }
 }
 
+
+function To-ForwardSlashPath {
+    param([Parameter(Mandatory = $true)][string] $Path)
+    return $Path.Replace('\', '/')
+}
+
 function Read-InfoValue {
     param(
         [Parameter(Mandatory = $true)]
@@ -105,7 +111,26 @@ Expand-Archive -Force "dist/$packageBase.zip" dist/package-test
 $root = Join-Path (Resolve-Path dist/package-test) $packageBase
 Get-Content "$root\info.txt"
 
+pwsh scripts/test/package-capabilities-windows.ps1 -Root $root -Tool 'gcc'
+
 $env:Path = "$root\bin;$env:SystemRoot\System32;$env:SystemRoot"
+
+$testDir = Join-Path $env:TEMP 'cup-gcc-windows-test'
+Remove-Item -Recurse -Force $testDir -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force $testDir | Out-Null
+$cSource = To-ForwardSlashPath (Join-Path $testDir 'cup-gcc-windows-c-test.c')
+$cExe = To-ForwardSlashPath (Join-Path $testDir 'cup-gcc-windows-c-test.exe')
+$cppSource = To-ForwardSlashPath (Join-Path $testDir 'cup-gcc-windows-cpp-test.cpp')
+$cppExe = To-ForwardSlashPath (Join-Path $testDir 'cup-gcc-windows-cpp-test.exe')
+$pthreadSource = To-ForwardSlashPath (Join-Path $testDir 'cup-gcc-windows-pthread-test.c')
+$pthreadExe = To-ForwardSlashPath (Join-Path $testDir 'cup-gcc-windows-pthread-test.exe')
+$ltoSource = To-ForwardSlashPath (Join-Path $testDir 'cup-gcc-windows-lto-test.c')
+$ltoExe = To-ForwardSlashPath (Join-Path $testDir 'cup-gcc-windows-lto-test.exe')
+$openmpSource = To-ForwardSlashPath (Join-Path $testDir 'cup-gcc-windows-openmp-test.c')
+$openmpExe = To-ForwardSlashPath (Join-Path $testDir 'cup-gcc-windows-openmp-test.exe')
+$sanitizerSource = To-ForwardSlashPath (Join-Path $testDir 'cup-gcc-windows-sanitizer-test.c')
+$sanitizerExe = To-ForwardSlashPath (Join-Path $testDir 'cup-gcc-windows-sanitizer-test.exe')
+
 
 Invoke-Native -FilePath "$root\bin\gcc.exe" -ArgumentList @('--version')
 Invoke-Native -FilePath "$root\bin\g++.exe" -ArgumentList @('--version')
@@ -121,15 +146,15 @@ int main(void) {
     printf("hello gcc windows c\n");
     return 0;
 }
-'@ | Set-Content "$env:TEMP\cup-gcc-windows-c-test.c"
+'@ | Set-Content $cSource
 Invoke-NativeCapture -FilePath "$root\bin\gcc.exe" -ArgumentList @(
     '-static',
-    "$env:TEMP\cup-gcc-windows-c-test.c",
+    $cSource,
     '-o',
-    "$env:TEMP\cup-gcc-windows-c-test.exe"
+    $cExe
 )
-Assert-FileExists "$env:TEMP\cup-gcc-windows-c-test.exe"
-$output = Invoke-NativeCapture -FilePath "$env:TEMP\cup-gcc-windows-c-test.exe"
+Assert-FileExists $cExe
+$output = Invoke-NativeCapture -FilePath $cExe
 Assert-OutputContains -Output $output -Pattern 'hello gcc windows c'
 
 @'
@@ -141,15 +166,15 @@ int main() {
     std::cout << (values[0] + values[1]) << "\n";
     return 0;
 }
-'@ | Set-Content "$env:TEMP\cup-gcc-windows-cpp-test.cpp"
+'@ | Set-Content $cppSource
 Invoke-NativeCapture -FilePath "$root\bin\g++.exe" -ArgumentList @(
     '-static',
-    "$env:TEMP\cup-gcc-windows-cpp-test.cpp",
+    $cppSource,
     '-o',
-    "$env:TEMP\cup-gcc-windows-cpp-test.exe"
+    $cppExe
 )
-Assert-FileExists "$env:TEMP\cup-gcc-windows-cpp-test.exe"
-$output = Invoke-NativeCapture -FilePath "$env:TEMP\cup-gcc-windows-cpp-test.exe"
+Assert-FileExists $cppExe
+$output = Invoke-NativeCapture -FilePath $cppExe
 Assert-OutputContains -Output $output -Pattern '42'
 
 @'
@@ -175,16 +200,16 @@ int main(void) {
     printf("pthread %ld\n", (long)result);
     return result == (void *)42 ? 0 : 1;
 }
-'@ | Set-Content "$env:TEMP\cup-gcc-windows-pthread-test.c"
+'@ | Set-Content $pthreadSource
 Invoke-NativeCapture -FilePath "$root\bin\gcc.exe" -ArgumentList @(
     '-static',
-    "$env:TEMP\cup-gcc-windows-pthread-test.c",
+    $pthreadSource,
     '-o',
-    "$env:TEMP\cup-gcc-windows-pthread-test.exe",
+    $pthreadExe,
     '-pthread'
 )
-Assert-FileExists "$env:TEMP\cup-gcc-windows-pthread-test.exe"
-$output = Invoke-NativeCapture -FilePath "$env:TEMP\cup-gcc-windows-pthread-test.exe"
+Assert-FileExists $pthreadExe
+$output = Invoke-NativeCapture -FilePath $pthreadExe
 Assert-OutputContains -Output $output -Pattern 'pthread 42'
 
 @'
@@ -195,18 +220,18 @@ static int add(int a, int b) {
 int main(void) {
     return add(20, 22) == 42 ? 0 : 1;
 }
-'@ | Set-Content "$env:TEMP\cup-gcc-windows-lto-test.c"
+'@ | Set-Content $ltoSource
 Invoke-NativeCapture -FilePath "$root\bin\gcc.exe" -ArgumentList @(
     '-static',
     '-flto',
-    "$env:TEMP\cup-gcc-windows-lto-test.c",
+    $ltoSource,
     '-o',
-    "$env:TEMP\cup-gcc-windows-lto-test.exe"
+    $ltoExe
 )
-Assert-FileExists "$env:TEMP\cup-gcc-windows-lto-test.exe"
-Invoke-Native -FilePath "$env:TEMP\cup-gcc-windows-lto-test.exe"
+Assert-FileExists $ltoExe
+Invoke-Native -FilePath $ltoExe
 
-if (Test-FeatureEnabled -Root $root -Key 'contents.openmp') {
+if (Test-FeatureEnabled -Root $root -Key 'features.openmp') {
     Write-Host 'optional feature enabled: OpenMP'
     @'
 #include <omp.h>
@@ -219,36 +244,36 @@ int main(void) {
     printf("openmp %d\n", n);
     return n > 0 ? 0 : 1;
 }
-'@ | Set-Content "$env:TEMP\cup-gcc-windows-openmp-test.c"
+'@ | Set-Content $openmpSource
     Invoke-NativeCapture -FilePath "$root\bin\gcc.exe" -ArgumentList @(
         '-static',
         '-fopenmp',
-        "$env:TEMP\cup-gcc-windows-openmp-test.c",
+        $openmpSource,
         '-o',
-        "$env:TEMP\cup-gcc-windows-openmp-test.exe"
+        $openmpExe
     )
-    Assert-FileExists "$env:TEMP\cup-gcc-windows-openmp-test.exe"
-    $output = Invoke-NativeCapture -FilePath "$env:TEMP\cup-gcc-windows-openmp-test.exe"
+    Assert-FileExists $openmpExe
+    $output = Invoke-NativeCapture -FilePath $openmpExe
     Assert-OutputContains -Output $output -Pattern 'openmp'
 } else {
     Write-Host 'optional feature not enabled: OpenMP'
 }
 
-if (Test-FeatureEnabled -Root $root -Key 'contents.sanitizers') {
+if (Test-FeatureEnabled -Root $root -Key 'features.sanitizers') {
     Write-Host 'optional feature enabled: sanitizers'
     @'
 int main(void) {
     int x = 1;
     return x == 1 ? 0 : 1;
 }
-'@ | Set-Content "$env:TEMP\cup-gcc-windows-sanitizer-test.c"
+'@ | Set-Content $sanitizerSource
     Invoke-NativeCapture -FilePath "$root\bin\gcc.exe" -ArgumentList @(
         '-fsanitize=undefined',
-        "$env:TEMP\cup-gcc-windows-sanitizer-test.c",
+        $sanitizerSource,
         '-o',
-        "$env:TEMP\cup-gcc-windows-sanitizer-test.exe"
+        $sanitizerExe
     )
-    Assert-FileExists "$env:TEMP\cup-gcc-windows-sanitizer-test.exe"
+    Assert-FileExists $sanitizerExe
 } else {
     Write-Host 'optional feature not enabled: sanitizers'
 }

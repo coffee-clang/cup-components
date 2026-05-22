@@ -189,9 +189,15 @@ build_valgrind() {
 write_valgrind_info() {
     local runtime_dir
     local mpi_library
+    local has_mpi
+    local has_valgrind
+    local has_relocatable
 
     runtime_dir="$(find_valgrind_runtime_dir)"
     mpi_library="$(valgrind_mpi_library_metadata_value)"
+    has_mpi="$(valgrind_mpi_metadata_value)"
+    has_valgrind="$(metadata_bool_for_executable "$PREFIX" valgrind)"
+    has_relocatable="$(metadata_bool_for_executable "$PREFIX" valgrind)"
 
     local info=(
         "package.component=$COMPONENT"
@@ -215,13 +221,26 @@ write_valgrind_info() {
         "config.configure=--enable-only64bit"
         "config.only64bit=true"
         "config.mpi=auto"
+        "entry.valgrind=bin/valgrind"
         "contents.self_contained=true"
         "contents.relocatable_wrapper=true"
         "contents.runtime_dir=${runtime_dir#$PREFIX/}"
         "contents.tools=memcheck,cachegrind,callgrind,massif,helgrind,drd,dhat,lackey"
         "contents.experimental_tools=exp-bbv"
         "contents.internal_tools=none"
-        "contents.mpi=$(valgrind_mpi_metadata_value)"
+        "contents.mpi=$has_mpi"
+        "features.memcheck=$has_valgrind"
+        "features.cachegrind=$(metadata_bool_for_files "$PREFIX" 'cachegrind-*' 'vgpreload_*cachegrind*')"
+        "features.callgrind=$(metadata_bool_for_files "$PREFIX" 'callgrind-*' 'vgpreload_*callgrind*')"
+        "features.massif=$(metadata_bool_for_files "$PREFIX" 'massif-*' 'vgpreload_*massif*')"
+        "features.helgrind=$(metadata_bool_for_files "$PREFIX" 'helgrind-*' 'vgpreload_*helgrind*')"
+        "features.drd=$(metadata_bool_for_files "$PREFIX" 'drd-*' 'vgpreload_*drd*')"
+        "features.dhat=$(metadata_bool_for_files "$PREFIX" 'dhat-*' 'vgpreload_*dhat*')"
+        "features.lackey=$(metadata_bool_for_files "$PREFIX" 'lackey-*')"
+        "features.exp_bbv=$(metadata_bool_for_files "$PREFIX" 'exp-bbv-*')"
+        "features.mpiwrap=$has_mpi"
+        "features.gdbserver=$has_valgrind"
+        "features.relocatable=$has_relocatable"
     )
 
     if [ -n "$mpi_library" ]; then
@@ -230,6 +249,7 @@ write_valgrind_info() {
 
     write_info_file "$PREFIX" "${info[@]}"
 }
+
 
 main() {
     validate_platforms

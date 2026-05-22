@@ -395,20 +395,35 @@ copy_windows_runtime_dlls() {
 
 copy_windows_python_runtime() {
     local version
+    local major
+    local minor
     local stdlib
     local dst
+    local candidate_dir
+    local dll
+    local copied_any=0
 
     if ! is_windows_platform "$HOST_PLATFORM"; then
         return 0
     fi
 
     if ! command -v python >/dev/null 2>&1; then
-        die "python is required to package GDB Python support"
+        die "python is required to package Windows Python support"
     fi
 
     version="$(python - <<'PYSCRIPT'
 import sys
 print(f"{sys.version_info.major}.{sys.version_info.minor}")
+PYSCRIPT
+)"
+    major="$(python - <<'PYSCRIPT'
+import sys
+print(sys.version_info.major)
+PYSCRIPT
+)"
+    minor="$(python - <<'PYSCRIPT'
+import sys
+print(sys.version_info.minor)
 PYSCRIPT
 )"
     stdlib="$(python - <<'PYSCRIPT'
@@ -418,12 +433,12 @@ PYSCRIPT
 )"
 
     if [ -z "$version" ] || [ -z "$stdlib" ] || [ ! -d "$stdlib" ]; then
-        die "could not locate Python standard library for Windows GDB package"
+        die "could not locate Python standard library for Windows package"
     fi
 
     dst="$PREFIX/lib/python$version"
 
-    log "copying Python runtime library: $stdlib -> $dst"
+    log "copying Python standard library: $stdlib -> $dst"
 
     rm -rf "$dst"
     mkdir -p "$(dirname "$dst")"
@@ -431,6 +446,54 @@ PYSCRIPT
 
     find "$dst" -type d -name __pycache__ -prune -exec rm -rf {} +
     find "$dst" -type d \( -name test -o -name tests \) -prune -exec rm -rf {} +
+
+    mkdir -p "$PREFIX/bin"
+
+    log "copying Python runtime DLLs"
+
+    while IFS= read -r candidate_dir; do
+        [ -n "$candidate_dir" ] || continue
+        [ -d "$candidate_dir" ] || continue
+
+        for dll in \
+            "$candidate_dir/python$major$minor.dll" \
+            "$candidate_dir/python$version.dll" \
+            "$candidate_dir/libpython$version.dll" \
+            "$candidate_dir/libpython$major$minor.dll" \
+            "$candidate_dir"/python*.dll \
+            "$candidate_dir"/libpython*.dll; do
+
+            [ -f "$dll" ] || continue
+
+            if [ ! -f "$PREFIX/bin/$(basename "$dll")" ]; then
+                cp -f "$dll" "$PREFIX/bin/$(basename "$dll")"
+                log "  copied: $(basename "$dll")"
+                copied_any=1
+            fi
+        done
+    done < <(python - <<'PYSCRIPT'
+import os
+import sys
+import sysconfig
+
+dirs = []
+for value in [
+    os.path.dirname(sys.executable),
+    os.path.join(sys.prefix, "bin"),
+    os.path.join(getattr(sys, "base_prefix", sys.prefix), "bin"),
+    os.environ.get("MINGW_PREFIX", "") and os.path.join(os.environ["MINGW_PREFIX"], "bin"),
+]:
+    if value and value not in dirs:
+        dirs.append(value)
+
+for value in dirs:
+    print(value)
+PYSCRIPT
+)
+
+    if [ "$copied_any" -eq 0 ]; then
+        die "could not locate Python runtime DLLs for Windows package"
+    fi
 }
 
 create_archive() {

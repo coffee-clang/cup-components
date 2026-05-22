@@ -78,6 +78,16 @@ case "$TOOL" in
         ;;
 esac
 
+llvm_targets_to_build() {
+    # The current package naming models host/target platform, not the set of
+    # LLVM code-generation backends bundled in the package. Keep the default
+    # narrow and explicit for now; future build inputs can extend this and
+    # include the selected backend set in the package name.
+    printf '%s\n' "${CUP_LLVM_TARGETS_TO_BUILD:-X86}"
+}
+
+LLVM_TARGETS="$(llvm_targets_to_build)"
+
 PREFIX="$CUP_STAGE_DIR/$(package_base_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
 
 need_common_tools() {
@@ -145,7 +155,7 @@ prune_llvm_package_bins() {
             ;;
         lld)
             prune_bin_except \
-                lld ld.lld lld-link wasm-ld
+                lld ld.lld lld-link wasm-ld ld64.lld
             ;;
         lldb)
             prune_bin_except \
@@ -211,7 +221,7 @@ build_llvm_tool() {
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX="$PREFIX" \
         -DLLVM_ENABLE_PROJECTS="$LLVM_PROJECTS" \
-        -DLLVM_TARGETS_TO_BUILD=X86 \
+        -DLLVM_TARGETS_TO_BUILD="$LLVM_TARGETS" \
         -DLLVM_INCLUDE_TESTS=OFF \
         -DLLVM_INCLUDE_BENCHMARKS=OFF \
         -DLLDB_INCLUDE_TESTS=OFF \
@@ -219,14 +229,70 @@ build_llvm_tool() {
 
     log "selected LLVM CMake cache entries:"
     if [ -f "$build_dir/CMakeCache.txt" ]; then
-        grep -E '^(LLVM_ENABLE_PROJECTS|LLVM_TARGETS_TO_BUILD|LLVM_ENABLE_ZLIB|LLVM_ENABLE_ZSTD|LLVM_ENABLE_LIBXML2|LLDB_ENABLE_PYTHON|LLDB_ENABLE_LIBXML2|LLDB_ENABLE_LZMA|LLDB_ENABLE_LIBEDIT|LLDB_ENABLE_CURSES|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER):' "$build_dir/CMakeCache.txt" || true
+        grep -E '^(LLVM_ENABLE_PROJECTS|LLVM_TARGETS_TO_BUILD|LLVM_ENABLE_ZLIB|LLVM_ENABLE_ZSTD|LLVM_ENABLE_LIBXML2|LLDB_ENABLE_PYTHON|LLDB_ENABLE_LIBXML2|LLDB_ENABLE_LZMA|LLDB_ENABLE_LIBEDIT|LLDB_ENABLE_CURSES|Python3_EXECUTABLE|Python3_LIBRARY|Python3_INCLUDE_DIR|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER):' "$build_dir/CMakeCache.txt" || true
     fi
 
     cmake --build "$build_dir" --parallel "$CUP_JOBS"
     cmake --install "$build_dir"
 
     prune_llvm_package_bins
+
+    if is_windows_platform "$HOST_PLATFORM" && [ "$TOOL" = "lldb" ]; then
+        copy_windows_python_runtime
+    fi
+
     copy_windows_runtime_dlls "$PREFIX/bin"
+}
+
+llvm_exe_suffix() {
+    if is_windows_platform "$HOST_PLATFORM"; then
+        printf '%s\n' ".exe"
+    else
+        printf '%s\n' ""
+    fi
+}
+
+llvm_bin_exists() {
+    local name="$1"
+    local exe_suffix
+    exe_suffix="$(llvm_exe_suffix)"
+
+    [ -x "$PREFIX/bin/$name" ] || [ -x "$PREFIX/bin/$name$exe_suffix" ]
+}
+
+append_lld_frontend_info() {
+    local -n out_ref="$1"
+    local frontends=()
+    local frontend
+
+    [ "$TOOL" = "lld" ] || return 0
+
+    for frontend in ld.lld lld-link wasm-ld ld64.lld; do
+        if llvm_bin_exists "$frontend"; then
+            frontends+=("$frontend")
+            case "$frontend" in
+                ld.lld) out_ref+=("contents.frontend.ld_lld=true") ;;
+                lld-link) out_ref+=("contents.frontend.lld_link=true") ;;
+                wasm-ld) out_ref+=("contents.frontend.wasm_ld=true") ;;
+                ld64.lld) out_ref+=("contents.frontend.ld64_lld=true") ;;
+            esac
+        else
+            case "$frontend" in
+                ld.lld) out_ref+=("contents.frontend.ld_lld=false") ;;
+                lld-link) out_ref+=("contents.frontend.lld_link=false") ;;
+                wasm-ld) out_ref+=("contents.frontend.wasm_ld=false") ;;
+                ld64.lld) out_ref+=("contents.frontend.ld64_lld=false") ;;
+            esac
+        fi
+    done
+
+    if [ "${#frontends[@]}" -gt 0 ]; then
+        local joined
+        joined="$(IFS=,; printf '%s' "${frontends[*]}")"
+        out_ref+=("contents.frontends=$joined")
+    else
+        out_ref+=("contents.frontends=")
+    fi
 }
 
 write_llvm_info() {
@@ -250,13 +316,21 @@ write_llvm_info() {
         "source.primary.version=$VERSION"
         "source.primary.url=$SOURCE_URL"
         "config.llvm_projects=$LLVM_PROJECTS"
-        "config.llvm_targets=X86"
+        "config.llvm_targets=$LLVM_TARGETS"
         "contents.self_contained=true"
     )
 
     info+=("${CONTENTS_EXTRA[@]}")
 
+    append_lld_frontend_info info
+
     if [ "$TOOL" = "lldb" ]; then
+        if is_windows_platform "$HOST_PLATFORM"; then
+            info+=("contents.python_runtime=packaged")
+        else
+            info+=("contents.python_runtime=system")
+        fi
+
         if [ "$HOST_PLATFORM" = "windows-x64" ]; then
             info+=("config.libedit=false" "config.curses=false")
         else

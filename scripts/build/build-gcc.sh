@@ -123,6 +123,13 @@ gcc_bootstrap_configure_args() {
     fi
 }
 
+gcc_feature_configure_args() {
+    printf '%s\n' \
+        --enable-languages=c,c++,lto \
+        --enable-libgomp \
+        --enable-libsanitizer
+}
+
 tool_exe_suffix() {
     if [ "$HOST_PLATFORM" = "windows-x64" ]; then
         printf '.exe\n'
@@ -517,10 +524,12 @@ build_native_gcc() {
     local gcc_src="$1"
     local build_dir="$CUP_BUILD_DIR/gcc-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
     local gcc_dep_args=()
+    local gcc_feature_args=()
 
     log "building native GCC $VERSION for $HOST_PLATFORM"
 
     mapfile -t gcc_dep_args < <(gcc_dependency_configure_args)
+    mapfile -t gcc_feature_args < <(gcc_feature_configure_args)
 
     prepare_gcc_prerequisites "$gcc_src"
     require_bundled_native_binutils_tools
@@ -537,7 +546,7 @@ build_native_gcc() {
             --disable-werror \
             --disable-multilib \
             --enable-bootstrap \
-            --enable-languages=c,c++ \
+            "${gcc_feature_args[@]}" \
             --with-gnu-as \
             --with-gnu-ld \
             "${gcc_dep_args[@]}"
@@ -703,6 +712,7 @@ build_gcc_final() {
     local gcc_dep_args=()
     local gcc_target_args=()
     local gcc_bootstrap_args=()
+    local gcc_feature_args=()
     local exe_suffix
     local host_cc
     local host_cxx
@@ -727,6 +737,7 @@ build_gcc_final() {
     mapfile -t gcc_dep_args < <(gcc_dependency_configure_args)
     mapfile -t gcc_target_args < <(gcc_windows_target_configure_args)
     mapfile -t gcc_bootstrap_args < <(gcc_bootstrap_configure_args)
+    mapfile -t gcc_feature_args < <(gcc_feature_configure_args)
 
     rm -rf "$build_dir"
     mkdir -p "$build_dir"
@@ -761,7 +772,7 @@ build_gcc_final() {
             --disable-werror \
             --disable-multilib \
             "${gcc_bootstrap_args[@]}" \
-            --enable-languages=c,c++ \
+            "${gcc_feature_args[@]}" \
             --enable-threads=posix \
             --with-gnu-as \
             --with-gnu-ld \
@@ -807,12 +818,45 @@ build_bundled_windows_gcc() {
     build_gcc_final "$gcc_src"
 }
 
+gcc_prefix_has_any() {
+    local pattern
+
+    for pattern in "$@"; do
+        if find "$PREFIX" -type f -name "$pattern" -print -quit | grep -q .; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+gcc_bool_for_files() {
+    if gcc_prefix_has_any "$@"; then
+        printf 'true\n'
+    else
+        printf 'false\n'
+    fi
+}
+
 write_gcc_info() {
     local bundle_components=""
     local includes_binutils="false"
     local includes_mingw="false"
     local bootstrap="true"
     local tool_naming="native"
+    local includes_libstdcxx
+    local includes_lto
+    local includes_openmp
+    local includes_sanitizers
+    local includes_asan
+    local includes_ubsan
+
+    includes_libstdcxx="$(gcc_bool_for_files 'libstdc++*')"
+    includes_lto="$(gcc_bool_for_files 'liblto_plugin*')"
+    includes_openmp="$(gcc_bool_for_files 'libgomp*')"
+    includes_sanitizers="$(gcc_bool_for_files 'libasan*' 'libubsan*' 'libtsan*' 'liblsan*')"
+    includes_asan="$(gcc_bool_for_files 'libasan*')"
+    includes_ubsan="$(gcc_bool_for_files 'libubsan*')"
 
     if is_windows_platform "$TARGET_PLATFORM"; then
         bundle_components="binutils,mingw-w64"
@@ -849,11 +893,20 @@ write_gcc_info() {
         "source.primary.name=gcc"
         "source.primary.version=$VERSION"
         "source.primary.url=$GCC_SOURCE_URL"
-        "config.languages=c,c++"
+        "config.languages=c,c++,lto"
         "config.multilib=false"
         "config.bootstrap=$bootstrap"
         "config.tool_naming=$tool_naming"
+        "config.openmp=attempted"
+        "config.sanitizers=attempted"
         "contents.self_contained=true"
+        "contents.libstdcxx=$includes_libstdcxx"
+        "contents.lto=$includes_lto"
+        "contents.openmp=$includes_openmp"
+        "contents.libgomp=$includes_openmp"
+        "contents.sanitizers=$includes_sanitizers"
+        "contents.asan=$includes_asan"
+        "contents.ubsan=$includes_ubsan"
     )
 
     if [ "$HOST_PLATFORM" = "windows-x64" ]; then

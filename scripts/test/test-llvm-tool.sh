@@ -8,7 +8,11 @@ Usage:
 
 Examples:
   $0 clang
+  $0 lld
+  $0 lldb
   $0 clangd
+  $0 clang-format
+  $0 clang-tidy
 USAGE
 }
 
@@ -42,6 +46,17 @@ require_executable() {
     fi
 }
 
+run_optional_executable() {
+    local path="$1"
+    shift
+
+    if [ -x "$path" ]; then
+        "$path" "$@"
+    else
+        echo "warning: optional executable not present: $path"
+    fi
+}
+
 assert_output_contains() {
     local file_path="$1"
     local pattern="$2"
@@ -63,7 +78,7 @@ case "$LLVM_TOOL" in
         "$root/bin/clang++" --version
         "$root/bin/ld.lld" --version
 
-        resource_dir="$($root/bin/clang -print-resource-dir)"
+        resource_dir="$("$root/bin/clang" -print-resource-dir)"
         echo "clang resource dir: $resource_dir"
         test -d "$resource_dir"
 
@@ -107,14 +122,9 @@ CPP_EOF
         # lld is a generic driver and may exit with a diagnostic when invoked directly.
         # Test the concrete frontends instead.
         "$root/bin/ld.lld" --version
-
-        if [ -x "$root/bin/lld-link" ]; then
-            "$root/bin/lld-link" --version
-        fi
-
-        if [ -x "$root/bin/wasm-ld" ]; then
-            "$root/bin/wasm-ld" --version
-        fi
+        run_optional_executable "$root/bin/lld-link" --version
+        run_optional_executable "$root/bin/wasm-ld" --version
+        run_optional_executable "$root/bin/ld64.lld" --version
 
         cat > "$tmp_root/lld-test.c" <<'C_EOF'
 #include <stdio.h>
@@ -148,6 +158,7 @@ int main(void) {
 C_EOF
         cc -g -O0 "$tmp_root/lldb-test.c" -o "$tmp_root/lldb-test"
         "$root/bin/lldb" -b \
+            -o "settings set target.disable-aslr false" \
             -o "target create $tmp_root/lldb-test" \
             -o "breakpoint set --name add" \
             -o "run" \
@@ -188,22 +199,59 @@ EOF_JSON
         require_executable "$root/bin/clang-format"
 
         "$root/bin/clang-format" --version
+
         printf "%s\n" "int main( void ){return 0;}" > "$tmp_root/format-test.c"
         "$root/bin/clang-format" "$tmp_root/format-test.c" | tee "$tmp_root/format-output.c"
         grep -F "int main(void)" "$tmp_root/format-output.c"
+
+        cat > "$tmp_root/style-test.c" <<'C_EOF'
+int main(void) {
+return 0;
+}
+C_EOF
+        "$root/bin/clang-format" \
+            -style="{BasedOnStyle: LLVM, IndentWidth: 4}" \
+            "$tmp_root/style-test.c" | tee "$tmp_root/style-output.c"
+        grep -F "    return 0;" "$tmp_root/style-output.c"
+
+        project_dir="$tmp_root/format-project"
+        mkdir -p "$project_dir"
+        cat > "$project_dir/.clang-format" <<'STYLE_EOF'
+BasedOnStyle: LLVM
+IndentWidth: 3
+STYLE_EOF
+        cat > "$project_dir/main.c" <<'C_EOF'
+int main(void) {
+return 0;
+}
+C_EOF
+        (
+            cd "$project_dir"
+            "$root/bin/clang-format" main.c
+        ) | tee "$tmp_root/project-format-output.c"
+        grep -F "   return 0;" "$tmp_root/project-format-output.c"
+
+        printf "%s\n" "int main( void ){return 0;}" > "$tmp_root/bad-format.c"
+        if "$root/bin/clang-format" --dry-run --Werror "$tmp_root/bad-format.c" >"$tmp_root/format-dryrun.txt" 2>&1; then
+            echo "clang-format dry-run unexpectedly succeeded on unformatted file" >&2
+            cat "$tmp_root/format-dryrun.txt" >&2
+            exit 1
+        fi
+
+        "$root/bin/clang-format" --assume-filename=test.cpp "$tmp_root/format-test.c" >/dev/null
         ;;
     clang-tidy)
         require_executable "$root/bin/clang-tidy"
 
         "$root/bin/clang-tidy" --version
-        "$root/bin/clang-tidy" --list-checks -checks=clang-analyzer-* | tee "$tmp_root/tidy-checks.txt"
+        "$root/bin/clang-tidy" --list-checks '-checks=clang-analyzer-*' | tee "$tmp_root/tidy-checks.txt"
         grep -F "clang-analyzer-core" "$tmp_root/tidy-checks.txt"
         cat > "$tmp_root/tidy-test.c" <<'C_EOF'
 int main(void) {
     return 0;
 }
 C_EOF
-        "$root/bin/clang-tidy" "$tmp_root/tidy-test.c" -- -std=c11
+        "$root/bin/clang-tidy" '-checks=clang-analyzer-*' "$tmp_root/tidy-test.c" -- -std=c11
         ;;
     *)
         echo "unsupported LLVM tool: $LLVM_TOOL" >&2

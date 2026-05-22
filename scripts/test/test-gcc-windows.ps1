@@ -60,6 +60,40 @@ function Assert-OutputContains {
     }
 }
 
+function Read-InfoValue {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Root,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Key
+    )
+
+    $infoPath = Join-Path $Root 'info.txt'
+    if (-not (Test-Path $infoPath)) {
+        return ''
+    }
+
+    $line = Get-Content $infoPath | Where-Object { $_ -like "$Key=*" } | Select-Object -First 1
+    if (-not $line) {
+        return ''
+    }
+
+    return ($line -replace "^$([regex]::Escape($Key))=", '')
+}
+
+function Test-FeatureEnabled {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Root,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Key
+    )
+
+    return (Read-InfoValue -Root $Root -Key $Key) -eq 'true'
+}
+
 $releaseEnv = Get-Content dist/release.env
 $packageBase = ($releaseEnv | Where-Object { $_ -like 'package_base=*' }) -replace '^package_base=', ''
 if (-not $packageBase) { throw 'package_base not found in dist/release.env' }
@@ -69,8 +103,9 @@ New-Item -ItemType Directory -Force dist/package-test | Out-Null
 Expand-Archive -Force "dist/$packageBase.zip" dist/package-test
 
 $root = Join-Path (Resolve-Path dist/package-test) $packageBase
+Get-Content "$root\info.txt"
 
-$env:Path = "$env:SystemRoot\System32;$env:SystemRoot"
+$env:Path = "$root\bin;$env:SystemRoot\System32;$env:SystemRoot"
 
 Invoke-Native -FilePath "$root\bin\gcc.exe" -ArgumentList @('--version')
 Invoke-Native -FilePath "$root\bin\g++.exe" -ArgumentList @('--version')
@@ -87,7 +122,7 @@ int main(void) {
     return 0;
 }
 '@ | Set-Content "$env:TEMP\cup-gcc-windows-c-test.c"
-Invoke-Native -FilePath "$root\bin\gcc.exe" -ArgumentList @(
+Invoke-NativeCapture -FilePath "$root\bin\gcc.exe" -ArgumentList @(
     '-static',
     "$env:TEMP\cup-gcc-windows-c-test.c",
     '-o',
@@ -107,7 +142,7 @@ int main() {
     return 0;
 }
 '@ | Set-Content "$env:TEMP\cup-gcc-windows-cpp-test.cpp"
-Invoke-Native -FilePath "$root\bin\g++.exe" -ArgumentList @(
+Invoke-NativeCapture -FilePath "$root\bin\g++.exe" -ArgumentList @(
     '-static',
     "$env:TEMP\cup-gcc-windows-cpp-test.cpp",
     '-o',
@@ -141,7 +176,7 @@ int main(void) {
     return result == (void *)42 ? 0 : 1;
 }
 '@ | Set-Content "$env:TEMP\cup-gcc-windows-pthread-test.c"
-Invoke-Native -FilePath "$root\bin\gcc.exe" -ArgumentList @(
+Invoke-NativeCapture -FilePath "$root\bin\gcc.exe" -ArgumentList @(
     '-static',
     "$env:TEMP\cup-gcc-windows-pthread-test.c",
     '-o',
@@ -161,7 +196,7 @@ int main(void) {
     return add(20, 22) == 42 ? 0 : 1;
 }
 '@ | Set-Content "$env:TEMP\cup-gcc-windows-lto-test.c"
-Invoke-Native -FilePath "$root\bin\gcc.exe" -ArgumentList @(
+Invoke-NativeCapture -FilePath "$root\bin\gcc.exe" -ArgumentList @(
     '-static',
     '-flto',
     "$env:TEMP\cup-gcc-windows-lto-test.c",
@@ -170,3 +205,50 @@ Invoke-Native -FilePath "$root\bin\gcc.exe" -ArgumentList @(
 )
 Assert-FileExists "$env:TEMP\cup-gcc-windows-lto-test.exe"
 Invoke-Native -FilePath "$env:TEMP\cup-gcc-windows-lto-test.exe"
+
+if (Test-FeatureEnabled -Root $root -Key 'contents.openmp') {
+    Write-Host 'optional feature enabled: OpenMP'
+    @'
+#include <omp.h>
+#include <stdio.h>
+
+int main(void) {
+    int n = 0;
+#pragma omp parallel reduction(+:n)
+    n += 1;
+    printf("openmp %d\n", n);
+    return n > 0 ? 0 : 1;
+}
+'@ | Set-Content "$env:TEMP\cup-gcc-windows-openmp-test.c"
+    Invoke-NativeCapture -FilePath "$root\bin\gcc.exe" -ArgumentList @(
+        '-static',
+        '-fopenmp',
+        "$env:TEMP\cup-gcc-windows-openmp-test.c",
+        '-o',
+        "$env:TEMP\cup-gcc-windows-openmp-test.exe"
+    )
+    Assert-FileExists "$env:TEMP\cup-gcc-windows-openmp-test.exe"
+    $output = Invoke-NativeCapture -FilePath "$env:TEMP\cup-gcc-windows-openmp-test.exe"
+    Assert-OutputContains -Output $output -Pattern 'openmp'
+} else {
+    Write-Host 'optional feature not enabled: OpenMP'
+}
+
+if (Test-FeatureEnabled -Root $root -Key 'contents.sanitizers') {
+    Write-Host 'optional feature enabled: sanitizers'
+    @'
+int main(void) {
+    int x = 1;
+    return x == 1 ? 0 : 1;
+}
+'@ | Set-Content "$env:TEMP\cup-gcc-windows-sanitizer-test.c"
+    Invoke-NativeCapture -FilePath "$root\bin\gcc.exe" -ArgumentList @(
+        '-fsanitize=undefined',
+        "$env:TEMP\cup-gcc-windows-sanitizer-test.c",
+        '-o',
+        "$env:TEMP\cup-gcc-windows-sanitizer-test.exe"
+    )
+    Assert-FileExists "$env:TEMP\cup-gcc-windows-sanitizer-test.exe"
+} else {
+    Write-Host 'optional feature not enabled: sanitizers'
+}

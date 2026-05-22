@@ -70,6 +70,21 @@ function To-ForwardSlashPath {
     return $Path.Replace('\', '/')
 }
 
+function Invoke-OptionalNative {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $FilePath,
+
+        [string[]] $ArgumentList = @()
+    )
+
+    if (Test-Path $FilePath) {
+        Invoke-Native -FilePath $FilePath -ArgumentList $ArgumentList
+    } else {
+        Write-Host "warning: optional executable not present: $FilePath"
+    }
+}
+
 $releaseEnv = Get-Content dist/release.env
 $packageBase = ($releaseEnv | Where-Object { $_ -like 'package_base=*' }) -replace '^package_base=', ''
 if (-not $packageBase) { throw 'package_base not found in dist/release.env' }
@@ -81,7 +96,7 @@ Expand-Archive -Force "dist/$packageBase.zip" dist/package-test
 $root = Join-Path (Resolve-Path dist/package-test) $packageBase
 Get-Content "$root\info.txt"
 
-$env:Path = "$env:SystemRoot\System32;$env:SystemRoot"
+$env:Path = "$root\bin;$env:SystemRoot\System32;$env:SystemRoot"
 
 switch ($Tool) {
     'clang' {
@@ -125,13 +140,19 @@ switch ($Tool) {
     'lld' {
         Invoke-Native -FilePath "$root\bin\ld.lld.exe" -ArgumentList @('--version')
         Invoke-Native -FilePath "$root\bin\lld-link.exe" -ArgumentList @('--version')
-        if (Test-Path "$root\bin\wasm-ld.exe") {
-            Invoke-Native -FilePath "$root\bin\wasm-ld.exe" -ArgumentList @('--version')
-        }
+        Invoke-OptionalNative -FilePath "$root\bin\wasm-ld.exe" -ArgumentList @('--version')
+        Invoke-OptionalNative -FilePath "$root\bin\ld64.lld.exe" -ArgumentList @('--version')
     }
 
     'lldb' {
         Invoke-Native -FilePath "$root\bin\lldb.exe" -ArgumentList @('--version')
+        Invoke-Native -FilePath "$root\bin\lldb.exe" -ArgumentList @(
+            '-b',
+            '-o',
+            "script import sys; print('python-ok', sys.version_info[0], sys.version_info[1])",
+            '-o',
+            'quit'
+        )
         Invoke-Native -FilePath "$root\bin\lldb.exe" -ArgumentList @('-b', '-o', 'help', '-o', 'quit')
     }
 
@@ -162,11 +183,55 @@ switch ($Tool) {
     'clang-format' {
         Invoke-Native -FilePath "$root\bin\clang-format.exe" -ArgumentList @('--version')
 
-        'int main( void ){return 0;}' | Set-Content "$env:TEMP\cup-format-test.c"
-        $output = Invoke-NativeCapture -FilePath "$root\bin\clang-format.exe" -ArgumentList @(
-            "$env:TEMP\cup-format-test.c"
-        )
+        $source = Join-Path $env:TEMP 'cup-format-test.c'
+        'int main( void ){return 0;}' | Set-Content $source
+        $output = Invoke-NativeCapture -FilePath "$root\bin\clang-format.exe" -ArgumentList @($source)
         Assert-OutputContains -Output $output -Pattern 'int main\(void\)'
+
+        $styleSource = Join-Path $env:TEMP 'cup-format-style-test.c'
+@'
+int main(void) {
+return 0;
+}
+'@ | Set-Content $styleSource
+        $styleOutput = Invoke-NativeCapture -FilePath "$root\bin\clang-format.exe" -ArgumentList @(
+            '-style={BasedOnStyle: LLVM, IndentWidth: 4}',
+            $styleSource
+        )
+        Assert-OutputContains -Output $styleOutput -Pattern '    return 0;'
+
+        $projectDir = Join-Path $env:TEMP 'cup-format-project'
+        Remove-Item -Recurse -Force $projectDir -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force $projectDir | Out-Null
+@'
+BasedOnStyle: LLVM
+IndentWidth: 3
+'@ | Set-Content (Join-Path $projectDir '.clang-format')
+@'
+int main(void) {
+return 0;
+}
+'@ | Set-Content (Join-Path $projectDir 'main.c')
+
+        Push-Location $projectDir
+        try {
+            $projectOutput = Invoke-NativeCapture -FilePath "$root\bin\clang-format.exe" -ArgumentList @('main.c')
+        } finally {
+            Pop-Location
+        }
+        Assert-OutputContains -Output $projectOutput -Pattern '   return 0;'
+
+        $badSource = Join-Path $env:TEMP 'cup-format-bad.c'
+        'int main( void ){return 0;}' | Set-Content $badSource
+        & "$root\bin\clang-format.exe" --dry-run --Werror $badSource *> (Join-Path $env:TEMP 'cup-format-dryrun.txt')
+        if ($LASTEXITCODE -eq 0) {
+            throw 'clang-format dry-run unexpectedly succeeded on unformatted file'
+        }
+
+        Invoke-Native -FilePath "$root\bin\clang-format.exe" -ArgumentList @(
+            '--assume-filename=test.cpp',
+            $source
+        )
     }
 
     'clang-tidy' {
@@ -180,6 +245,7 @@ switch ($Tool) {
 
         'int main(void) { return 0; }' | Set-Content "$env:TEMP\cup-tidy-test.c"
         Invoke-Native -FilePath "$root\bin\clang-tidy.exe" -ArgumentList @(
+            '-checks=clang-analyzer-*',
             "$env:TEMP\cup-tidy-test.c",
             '--',
             '-std=c11'

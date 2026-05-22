@@ -1,0 +1,102 @@
+name: Build GCC (Linux host)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: GCC version, or stable/latest
+        required: true
+        default: stable
+      target_platform:
+        description: GCC target platform
+        required: true
+        type: choice
+        options:
+          - linux-x64
+          - windows-x64
+      revision:
+        description: Package revision for recipe-sensitive builds
+        required: true
+        default: '1'
+      publish:
+        description: Publish packages as GitHub Release assets
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build Docker image
+        run: docker build -f docker/toolchain-builder.Dockerfile -t cup-toolchain-builder .
+
+      - name: Build package
+        run: |
+          docker run --rm \
+            -e CUP_BUILD_ENVIRONMENT=docker-toolchain \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            cup-toolchain-builder \
+            bash scripts/build/build-gcc.sh \
+              "${{ inputs.version }}" \
+              linux-x64 \
+              "${{ inputs.target_platform }}" \
+              "${{ inputs.revision }}"
+
+      - name: Test packaged GCC
+        run: |
+          docker run --rm \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            cup-toolchain-builder \
+            bash scripts/test/test-gcc.sh \
+              linux-x64 \
+              "${{ inputs.target_platform }}"
+
+      - name: Load release metadata
+        id: release
+        shell: bash
+        run: |
+          source dist/release.env
+          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        if: ${{ !inputs.publish }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ steps.release.outputs.tag }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ secrets.CUP_COMPONENTS_PAT }}
+        shell: bash
+        run: |
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "CUP_COMPONENTS_PAT is not configured" >&2
+            exit 1
+          fi
+
+          tag="${{ steps.release.outputs.tag }}"
+          components_repo="mcolombo358/cup-components"
+
+          if gh release view "$tag" --repo "$components_repo" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/*.tar.xz dist/*.tar.gz dist/*.zip \
+              --repo "$components_repo" \
+              --clobber
+          else
+            gh release create "$tag" dist/*.tar.xz dist/*.tar.gz dist/*.zip \
+              --repo "$components_repo" \
+              --title "$tag" \
+              --notes "Automated cup component build for $tag"
+          fi

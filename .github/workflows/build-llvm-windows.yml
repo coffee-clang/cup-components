@@ -1,0 +1,126 @@
+name: Build LLVM tool (Windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tool:
+        description: LLVM tool to build
+        required: true
+        type: choice
+        options:
+          - clang
+          - lld
+          - lldb
+          - clangd
+          - clang-format
+          - clang-tidy
+      version:
+        description: Tool version, or stable/latest
+        required: true
+        default: stable
+      revision:
+        description: Package revision metadata
+        required: true
+        default: '1'
+      publish:
+        description: Publish packages as GitHub Release assets
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up MSYS2 CLANG64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: true
+          install: >-
+            base-devel
+            git
+            curl
+            tar
+            gzip
+            bzip2
+            xz
+            zip
+            unzip
+            patch
+            python
+            mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-lld
+            mingw-w64-clang-x86_64-cmake
+            mingw-w64-clang-x86_64-ninja
+            mingw-w64-clang-x86_64-pkgconf
+            mingw-w64-clang-x86_64-swig
+            mingw-w64-clang-x86_64-python
+            mingw-w64-clang-x86_64-zlib
+            mingw-w64-clang-x86_64-zstd
+            mingw-w64-clang-x86_64-libxml2
+            mingw-w64-clang-x86_64-xz
+
+      - name: Build package
+        run: |
+          export CUP_BUILD_ENVIRONMENT=msys2-clang64
+          bash scripts/build/build-llvm-tool.sh \
+            "${{ inputs.tool }}" \
+            "${{ inputs.version }}" \
+            windows-x64 \
+            windows-x64 \
+            "${{ inputs.revision }}"
+
+      - name: Test packaged LLVM tool
+        shell: pwsh
+        run: scripts/test/test-llvm-tool-windows.ps1 -Tool "${{ inputs.tool }}"
+
+      - name: Load release metadata
+        id: release
+        shell: bash
+        run: |
+          source dist/release.env
+          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        if: ${{ !inputs.publish }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ steps.release.outputs.tag }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ secrets.CUP_COMPONENTS_PAT }}
+        shell: bash
+        run: |
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "CUP_COMPONENTS_PAT is not configured" >&2
+            exit 1
+          fi
+
+          tag="${{ steps.release.outputs.tag }}"
+          components_repo="mcolombo358/cup-components"
+
+          if gh release view "$tag" --repo "$components_repo" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/*.tar.xz dist/*.tar.gz dist/*.zip \
+              --repo "$components_repo" \
+              --clobber
+          else
+            gh release create "$tag" dist/*.tar.xz dist/*.tar.gz dist/*.zip \
+              --repo "$components_repo" \
+              --title "$tag" \
+              --notes "Automated cup component build for $tag"
+          fi

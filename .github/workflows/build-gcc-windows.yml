@@ -18,7 +18,7 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -94,24 +94,19 @@ jobs:
       - name: Publish GitHub Release
         if: ${{ inputs.publish }}
         env:
-          GH_TOKEN: ${{ secrets.CUP_COMPONENTS_PAT }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          if [ -z "${GH_TOKEN:-}" ]; then
-            echo "CUP_COMPONENTS_PAT is not configured" >&2
-            exit 1
-          fi
-
           tag="${{ steps.release.outputs.tag }}"
-          components_repo="mcolombo358/cup-components"
+          repo="${GITHUB_REPOSITORY}"
 
-          if gh release view "$tag" --repo "$components_repo" >/dev/null 2>&1; then
+          if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
             gh release upload "$tag" dist/*.tar.xz dist/*.tar.gz dist/*.zip \
-              --repo "$components_repo" \
+              --repo "$repo" \
               --clobber
           else
             gh release create "$tag" dist/*.tar.xz dist/*.tar.gz dist/*.zip \
-              --repo "$components_repo" \
+              --repo "$repo" \
               --title "$tag" \
               --notes "Automated cup component build for $tag"
           fi

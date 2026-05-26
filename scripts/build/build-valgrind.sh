@@ -8,23 +8,24 @@ source "$REPO_ROOT/scripts/package/package-common.sh"
 usage() {
     cat <<USAGE
 Usage:
-  $0 <version|stable|latest> <host_platform> <target_platform> <revision>
+  $0 <version|stable|latest> <host_platform> <revision>
 
 Examples:
-  $0 stable linux-x64 linux-x64 1
-  $0 3.27.0 linux-x64 linux-x64 1
+  $0 stable linux-x64 1
+  $0 stable linux-arm64 1
+  $0 3.27.0 linux-arm64 1
 USAGE
 }
 
-if [ "$#" -ne 4 ]; then
+if [ "$#" -ne 3 ]; then
     usage >&2
     exit 2
 fi
 
 REQUESTED_VERSION="$1"
 HOST_PLATFORM="$2"
-TARGET_PLATFORM="$3"
-REVISION="$4"
+TARGET_PLATFORM="$HOST_PLATFORM"
+REVISION="$3"
 
 TOOL="valgrind"
 COMPONENT="analyzer"
@@ -51,12 +52,16 @@ need_valgrind_tools() {
 }
 
 validate_platforms() {
-    if [ "$HOST_PLATFORM" != "linux-x64" ] || [ "$TARGET_PLATFORM" != "linux-x64" ]; then
-        die "Valgrind packages are currently supported only for linux-x64 -> linux-x64"
-    fi
+    case "$HOST_PLATFORM" in
+        linux-x64|linux-arm64)
+            ;;
+        *)
+            die "Valgrind packages are currently supported only for linux-x64 and linux-arm64 hosts"
+            ;;
+    esac
 
-    if is_cross_build "$HOST_PLATFORM" "$TARGET_PLATFORM"; then
-        die "cross Valgrind builds are not supported: $HOST_PLATFORM -> $TARGET_PLATFORM"
+    if [ "$TARGET_PLATFORM" != "$HOST_PLATFORM" ]; then
+        die "Valgrind packages use only a host platform and do not support cross builds: $HOST_PLATFORM -> $TARGET_PLATFORM"
     fi
 }
 

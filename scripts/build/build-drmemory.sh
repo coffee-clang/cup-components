@@ -60,13 +60,30 @@ validate_platforms() {
 find_drmemory_root() {
     local extracted="$1"
     local found
+    local root
 
-    found="$(find "$extracted" -maxdepth 2 -type f -iname 'drmemory.exe' -print -quit)"
+    found="$(find "$extracted" -maxdepth 6 -type f -iname 'drmemory.exe' -print -quit)"
     if [ -z "$found" ]; then
+        log "extracted Dr. Memory archive layout:"
+        find "$extracted" -maxdepth 4 -print | sort
         die "could not find drmemory.exe in extracted Dr. Memory archive"
     fi
 
-    dirname "$(dirname "$found")"
+    root="$(dirname "$(dirname "$found")")"
+
+    if [ ! -d "$root/bin" ] && [ -d "$root/bin64" ]; then
+        log "normalizing Dr. Memory bin64 directory to bin"
+        mkdir -p "$root/bin"
+        cp -a "$root/bin64"/. "$root/bin"/
+    fi
+
+    if [ ! -f "$root/bin/drmemory.exe" ]; then
+        log "Dr. Memory root candidate: $root"
+        find "$root" -maxdepth 3 -print | sort
+        die "could not find bin/drmemory.exe in Dr. Memory package root"
+    fi
+
+    printf '%s\n' "$root"
 }
 
 stage_drmemory() {
@@ -85,7 +102,12 @@ stage_drmemory() {
     log "staging Dr. Memory from $source_root"
     cp -a "$source_root"/. "$PREFIX"/
 
-    if [ ! -x "$PREFIX/bin/drmemory.exe" ] && [ -f "$PREFIX/bin/drmemory.exe" ]; then
+    if [ ! -f "$PREFIX/bin/drmemory.exe" ]; then
+        find "$PREFIX" -maxdepth 3 -print | sort
+        die "staged Dr. Memory package does not contain bin/drmemory.exe"
+    fi
+
+    if [ ! -x "$PREFIX/bin/drmemory.exe" ]; then
         chmod +x "$PREFIX/bin/drmemory.exe"
     fi
 }

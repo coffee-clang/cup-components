@@ -35,10 +35,12 @@ RUN apt-get update \
         libsource-highlight-dev \
         libxxhash-dev \
         libbabeltrace-dev \
-        libipt-dev \
         openmpi-bin \
         libopenmpi-dev \
         libc6-dbg \
+    && if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+        apt-get install -y --no-install-recommends libipt-dev; \
+    fi \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace

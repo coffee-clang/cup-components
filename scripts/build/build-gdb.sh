@@ -74,8 +74,13 @@ gdb_linux_feature_configure_args() {
         --with-debuginfod \
         --enable-source-highlight \
         --with-xxhash \
-        --with-babeltrace \
-        --with-intel-pt
+        --with-babeltrace
+
+    if [ "$HOST_PLATFORM" = "linux-x64" ] && [ "$TARGET_PLATFORM" = "linux-x64" ]; then
+        printf '%s\n' --with-intel-pt
+    else
+        printf '%s\n' --without-intel-pt
+    fi
 }
 
 build_gdb() {
@@ -137,7 +142,10 @@ write_gdb_info() {
         source_highlight=true
         xxhash=true
         babeltrace=true
-        intel_pt=true
+
+        if [ "$HOST_PLATFORM" = "linux-x64" ] && [ "$TARGET_PLATFORM" = "linux-x64" ]; then
+            intel_pt=true
+        fi
     else
         has_tui=false
     fi

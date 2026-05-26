@@ -1,21 +1,18 @@
-name: Build LLVM tool (Windows)
+name: Build leaks wrapper
 
 on:
   workflow_dispatch:
     inputs:
-      tool:
-        description: LLVM tool to build
+      host_arch:
+        description: macOS host architecture
         required: true
         type: choice
         options:
-          - clang
-          - lld
-          - lldb
-          - clangd
-          - clang-format
-          - clang-tidy
+          - x64
+          - arm64
+        default: arm64
       version:
-        description: Tool version, or stable/latest
+        description: Wrapper version, or stable/latest
         required: true
         default: stable
       revision:
@@ -32,58 +29,56 @@ permissions:
   contents: write
 
 jobs:
+  select:
+    runs-on: ubuntu-24.04
+    outputs:
+      runner: ${{ steps.platform.outputs.runner }}
+      platform: ${{ steps.platform.outputs.platform }}
+    steps:
+      - id: platform
+        shell: bash
+        run: |
+          case "${{ inputs.host_arch }}" in
+            x64)
+              echo "runner=macos-15-intel" >> "$GITHUB_OUTPUT"
+              echo "platform=macos-x64" >> "$GITHUB_OUTPUT"
+              ;;
+            arm64)
+              echo "runner=macos-15" >> "$GITHUB_OUTPUT"
+              echo "platform=macos-arm64" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unsupported macOS architecture: ${{ inputs.host_arch }}" >&2
+              exit 1
+              ;;
+          esac
+
   build:
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: msys2 {0}
+    needs: select
+    runs-on: ${{ needs.select.outputs.runner }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Set up MSYS2 CLANG64
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: CLANG64
-          update: true
-          install: >-
-            base-devel
-            git
-            curl
-            tar
-            gzip
-            bzip2
-            xz
-            zip
-            unzip
-            patch
-            python
-            mingw-w64-clang-x86_64-clang
-            mingw-w64-clang-x86_64-lld
-            mingw-w64-clang-x86_64-cmake
-            mingw-w64-clang-x86_64-ninja
-            mingw-w64-clang-x86_64-pkgconf
-            mingw-w64-clang-x86_64-swig
-            mingw-w64-clang-x86_64-python
-            mingw-w64-clang-x86_64-zlib
-            mingw-w64-clang-x86_64-zstd
-            mingw-w64-clang-x86_64-libxml2
-            mingw-w64-clang-x86_64-xz
+      - name: Install bash
+        shell: bash
+        run: brew install bash
 
       - name: Build package
+        shell: bash
         run: |
-          export CUP_BUILD_ENVIRONMENT=msys2-clang64
-          bash scripts/build/build-llvm-tool.sh \
-            "${{ inputs.tool }}" \
+          brew_bash="$(brew --prefix bash)/bin/bash"
+          export CUP_BUILD_ENVIRONMENT=github-macos
+          "$brew_bash" scripts/build/build-leaks-wrapper.sh \
             "${{ inputs.version }}" \
-            windows-x64 \
-            windows-x64 \
+            "${{ needs.select.outputs.platform }}" \
+            "${{ needs.select.outputs.platform }}" \
             "${{ inputs.revision }}"
 
-      - name: Test packaged LLVM tool
-        shell: pwsh
-        run: scripts/test/test-llvm-tool-windows.ps1 -Tool "${{ inputs.tool }}"
+      - name: Test packaged leaks wrapper
+        shell: bash
+        run: bash scripts/test/test-leaks-macos.sh
 
       - name: Load release metadata
         id: release

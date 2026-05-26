@@ -240,6 +240,7 @@ return 0;
 @'
 BasedOnStyle: LLVM
 IndentWidth: 3
+AllowShortFunctionsOnASingleLine: None
 '@ | Set-Content (Join-Path $projectDir '.clang-format')
 @'
 int main(void) {

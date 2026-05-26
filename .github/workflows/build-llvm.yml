@@ -1,4 +1,4 @@
-name: Build LLVM tool (Linux)
+name: Build LLVM tool
 
 on:
   workflow_dispatch:
@@ -18,6 +18,40 @@ on:
         description: Tool version, or stable/latest
         required: true
         default: stable
+      host_os:
+        description: Host OS
+        required: true
+        type: choice
+        options:
+          - linux
+          - windows
+          - macos
+        default: linux
+      host_arch:
+        description: Host architecture
+        required: true
+        type: choice
+        options:
+          - x64
+          - arm64
+        default: x64
+      target_os:
+        description: Target OS
+        required: true
+        type: choice
+        options:
+          - linux
+          - windows
+          - macos
+        default: linux
+      target_arch:
+        description: Target architecture
+        required: true
+        type: choice
+        options:
+          - x64
+          - arm64
+        default: x64
       revision:
         description: Package revision metadata
         required: true
@@ -32,17 +66,59 @@ permissions:
   contents: write
 
 jobs:
+  select:
+    runs-on: ubuntu-24.04
+    outputs:
+      runner: ${{ steps.platform.outputs.runner }}
+      host_platform: ${{ steps.platform.outputs.host_platform }}
+      target_platform: ${{ steps.platform.outputs.target_platform }}
+    steps:
+      - id: platform
+        shell: bash
+        run: |
+          host_platform="${{ inputs.host_os }}-${{ inputs.host_arch }}"
+          target_platform="${{ inputs.target_os }}-${{ inputs.target_arch }}"
+
+          case "$host_platform" in
+            linux-x64) runner="ubuntu-24.04" ;;
+            linux-arm64) runner="ubuntu-24.04-arm" ;;
+            windows-x64) runner="windows-2025" ;;
+            macos-x64) runner="macos-15-intel" ;;
+            macos-arm64) runner="macos-15" ;;
+            *)
+              echo "Unsupported host platform: $host_platform" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ "$host_platform" != "$target_platform" ]; then
+            echo "LLVM tool builds currently support native host==target builds only: $host_platform -> $target_platform" >&2
+            exit 1
+          fi
+
+          if [ "$host_platform" = "windows-arm64" ]; then
+            echo "Windows ARM64 is not enabled for LLVM packages yet" >&2
+            exit 1
+          fi
+
+          echo "runner=$runner" >> "$GITHUB_OUTPUT"
+          echo "host_platform=$host_platform" >> "$GITHUB_OUTPUT"
+          echo "target_platform=$target_platform" >> "$GITHUB_OUTPUT"
+
   build:
-    runs-on: ubuntu-latest
+    needs: select
+    runs-on: ${{ needs.select.outputs.runner }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
       - name: Build Docker image
+        if: ${{ startsWith(needs.select.outputs.host_platform, 'linux-') }}
         run: docker build -f docker/llvm-builder.Dockerfile -t cup-llvm-builder .
 
-      - name: Build package
+      - name: Build package (Linux)
+        if: ${{ startsWith(needs.select.outputs.host_platform, 'linux-') }}
         run: |
           docker run --rm \
             -e CUP_BUILD_ENVIRONMENT=docker-llvm \
@@ -52,17 +128,89 @@ jobs:
             bash scripts/build/build-llvm-tool.sh \
               "${{ inputs.tool }}" \
               "${{ inputs.version }}" \
-              linux-x64 \
-              linux-x64 \
+              "${{ needs.select.outputs.host_platform }}" \
+              "${{ needs.select.outputs.target_platform }}" \
               "${{ inputs.revision }}"
 
-      - name: Test packaged LLVM tool
+      - name: Test packaged LLVM tool (Linux)
+        if: ${{ startsWith(needs.select.outputs.host_platform, 'linux-') }}
         run: |
           docker run --rm \
             -v "$PWD:/workspace" \
             -w /workspace \
             cup-llvm-builder \
             bash scripts/test/test-llvm-tool.sh "${{ inputs.tool }}"
+
+      - name: Set up MSYS2 CLANG64
+        if: ${{ startsWith(needs.select.outputs.host_platform, 'windows-') }}
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: true
+          install: >-
+            base-devel
+            git
+            curl
+            tar
+            gzip
+            bzip2
+            xz
+            zip
+            unzip
+            patch
+            python
+            mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-lld
+            mingw-w64-clang-x86_64-cmake
+            mingw-w64-clang-x86_64-ninja
+            mingw-w64-clang-x86_64-pkgconf
+            mingw-w64-clang-x86_64-swig
+            mingw-w64-clang-x86_64-python
+            mingw-w64-clang-x86_64-zlib
+            mingw-w64-clang-x86_64-zstd
+            mingw-w64-clang-x86_64-libxml2
+            mingw-w64-clang-x86_64-xz
+
+      - name: Build package (Windows)
+        if: ${{ startsWith(needs.select.outputs.host_platform, 'windows-') }}
+        shell: msys2 {0}
+        run: |
+          export CUP_BUILD_ENVIRONMENT=msys2-clang64
+          bash scripts/build/build-llvm-tool.sh \
+            "${{ inputs.tool }}" \
+            "${{ inputs.version }}" \
+            "${{ needs.select.outputs.host_platform }}" \
+            "${{ needs.select.outputs.target_platform }}" \
+            "${{ inputs.revision }}"
+
+      - name: Test packaged LLVM tool (Windows)
+        if: ${{ startsWith(needs.select.outputs.host_platform, 'windows-') }}
+        shell: pwsh
+        run: scripts/test/test-llvm-tool-windows.ps1 -Tool "${{ inputs.tool }}"
+
+      - name: Install build dependencies (macOS)
+        if: ${{ startsWith(needs.select.outputs.host_platform, 'macos-') }}
+        shell: bash
+        run: |
+          brew update
+          brew install bash cmake ninja python swig xz zstd zlib libxml2 ncurses libedit
+
+      - name: Build package (macOS)
+        if: ${{ startsWith(needs.select.outputs.host_platform, 'macos-') }}
+        shell: bash
+        run: |
+          export CUP_BUILD_ENVIRONMENT=github-macos
+          bash scripts/build/build-llvm-tool.sh \
+            "${{ inputs.tool }}" \
+            "${{ inputs.version }}" \
+            "${{ needs.select.outputs.host_platform }}" \
+            "${{ needs.select.outputs.target_platform }}" \
+            "${{ inputs.revision }}"
+
+      - name: Test packaged LLVM tool (macOS)
+        if: ${{ startsWith(needs.select.outputs.host_platform, 'macos-') }}
+        shell: bash
+        run: bash scripts/test/test-llvm-tool.sh "${{ inputs.tool }}"
 
       - name: Load release metadata
         id: release

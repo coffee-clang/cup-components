@@ -99,11 +99,15 @@ C_EOF
         "$root/bin/clang" "$tmp_root/clang-test.c" -o "$tmp_root/clang-test"
         "$tmp_root/clang-test" | grep -F "hello clang 42"
 
-        "$root/bin/clang" -fuse-ld=lld "$tmp_root/clang-test.c" -o "$tmp_root/clang-lld-test"
-        "$tmp_root/clang-lld-test" | grep -F "hello clang 42"
+        if [ "$(uname -s)" = "Darwin" ]; then
+            echo "warning: skipping clang -fuse-ld=lld and LTO link tests on macOS"
+        else
+            "$root/bin/clang" -fuse-ld=lld "$tmp_root/clang-test.c" -o "$tmp_root/clang-lld-test"
+            "$tmp_root/clang-lld-test" | grep -F "hello clang 42"
 
-        "$root/bin/clang" -flto -fuse-ld=lld "$tmp_root/clang-test.c" -o "$tmp_root/clang-lto-test"
-        "$tmp_root/clang-lto-test" | grep -F "hello clang 42"
+            "$root/bin/clang" -flto -fuse-ld=lld "$tmp_root/clang-test.c" -o "$tmp_root/clang-lto-test"
+            "$tmp_root/clang-lto-test" | grep -F "hello clang 42"
+        fi
 
         cat > "$tmp_root/clang-cpp-test.cpp" <<'CPP_EOF'
 #include <iostream>
@@ -136,8 +140,12 @@ int main(void) {
     return 0;
 }
 C_EOF
-        cc -B"$root/bin" -fuse-ld=lld "$tmp_root/lld-test.c" -o "$tmp_root/lld-test"
-        "$tmp_root/lld-test" | grep -F "hello lld"
+        if [ "$(uname -s)" = "Darwin" ]; then
+            echo "warning: skipping direct lld link test on macOS"
+        else
+            cc -B"$root/bin" -fuse-ld=lld "$tmp_root/lld-test.c" -o "$tmp_root/lld-test"
+            "$tmp_root/lld-test" | grep -F "hello lld"
+        fi
         ;;
     lldb)
         require_executable "$root/bin/lldb"
@@ -240,6 +248,7 @@ C_EOF
         cat > "$project_dir/.clang-format" <<'STYLE_EOF'
 BasedOnStyle: LLVM
 IndentWidth: 3
+AllowShortFunctionsOnASingleLine: None
 STYLE_EOF
         cat > "$project_dir/main.c" <<'C_EOF'
 int main(void) {

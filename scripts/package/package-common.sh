@@ -14,8 +14,12 @@ CUP_OUT_DIR="${CUP_OUT_DIR:-$CUP_ROOT/dist}"
 if [ -z "${CUP_JOBS:-}" ]; then
     if [ "${RUNNER_OS:-}" = "Windows" ] && [ -n "${NUMBER_OF_PROCESSORS:-}" ]; then
         CUP_JOBS="$NUMBER_OF_PROCESSORS"
-    else
+    elif command -v nproc >/dev/null 2>&1; then
         CUP_JOBS="$(nproc)"
+    elif command -v sysctl >/dev/null 2>&1; then
+        CUP_JOBS="$(sysctl -n hw.ncpu)"
+    else
+        CUP_JOBS=2
     fi
 fi
 
@@ -25,6 +29,8 @@ DEFAULT_BINUTILS_VERSION="${DEFAULT_BINUTILS_VERSION:-2.46.0}"
 DEFAULT_MINGW_VERSION="${DEFAULT_MINGW_VERSION:-14.0.0}"
 DEFAULT_LLVM_VERSION="${DEFAULT_LLVM_VERSION:-22.1.5}"
 DEFAULT_VALGRIND_VERSION="${DEFAULT_VALGRIND_VERSION:-3.27.0}"
+DEFAULT_DRMEMORY_VERSION="${DEFAULT_DRMEMORY_VERSION:-2.6.0}"
+DEFAULT_LEAKS_VERSION="${DEFAULT_LEAKS_VERSION:-1.0.0}"
 
 log() {
     printf '[cup-build] %s\n' "$*" >&2
@@ -59,6 +65,8 @@ resolve_version() {
         mingw|mingw-w64) printf '%s\n' "$DEFAULT_MINGW_VERSION" ;;
         clang|lld|lldb|clangd|clang-format|clang-tidy|llvm) printf '%s\n' "$DEFAULT_LLVM_VERSION" ;;
         valgrind) printf '%s\n' "$DEFAULT_VALGRIND_VERSION" ;;
+        drmemory) printf '%s\n' "$DEFAULT_DRMEMORY_VERSION" ;;
+        leaks) printf '%s\n' "$DEFAULT_LEAKS_VERSION" ;;
         *) die "cannot resolve default version for tool: $tool" ;;
     esac
 }
@@ -68,7 +76,10 @@ platform_triple() {
 
     case "$platform" in
         linux-x64) printf '%s\n' "x86_64-linux-gnu" ;;
+        linux-arm64) printf '%s\n' "aarch64-linux-gnu" ;;
         windows-x64) printf '%s\n' "x86_64-w64-mingw32" ;;
+        macos-x64) printf '%s\n' "x86_64-apple-darwin" ;;
+        macos-arm64) printf '%s\n' "arm64-apple-darwin" ;;
         *) die "unsupported platform: $platform" ;;
     esac
 }
@@ -77,7 +88,9 @@ platform_family() {
     local platform="$1"
 
     case "$platform" in
-        linux-x64|windows-x64) printf '%s\n' "gnu" ;;
+        linux-x64|linux-arm64) printf '%s\n' "gnu" ;;
+        windows-x64) printf '%s\n' "gnu" ;;
+        macos-x64|macos-arm64) printf '%s\n' "darwin" ;;
         *) die "unsupported platform: $platform" ;;
     esac
 }
@@ -86,8 +99,9 @@ platform_runtime() {
     local platform="$1"
 
     case "$platform" in
-        linux-x64) printf '%s\n' "glibc" ;;
+        linux-x64|linux-arm64) printf '%s\n' "glibc" ;;
         windows-x64) printf '%s\n' "ucrt" ;;
+        macos-x64|macos-arm64) printf '%s\n' "libSystem" ;;
         *) die "unsupported platform: $platform" ;;
     esac
 }
@@ -96,8 +110,7 @@ platform_thread_model() {
     local platform="$1"
 
     case "$platform" in
-        linux-x64) printf '%s\n' "posix" ;;
-        windows-x64) printf '%s\n' "posix" ;;
+        linux-x64|linux-arm64|windows-x64|macos-x64|macos-arm64) printf '%s\n' "posix" ;;
         *) die "unsupported platform: $platform" ;;
     esac
 }
@@ -112,7 +125,31 @@ host_extension() {
 }
 
 is_windows_platform() {
-    [ "$1" = "windows-x64" ]
+    case "$1" in
+        windows-x64) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+is_macos_platform() {
+    case "$1" in
+        macos-x64|macos-arm64) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+is_linux_platform() {
+    case "$1" in
+        linux-x64|linux-arm64) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+is_supported_platform() {
+    case "$1" in
+        linux-x64|linux-arm64|windows-x64|macos-x64|macos-arm64) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 is_cross_build() {
@@ -195,6 +232,12 @@ source_url_valgrind() {
     local version="$1"
     printf 'https://sourceware.org/pub/valgrind/valgrind-%s.tar.bz2\n' "$version"
 }
+
+source_url_drmemory_windows() {
+    local version="$1"
+    printf 'https://github.com/DynamoRIO/drmemory/releases/download/release_%s/DrMemory-Windows-%s.zip\n' "$version" "$version"
+}
+
 
 archive_name_from_url() {
     local url="$1"
@@ -418,25 +461,43 @@ windows_runtime_dll_is_system_path() {
     local path="$1"
     local lower
 
-    lower="$(printf '%s\n' "$path" | tr '[:upper:]' '[:lower:]')"
+    lower="$(printf '%s\n' "$path" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
 
     case "$lower" in
         /c/windows/*|/windows/*|c:/*)
             return 0
             ;;
-        *)
-            return 1
-            ;;
     esac
+
+    if ! printf '%s\n' "$lower" | grep -q '/'; then
+        windows_runtime_dll_name_is_system "$lower"
+        return $?
+    fi
+
+    return 1
 }
 
 windows_runtime_dll_extract_paths() {
     local file="$1"
 
     ldd "$file" 2>/dev/null | while IFS= read -r line; do
-        printf '%s\n' "$line" | sed -n 's/.*=> \([^ ]*\.dll\).*/\1/p'
-        printf '%s\n' "$line" | sed -n 's/^\([^ ]*\.dll\).*/\1/p'
-    done | sed '/^$/d' | sort -u
+        printf '%s\n' "$line" | sed -n 's/.*=>[[:space:]]*\([^[:space:]]*\.dll\).*/\1/p'
+        printf '%s\n' "$line" | sed -n 's/^[[:space:]]*\([^[:space:]]*\.dll\).*/\1/p'
+    done | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed '/^$/d' | sort -u
+}
+
+windows_runtime_dll_name_is_system() {
+    local name
+    name="$(basename "$1" | tr '[:upper:]' '[:lower:]')"
+
+    case "$name" in
+        advapi32.dll|bcryptprimitives.dll|combase.dll|gdi32.dll|gdi32full.dll|kernel32.dll|kernelbase.dll|msvcp_win.dll|msvcrt.dll|ntdll.dll|ole32.dll|rpcrt4.dll|sechost.dll|shell32.dll|ucrtbase.dll|user32.dll|win32u.dll|wintypes.dll|ws2_32.dll|version.dll|oleaut32.dll|shlwapi.dll|comdlg32.dll|crypt32.dll|bcrypt.dll)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 copy_windows_runtime_dlls() {
@@ -678,12 +739,17 @@ verify_windows_runtime_dlls() {
         while IFS= read -r dll_path; do
             [ -n "$dll_path" ] || continue
 
+            dll_name="$(basename "$dll_path")"
+
+            if [ -f "$bin_dir/$dll_name" ]; then
+                continue
+            fi
+
             if windows_runtime_dll_is_system_path "$dll_path"; then
                 continue
             fi
 
             if windows_runtime_dll_allowed_path "$dll_path"; then
-                dll_name="$(basename "$dll_path")"
                 if [ ! -f "$bin_dir/$dll_name" ]; then
                     log "  missing packaged DLL dependency for $(basename "$current"): $dll_name from $dll_path"
                     missing=1

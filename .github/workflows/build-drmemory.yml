@@ -1,10 +1,10 @@
-name: Build GDB (Windows)
+name: Build Dr. Memory
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: GDB version, or stable/latest
+        description: Dr. Memory version, or stable/latest
         required: true
         default: stable
       revision:
@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2025
     defaults:
       run:
         shell: msys2 {0}
@@ -31,10 +31,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Set up MSYS2 UCRT64
+      - name: Set up MSYS2 CLANG64
         uses: msys2/setup-msys2@v2
         with:
-          msystem: UCRT64
+          msystem: CLANG64
           update: true
           install: >-
             base-devel
@@ -46,34 +46,20 @@ jobs:
             xz
             zip
             unzip
-            patch
-            texinfo
-            python
-            mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-binutils
-            mingw-w64-ucrt-x86_64-make
-            mingw-w64-ucrt-x86_64-autotools
-            mingw-w64-ucrt-x86_64-pkgconf
-            mingw-w64-ucrt-x86_64-readline
-            mingw-w64-ucrt-x86_64-expat
-            mingw-w64-ucrt-x86_64-zlib
-            mingw-w64-ucrt-x86_64-ncurses
-            mingw-w64-ucrt-x86_64-xz
-            mingw-w64-ucrt-x86_64-zstd
-            mingw-w64-ucrt-x86_64-python
+            mingw-w64-clang-x86_64-clang
 
       - name: Build package
         run: |
-          export CUP_BUILD_ENVIRONMENT=msys2-ucrt64
-          bash scripts/build/build-gdb.sh \
+          export CUP_BUILD_ENVIRONMENT=msys2-clang64
+          bash scripts/build/build-drmemory.sh \
             "${{ inputs.version }}" \
             windows-x64 \
             windows-x64 \
             "${{ inputs.revision }}"
 
-      - name: Test packaged GDB
+      - name: Test packaged Dr. Memory
         shell: pwsh
-        run: scripts/test/test-gdb-windows.ps1
+        run: scripts/test/test-drmemory-windows.ps1
 
       - name: Load release metadata
         id: release

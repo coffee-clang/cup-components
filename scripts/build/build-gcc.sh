@@ -130,6 +130,12 @@ gcc_feature_configure_args() {
         --enable-libsanitizer
 }
 
+gcc_target_library_flags() {
+    if is_windows_platform "$TARGET_PLATFORM"; then
+        printf '%s\n' "-O2 -fms-extensions"
+    fi
+}
+
 tool_exe_suffix() {
     if [ "$HOST_PLATFORM" = "windows-x64" ]; then
         printf '.exe\n'
@@ -716,6 +722,7 @@ build_gcc_final() {
     local exe_suffix
     local host_cc
     local host_cxx
+    local target_library_flags
 
     log "building final bundled GCC $VERSION for $TARGET_TRIPLE"
 
@@ -738,6 +745,7 @@ build_gcc_final() {
     mapfile -t gcc_target_args < <(gcc_windows_target_configure_args)
     mapfile -t gcc_bootstrap_args < <(gcc_bootstrap_configure_args)
     mapfile -t gcc_feature_args < <(gcc_feature_configure_args)
+    target_library_flags="$(gcc_target_library_flags)"
 
     rm -rf "$build_dir"
     mkdir -p "$build_dir"
@@ -754,6 +762,12 @@ build_gcc_final() {
 
         unset CC_FOR_TARGET
         unset CXX_FOR_TARGET
+
+        if [ -n "$target_library_flags" ]; then
+            log "using target library flags for GCC runtime libraries: $target_library_flags"
+            export CFLAGS_FOR_TARGET="$target_library_flags"
+            export CXXFLAGS_FOR_TARGET="$target_library_flags"
+        fi
 
         export AR_FOR_TARGET="$PREFIX/bin/$TARGET_TRIPLE-ar$exe_suffix"
         export AS_FOR_TARGET="$PREFIX/bin/$TARGET_TRIPLE-as$exe_suffix"
@@ -784,6 +798,7 @@ build_gcc_final() {
 
     create_native_windows_aliases
     copy_windows_runtime_dlls "$PREFIX/bin"
+    verify_windows_runtime_dlls "$PREFIX/bin"
 }
 
 
@@ -922,10 +937,10 @@ write_gcc_info() {
         "config.tool_naming=$tool_naming"
         "config.openmp=attempted"
         "config.sanitizers=attempted"
-        "entry.gcc=bin/gcc"
-        "entry.g++=bin/g++"
-        "entry.cpp=bin/cpp"
-        "entry.gcov=bin/gcov"
+        "entry.gcc=$(package_bin_entry_path "$PREFIX" gcc)"
+        "entry.g++=$(package_bin_entry_path "$PREFIX" g++)"
+        "entry.cpp=$(package_bin_entry_path "$PREFIX" cpp)"
+        "entry.gcov=$(package_bin_entry_path "$PREFIX" gcov)"
         "contents.self_contained=true"
         "contents.libstdcxx=$includes_libstdcxx"
         "contents.lto=$includes_lto"
@@ -961,10 +976,10 @@ write_gcc_info() {
         info+=(
             "config.sysroot=$TARGET_TRIPLE"
             "config.native_system_header_dir=/include"
-            "entry.target_gcc=bin/$TARGET_TRIPLE-gcc"
-            "entry.target_g++=bin/$TARGET_TRIPLE-g++"
-            "entry.target_ar=bin/$TARGET_TRIPLE-ar"
-            "entry.target_ld=bin/$TARGET_TRIPLE-ld"
+            "entry.target_gcc=$(package_bin_entry_path "$PREFIX" $TARGET_TRIPLE-gcc)"
+            "entry.target_g++=$(package_bin_entry_path "$PREFIX" $TARGET_TRIPLE-g++)"
+            "entry.target_ar=$(package_bin_entry_path "$PREFIX" $TARGET_TRIPLE-ar)"
+            "entry.target_ld=$(package_bin_entry_path "$PREFIX" $TARGET_TRIPLE-ld)"
             "features.windows_target=true"
         )
     else

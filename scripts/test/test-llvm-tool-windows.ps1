@@ -230,7 +230,7 @@ return 0;
 }
 '@ | Set-Content $styleSource
         $styleOutput = Invoke-NativeCapture -FilePath "$root\bin\clang-format.exe" -ArgumentList @(
-            '-style={BasedOnStyle: LLVM, IndentWidth: 4}',
+            '-style={BasedOnStyle: LLVM, IndentWidth: 4, AllowShortFunctionsOnASingleLine: None}',
             $styleSource
         )
         Assert-OutputContains -Output $styleOutput -Pattern '    return 0;'

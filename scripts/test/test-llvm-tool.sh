@@ -231,7 +231,7 @@ return 0;
 }
 C_EOF
         "$root/bin/clang-format" \
-            -style="{BasedOnStyle: LLVM, IndentWidth: 4}" \
+            -style="{BasedOnStyle: LLVM, IndentWidth: 4, AllowShortFunctionsOnASingleLine: None}" \
             "$tmp_root/style-test.c" | tee "$tmp_root/style-output.c"
         grep -F "    return 0;" "$tmp_root/style-output.c"
 

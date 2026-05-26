@@ -285,7 +285,10 @@ prefix_executable_exists() {
     local prefix="$1"
     local name="$2"
 
-    [ -x "$prefix/bin/$name" ] || [ -x "$prefix/bin/$name.exe" ]
+    [ -x "$prefix/bin/$name" ] ||
+        [ -x "$prefix/bin/$name.exe" ] ||
+        [ -x "$prefix/bin/$name.bat" ] ||
+        [ -x "$prefix/bin/$name.cmd" ]
 }
 
 prefix_file_exists_any() {
@@ -320,6 +323,21 @@ metadata_bool_for_executable() {
     local prefix="$1"
     local name="$2"
     info_bool prefix_executable_exists "$prefix" "$name"
+}
+
+package_bin_entry_path() {
+    local prefix="$1"
+    local name="$2"
+    local candidate
+
+    for candidate in "$name" "$name.exe" "$name.bat" "$name.cmd"; do
+        if [ -e "$prefix/bin/$candidate" ]; then
+            printf 'bin/%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    printf 'bin/%s\n' "$name"
 }
 
 metadata_bool_for_files() {
@@ -498,6 +516,8 @@ copy_windows_python_runtime() {
     local dst
     local candidate_dir
     local dll
+    local dll_name
+    local required_dlls
     local copied_any=0
 
     if ! is_windows_platform "$HOST_PLATFORM"; then
@@ -510,10 +530,13 @@ copy_windows_python_runtime() {
     fi
 
     if [ -z "$python_executable" ]; then
-        if ! command -v python >/dev/null 2>&1; then
+        if [ -n "${MINGW_PREFIX:-}" ] && [ -x "$MINGW_PREFIX/bin/python.exe" ]; then
+            python_executable="$MINGW_PREFIX/bin/python.exe"
+        elif ! command -v python >/dev/null 2>&1; then
             die "python is required to package Windows Python support"
+        else
+            python_executable="$(command -v python)"
         fi
-        python_executable="$(command -v python)"
     fi
 
     if command -v cygpath >/dev/null 2>&1; then
@@ -524,7 +547,7 @@ copy_windows_python_runtime() {
     fi
 
     if [ ! -x "$python_executable" ]; then
-        die "Python executable used by LLDB was not found: $python_executable"
+        die "Python executable used by LLDB/GDB was not found: $python_executable"
     fi
 
     version="$($python_executable - <<'PYSCRIPT'
@@ -545,6 +568,18 @@ PYSCRIPT
     stdlib="$($python_executable - <<'PYSCRIPT'
 import sysconfig
 print(sysconfig.get_paths().get('stdlib', ''))
+PYSCRIPT
+)"
+    required_dlls="$($python_executable - <<'PYSCRIPT'
+import sys
+names = [
+    f"python{sys.version_info.major}{sys.version_info.minor}.dll",
+    f"python{sys.version_info.major}.dll",
+    "libpython3.dll",
+    f"libpython{sys.version_info.major}.{sys.version_info.minor}.dll",
+]
+for name in dict.fromkeys(names):
+    print(name)
 PYSCRIPT
 )"
 
@@ -575,6 +610,20 @@ PYSCRIPT
         [ -n "$candidate_dir" ] || continue
         [ -d "$candidate_dir" ] || continue
 
+        while IFS= read -r dll_name; do
+            [ -n "$dll_name" ] || continue
+            dll="$candidate_dir/$dll_name"
+            [ -f "$dll" ] || continue
+
+            if [ ! -f "$PREFIX/bin/$(basename "$dll")" ]; then
+                cp -f "$dll" "$PREFIX/bin/$(basename "$dll")"
+                log "  copied: $(basename "$dll")"
+                copied_any=1
+            fi
+        done <<EOF_DLLS
+$required_dlls
+EOF_DLLS
+
         for dll in \
             "$candidate_dir/python$major$minor.dll" \
             "$candidate_dir/python$version.dll" \
@@ -599,6 +648,54 @@ PYSCRIPT
 
     if [ "$copied_any" -eq 0 ]; then
         die "could not locate Python runtime DLLs for Windows package"
+    fi
+}
+
+verify_windows_runtime_dlls() {
+    local bin_dir="$1"
+    local current
+    local dll_path
+    local dll_name
+    local missing=0
+
+    if ! is_windows_platform "$HOST_PLATFORM"; then
+        return 0
+    fi
+
+    if ! command -v ldd >/dev/null 2>&1; then
+        die "ldd is required to verify Windows runtime DLLs"
+    fi
+
+    if [ ! -d "$bin_dir" ]; then
+        return 0
+    fi
+
+    log "verifying Windows runtime DLL closure for $bin_dir"
+
+    while IFS= read -r current; do
+        [ -n "$current" ] || continue
+
+        while IFS= read -r dll_path; do
+            [ -n "$dll_path" ] || continue
+
+            if windows_runtime_dll_is_system_path "$dll_path"; then
+                continue
+            fi
+
+            if windows_runtime_dll_allowed_path "$dll_path"; then
+                dll_name="$(basename "$dll_path")"
+                if [ ! -f "$bin_dir/$dll_name" ]; then
+                    log "  missing packaged DLL dependency for $(basename "$current"): $dll_name from $dll_path"
+                    missing=1
+                fi
+            else
+                log "  external DLL dependency not packaged for $(basename "$current"): $dll_path"
+            fi
+        done < <(windows_runtime_dll_extract_paths "$current")
+    done < <(find "$bin_dir" -maxdepth 1 \( -name '*.exe' -o -name '*.dll' \) -type f | sort)
+
+    if [ "$missing" -ne 0 ]; then
+        die "Windows runtime DLL verification failed"
     fi
 }
 

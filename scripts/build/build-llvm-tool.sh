@@ -194,9 +194,17 @@ build_llvm_tool() {
         )
 
         if [ "$HOST_PLATFORM" = "windows-x64" ]; then
+            if [ -z "${MINGW_PREFIX:-}" ]; then
+                die "MINGW_PREFIX is not set; run this build inside an MSYS2 MinGW/UCRT environment"
+            fi
+
             cmake_extra_args+=(
                 -DLLDB_ENABLE_LIBEDIT=OFF
                 -DLLDB_ENABLE_CURSES=OFF
+                -DPython3_EXECUTABLE="$MINGW_PREFIX/bin/python.exe"
+                -DPython3_ROOT_DIR="$MINGW_PREFIX"
+                -DPython3_FIND_REGISTRY=NEVER
+                -DPython3_FIND_STRATEGY=LOCATION
             )
         else
             cmake_extra_args+=(
@@ -243,6 +251,7 @@ build_llvm_tool() {
     fi
 
     copy_windows_runtime_dlls "$PREFIX/bin"
+    verify_windows_runtime_dlls "$PREFIX/bin"
 }
 
 llvm_exe_suffix() {
@@ -383,9 +392,9 @@ write_llvm_info() {
     case "$TOOL" in
         clang)
             info+=(
-                "entry.clang=bin/clang"
-                "entry.clang++=bin/clang++"
-                "entry.lld=bin/ld.lld"
+                "entry.clang=$(package_bin_entry_path "$PREFIX" clang)"
+                "entry.clang++=$(package_bin_entry_path "$PREFIX" clang++)"
+                "entry.lld=$(package_bin_entry_path "$PREFIX" ld.lld)"
                 "features.c=$has_clang"
                 "features.cpp=$has_clangpp"
                 "features.resource_dir=$has_resource_dir"
@@ -401,9 +410,9 @@ write_llvm_info() {
             ;;
         lld)
             info+=(
-                "entry.ld_lld=bin/ld.lld"
-                "entry.lld_link=bin/lld-link"
-                "entry.wasm_ld=bin/wasm-ld"
+                "entry.ld_lld=$(package_bin_entry_path "$PREFIX" ld.lld)"
+                "entry.lld_link=$(package_bin_entry_path "$PREFIX" lld-link)"
+                "entry.wasm_ld=$(package_bin_entry_path "$PREFIX" wasm-ld)"
                 "features.link_elf=$has_lld"
                 "features.link_coff=$has_lld_link"
                 "features.link_wasm=$has_wasm_ld"
@@ -417,9 +426,9 @@ write_llvm_info() {
                 info+=("contents.python_runtime=system")
             fi
             info+=(
-                "entry.lldb=bin/lldb"
-                "entry.lldb_server=bin/lldb-server"
-                "entry.lldb_dap=bin/lldb-dap"
+                "entry.lldb=$(package_bin_entry_path "$PREFIX" lldb)"
+                "entry.lldb_server=$(package_bin_entry_path "$PREFIX" lldb-server)"
+                "entry.lldb_dap=$(package_bin_entry_path "$PREFIX" lldb-dap)"
                 "config.python=$cmake_python"
                 "config.libxml2=$cmake_libxml2"
                 "config.lzma=$cmake_lzma"
@@ -437,8 +446,8 @@ write_llvm_info() {
             ;;
         clangd)
             info+=(
-                "entry.clangd=bin/clangd"
-                "entry.clangd_indexer=bin/clangd-indexer"
+                "entry.clangd=$(package_bin_entry_path "$PREFIX" clangd)"
+                "entry.clangd_indexer=$(package_bin_entry_path "$PREFIX" clangd-indexer)"
                 "features.check_compile_commands=$has_clangd"
                 "features.background_index=$has_clangd"
                 "features.indexer=$has_clangd_indexer"
@@ -446,8 +455,8 @@ write_llvm_info() {
             ;;
         clang-format)
             info+=(
-                "entry.clang_format=bin/clang-format"
-                "entry.git_clang_format=bin/git-clang-format"
+                "entry.clang_format=$(package_bin_entry_path "$PREFIX" clang-format)"
+                "entry.git_clang_format=$(package_bin_entry_path "$PREFIX" git-clang-format)"
                 "features.format_file=$has_clang_format"
                 "features.style_config=$has_clang_format"
                 "features.dry_run_werror=$has_clang_format"
@@ -456,10 +465,10 @@ write_llvm_info() {
             ;;
         clang-tidy)
             info+=(
-                "entry.clang_tidy=bin/clang-tidy"
-                "entry.clang_apply_replacements=bin/clang-apply-replacements"
-                "entry.run_clang_tidy=bin/run-clang-tidy"
-                "entry.clang_tidy_diff=bin/clang-tidy-diff"
+                "entry.clang_tidy=$(package_bin_entry_path "$PREFIX" clang-tidy)"
+                "entry.clang_apply_replacements=$(package_bin_entry_path "$PREFIX" clang-apply-replacements)"
+                "entry.run_clang_tidy=$(package_bin_entry_path "$PREFIX" run-clang-tidy)"
+                "entry.clang_tidy_diff=$(package_bin_entry_path "$PREFIX" clang-tidy-diff)"
                 "features.list_checks=$has_clang_tidy"
                 "features.analyze_c=$has_clang_tidy"
                 "features.clang_analyzer=$has_clang_tidy"

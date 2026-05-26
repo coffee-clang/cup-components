@@ -17,10 +17,27 @@ function Get-InfoValue {
     return ($line -replace "^$([regex]::Escape($Key))=", '')
 }
 
+function Resolve-PackageExe {
+    param([Parameter(Mandatory = $true)][string] $Name)
+
+    $bin = Join-Path $Root 'bin'
+    $candidates = @($Name)
+
+    if ([IO.Path]::GetExtension($Name) -eq '') {
+        $candidates += @("$Name.exe", "$Name.bat", "$Name.cmd")
+    }
+
+    foreach ($candidate in $candidates) {
+        $path = Join-Path $bin $candidate
+        if (Test-Path $path) { return $path }
+    }
+
+    return ''
+}
+
 function Test-PackageExe {
     param([Parameter(Mandatory = $true)][string] $Name)
-    $path = Join-Path (Join-Path $Root 'bin') $Name
-    return (Test-Path $path)
+    return [bool](Resolve-PackageExe $Name)
 }
 
 function Show-Executable {
@@ -44,8 +61,8 @@ function Show-Version {
         [Parameter(Mandatory = $true)][string] $Name,
         [string[]] $Args = @('--version')
     )
-    $path = Join-Path (Join-Path $Root 'bin') $Name
-    if (Test-Path $path) {
+    $path = Resolve-PackageExe $Name
+    if ($path) {
         Write-Host ""
         Write-Host "[version: $Name]"
         try { & $path @Args 2>&1 | Select-Object -First 8 | ForEach-Object { Write-Host $_ } }
@@ -158,14 +175,14 @@ switch ($Tool) {
     }
     'clang-format' {
         Show-Executable 'clang-format.exe' 'features.format_file'
-        Show-Executable 'git-clang-format.exe' 'features.git_clang_format'
+        Show-Executable 'git-clang-format' 'features.git_clang_format'
         Show-Version 'clang-format.exe'
     }
     'clang-tidy' {
         Show-Executable 'clang-tidy.exe' 'features.analyze_c'
         Show-Executable 'clang-apply-replacements.exe' 'features.apply_replacements'
-        Show-Executable 'run-clang-tidy.exe' 'features.run_clang_tidy'
-        Show-Executable 'clang-tidy-diff.exe' 'features.clang_tidy_diff'
+        Show-Executable 'run-clang-tidy' 'features.run_clang_tidy'
+        Show-Executable 'clang-tidy-diff' 'features.clang_tidy_diff'
         Show-Version 'clang-tidy.exe'
     }
 }

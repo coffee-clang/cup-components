@@ -117,6 +117,7 @@ build_gdb() {
     if is_windows_platform "$HOST_PLATFORM"; then
         copy_windows_python_runtime
         copy_windows_runtime_dlls "$PREFIX/bin"
+        verify_windows_runtime_dlls "$PREFIX/bin"
     fi
 }
 
@@ -175,8 +176,8 @@ write_gdb_info() {
         "config.xxhash=$xxhash"
         "config.babeltrace=$babeltrace"
         "config.intel_pt=$intel_pt"
-        "entry.gdb=bin/gdb"
-        "entry.gdbserver=bin/gdbserver"
+        "entry.gdb=$(package_bin_entry_path "$PREFIX" gdb)"
+        "entry.gdbserver=$(package_bin_entry_path "$PREFIX" gdbserver)"
         "contents.self_contained=true"
         "contents.uses_python=$has_python"
         "contents.uses_readline=true"

@@ -126,8 +126,13 @@ gcc_bootstrap_configure_args() {
 gcc_feature_configure_args() {
     printf '%s\n' \
         --enable-languages=c,c++,lto \
-        --enable-libgomp \
-        --enable-libsanitizer
+        --enable-libgomp
+
+    if is_windows_platform "$TARGET_PLATFORM"; then
+        printf '%s\n' --disable-libsanitizer
+    else
+        printf '%s\n' --enable-libsanitizer
+    fi
 }
 
 gcc_target_library_flags() {

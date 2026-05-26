@@ -1,4 +1,4 @@
-name: Build Valgrind (Linux)
+name: Build Valgrind
 
 on:
   workflow_dispatch:

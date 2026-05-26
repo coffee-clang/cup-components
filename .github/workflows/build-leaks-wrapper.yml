@@ -1,4 +1,4 @@
-name: Build leaks wrapper
+name: Build Leaks
 
 on:
   workflow_dispatch:

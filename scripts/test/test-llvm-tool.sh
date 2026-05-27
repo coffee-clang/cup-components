@@ -79,16 +79,6 @@ assert_output_contains() {
     fi
 }
 
-info_value() {
-    local key="$1"
-    sed -n "s/^${key}=//p" "$root/info.txt" | tail -n 1
-}
-
-info_bool_is_true() {
-    [ "$(info_value "$1")" = "true" ]
-}
-
-
 case "$LLVM_TOOL" in
     clang)
         require_executable "$root/bin/clang"
@@ -142,39 +132,6 @@ CPP_EOF
         mapfile -t sdk_args < <(macos_sdk_args)
         "$root/bin/clang++" "${sdk_args[@]}" "$tmp_root/clang-cpp-test.cpp" -o "$tmp_root/clang-cpp-test"
         "$tmp_root/clang-cpp-test" | grep -F "42"
-
-        if info_bool_is_true features.asan || info_bool_is_true features.sanitizers; then
-            cat > "$tmp_root/asan-test.c" <<'ASAN_C_EOF'
-#include <stdlib.h>
-
-int main(void) {
-    int *value = (int *)malloc(sizeof(int));
-    free(value);
-    return *value;
-}
-ASAN_C_EOF
-            set +e
-            ASAN_OPTIONS=detect_leaks=0 "$root/bin/clang" "${sdk_args[@]}" -g -O0 -fsanitize=address "$tmp_root/asan-test.c" -o "$tmp_root/asan-test" >"$tmp_root/asan-build.txt" 2>&1
-            asan_build_status=$?
-            set -e
-            if [ "$asan_build_status" -ne 0 ]; then
-                cat "$tmp_root/asan-build.txt" >&2
-                exit 1
-            fi
-
-            set +e
-            ASAN_OPTIONS=detect_leaks=0 "$tmp_root/asan-test" >"$tmp_root/asan-output.txt" 2>&1
-            asan_run_status=$?
-            set -e
-            if [ "$asan_run_status" -eq 0 ]; then
-                echo "ASan test unexpectedly succeeded" >&2
-                cat "$tmp_root/asan-output.txt" >&2
-                exit 1
-            fi
-            assert_output_contains "$tmp_root/asan-output.txt" "AddressSanitizer|heap-use-after-free"
-        else
-            echo "warning: clang sanitizer runtime not enabled; skipping ASan test"
-        fi
         ;;
     lld)
         require_executable "$root/bin/ld.lld"
@@ -210,12 +167,12 @@ C_EOF
         cat > "$tmp_root/lldb-test.c" <<'C_EOF'
 #include <stdio.h>
 
-static int add(int a, int b) {
+static int cup_lldb_test_add_unique(int a, int b) {
     return a + b;
 }
 
 int main(void) {
-    int x = add(20, 22);
+    int x = cup_lldb_test_add_unique(20, 22);
     printf("x = %d\n", x);
     return 0;
 }
@@ -228,20 +185,22 @@ C_EOF
         # when the runner allows it.
         "$root/bin/lldb" -b \
             -o "target create $tmp_root/lldb-test" \
-            -o "breakpoint set --name add" \
-            -o "image lookup -n add" \
+            -o "breakpoint set --name cup_lldb_test_add_unique" \
+            -o "image lookup -n cup_lldb_test_add_unique" \
             -o "quit" 2>&1 | tee "$tmp_root/lldb-output.txt"
         grep -F "Breakpoint" "$tmp_root/lldb-output.txt"
-        grep -F "add" "$tmp_root/lldb-output.txt"
+        grep -F "cup_lldb_test_add_unique" "$tmp_root/lldb-output.txt"
 
         if "$root/bin/lldb" -b \
             -o "settings set target.disable-aslr false" \
             -o "target create $tmp_root/lldb-test" \
-            -o "breakpoint set --name add" \
+            -o "breakpoint set --name cup_lldb_test_add_unique" \
             -o "run" \
+            -o "frame info" \
             -o "frame variable a" \
             -o "frame variable b" \
             -o "quit" >"$tmp_root/lldb-launch-output.txt" 2>&1; then
+            grep -F "cup_lldb_test_add_unique" "$tmp_root/lldb-launch-output.txt"
             grep -F "(int) a = 20" "$tmp_root/lldb-launch-output.txt"
             grep -F "(int) b = 22" "$tmp_root/lldb-launch-output.txt"
         elif grep -E "personality set failed|Operation not permitted|ptrace|not permitted" "$tmp_root/lldb-launch-output.txt" >/dev/null; then

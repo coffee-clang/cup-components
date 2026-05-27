@@ -38,7 +38,10 @@ jobs:
           update: true
 
       - name: Install test dependencies (Windows CLANG64)
-        run: scripts/setup/setup-windows-msys2.sh clang64
+        run: |
+          scripts/setup/setup-windows-msys2.sh clang64
+          echo "MSYS2 clang: $(command -v clang || true)"
+          ls -l /clang64/bin/clang.exe || true
 
       - name: Build package
         run: |

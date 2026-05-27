@@ -3,26 +3,12 @@ $ErrorActionPreference = 'Stop'
 function Invoke-NativeCaptureAllowFailure {
     param(
         [Parameter(Mandatory = $true)][string] $FilePath,
-        [string[]] $ArgumentList = @(),
-        [string] $PathOverride = $null
+        [string[]] $ArgumentList = @()
     )
 
     Write-Host "==> $FilePath $($ArgumentList -join ' ')"
-
-    $oldPath = $env:Path
-    if ($PathOverride) {
-        $env:Path = $PathOverride
-    }
-
-    try {
-        $output = & $FilePath @ArgumentList 2>&1
-        $exitCode = $LASTEXITCODE
-    } finally {
-        if ($PathOverride) {
-            $env:Path = $oldPath
-        }
-    }
-
+    $output = & $FilePath @ArgumentList 2>&1
+    $exitCode = $LASTEXITCODE
     $output | ForEach-Object { Write-Host $_ }
     return @{ Output = $output; ExitCode = $exitCode }
 }
@@ -30,11 +16,10 @@ function Invoke-NativeCaptureAllowFailure {
 function Invoke-Native {
     param(
         [Parameter(Mandatory = $true)][string] $FilePath,
-        [string[]] $ArgumentList = @(),
-        [string] $PathOverride = $null
+        [string[]] $ArgumentList = @()
     )
 
-    $result = Invoke-NativeCaptureAllowFailure -FilePath $FilePath -ArgumentList $ArgumentList -PathOverride $PathOverride
+    $result = Invoke-NativeCaptureAllowFailure -FilePath $FilePath -ArgumentList $ArgumentList
     if ($result.ExitCode -ne 0) {
         throw "Command failed with exit code $($result.ExitCode): $FilePath $($ArgumentList -join ' ')"
     }
@@ -53,7 +38,7 @@ function Assert-TextDoesNotContain {
     param([object[]] $Output, [string] $Pattern)
     $text = ($Output | Out-String)
     if ($text -match $Pattern) {
-        throw "Expected output not to match pattern: $Pattern"
+        throw "Unexpected output matched pattern: $Pattern"
     }
 }
 
@@ -80,10 +65,34 @@ function Find-CCompiler {
     return $null
 }
 
-function Build-DrMemoryRuntimePath {
+function Build-TestExecutable {
+    param(
+        [Parameter(Mandatory = $true)][string] $Compiler,
+        [Parameter(Mandatory = $true)][string] $Source,
+        [Parameter(Mandatory = $true)][string] $Exe
+    )
+
+    $compileAttempts = @(
+        @($Source, '-g', '-O0', '-fno-omit-frame-pointer', '-static', '-o', $Exe),
+        @($Source, '-g', '-O0', '-fno-omit-frame-pointer', '-o', $Exe),
+        @($Source, '-O0', '-o', $Exe)
+    )
+
+    foreach ($arguments in $compileAttempts) {
+        Remove-Item -Force $Exe -ErrorAction SilentlyContinue
+        $result = Invoke-NativeCaptureAllowFailure -FilePath $Compiler -ArgumentList $arguments
+        if ($result.ExitCode -eq 0 -and (Test-Path $Exe)) {
+            return
+        }
+    }
+
+    throw 'failed to compile Dr. Memory test executable'
+}
+
+function Get-DrMemoryRuntimePath {
     param([Parameter(Mandatory = $true)][string] $Root)
 
-    $parts = @(
+    $paths = @(
         (Join-Path $Root 'bin'),
         (Join-Path $env:SystemRoot 'System32'),
         $env:SystemRoot,
@@ -91,7 +100,32 @@ function Build-DrMemoryRuntimePath {
         (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0')
     )
 
-    return ($parts | Where-Object { $_ -and (Test-Path $_) }) -join ';'
+    return ($paths | Where-Object { $_ -and (Test-Path $_) }) -join ';'
+}
+
+function Invoke-DrMemory {
+    param(
+        [Parameter(Mandatory = $true)][string] $DrMemory,
+        [Parameter(Mandatory = $true)][string] $Root,
+        [Parameter(Mandatory = $true)][string] $LogDir,
+        [Parameter(Mandatory = $true)][string] $TargetExe
+    )
+
+    Remove-Item -Recurse -Force $LogDir -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force $LogDir | Out-Null
+
+    $originalPath = $env:Path
+    $runtimePath = Get-DrMemoryRuntimePath -Root $Root
+
+    Write-Host '==> Dr. Memory runtime PATH'
+    Write-Host $runtimePath
+
+    $env:Path = $runtimePath
+    try {
+        return Invoke-NativeCaptureAllowFailure -FilePath $DrMemory -ArgumentList @('-batch', '-brief', '-logdir', $LogDir, '--', $TargetExe)
+    } finally {
+        $env:Path = $originalPath
+    }
 }
 
 $releaseEnv = Get-Content dist/release.env
@@ -108,26 +142,28 @@ Get-Content "$root\info.txt"
 $drmemory = Join-Path $root 'bin\drmemory.exe'
 if (-not (Test-Path $drmemory)) { throw "missing drmemory.exe: $drmemory" }
 
-$drmemoryRuntimePath = Build-DrMemoryRuntimePath -Root $root
-
-$versionOutput = Invoke-Native -FilePath $drmemory -ArgumentList @('-version') -PathOverride $drmemoryRuntimePath
+$versionOutput = Invoke-Native -FilePath $drmemory -ArgumentList @('-version')
 Assert-TextContains -Output $versionOutput -Pattern 'Dr\. Memory|Dr\.Memory|DrMemory'
+
+Write-Host '==> dbghelp.dll candidates'
+Get-ChildItem -Recurse $root -Filter dbghelp.dll -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+Get-ChildItem "$env:SystemRoot\System32\dbghelp.dll" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
 
 $testDir = Join-Path $env:TEMP 'cup-drmemory-test'
 Remove-Item -Recurse -Force $testDir -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $testDir | Out-Null
 
-$source = Join-Path $testDir 'leak.c'
-$exe = Join-Path $testDir 'leak.exe'
-$logDir = Join-Path $testDir 'drmemory-logs'
-New-Item -ItemType Directory -Force $logDir | Out-Null
-
+$source = Join-Path $testDir 'clean.c'
+$exe = Join-Path $testDir 'clean.exe'
 @'
 #include <stdlib.h>
 
 int main(void) {
     void *p = malloc(64);
-    (void)p;
+    if (p == NULL) {
+        return 1;
+    }
+    free(p);
     return 0;
 }
 '@ | Set-Content $source
@@ -138,15 +174,23 @@ if (-not $compiler) {
 }
 
 Write-Host "==> using C compiler: $compiler"
-& $compiler $source -g -O0 -o $exe
+Build-TestExecutable -Compiler $compiler -Source $source -Exe $exe
 
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exe)) {
-    throw 'failed to compile Dr. Memory leak test executable'
+$normalRun = Invoke-NativeCaptureAllowFailure -FilePath $exe
+if ($normalRun.ExitCode -ne 0) {
+    throw "test executable failed without Dr. Memory, exit code $($normalRun.ExitCode)"
 }
 
-$result = Invoke-NativeCaptureAllowFailure -FilePath $drmemory -ArgumentList @('-batch', '-brief', '-logdir', $logDir, '--', $exe) -PathOverride $drmemoryRuntimePath
+$logDir = Join-Path $testDir 'drmemory-clean-logs'
+$result = Invoke-DrMemory -DrMemory $drmemory -Root $root -LogDir $logDir -TargetExe $exe
+
 Assert-TextContains -Output $result.Output -Pattern 'Dr\. Memory|Dr\.Memory|DrMemory'
-Assert-TextDoesNotContain -Output $result.Output -Pattern 'Unable to load client library|library initializer failed|Could not create result file|Unable to locate results file'
-Assert-TextContains -Output $result.Output -Pattern 'leak|ERRORS FOUND|ERRORS IGNORED|NO ERRORS FOUND'
+Assert-TextDoesNotContain -Output $result.Output -Pattern 'Unable to load client library|library initializer failed|Could not create result file|Unable to locate results file|failed to start the target application'
+
+if ($result.ExitCode -ne 0) {
+    throw "Dr. Memory clean functional test failed with exit code $($result.ExitCode)"
+}
+
+Assert-TextContains -Output $result.Output -Pattern 'NO ERRORS FOUND|ERRORS IGNORED|ERRORS FOUND'
 
 Write-Host 'OK: Dr. Memory package test completed'

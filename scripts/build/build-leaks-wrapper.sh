@@ -95,7 +95,7 @@ write_leaks_info() {
         "source.primary.name=macos-leaks"
         "source.primary.version=system"
         "source.primary.path=/usr/bin/leaks"
-        "entry.leaks=bin/leaks"
+        "$(info_required_entry entry.leaks "$PREFIX" leaks)"
         "contents.self_contained=false"
         "contents.system_tool=true"
         "contents.wrapper=true"

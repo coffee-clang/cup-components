@@ -314,6 +314,13 @@ build_llvm_tool() {
         cmake_extra_args+=(
             -DLLVM_ENABLE_RUNTIMES="$LLVM_RUNTIMES"
         )
+
+        if is_windows_platform "$HOST_PLATFORM"; then
+            cmake_extra_args+=(
+                -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON
+                -DCOMPILER_RT_DEFAULT_TARGET_TRIPLE="$TARGET_TRIPLE"
+            )
+        fi
     fi
 
     cmake -S "$source_dir/llvm" -B "$build_dir" -G Ninja \
@@ -328,7 +335,7 @@ build_llvm_tool() {
 
     log "selected LLVM CMake cache entries:"
     if [ -f "$build_dir/CMakeCache.txt" ]; then
-        grep -E '^(LLVM_ENABLE_PROJECTS|LLVM_ENABLE_RUNTIMES|LLVM_TARGETS_TO_BUILD|LLVM_ENABLE_ZLIB|LLVM_ENABLE_ZSTD|LLVM_ENABLE_LIBXML2|LLDB_ENABLE_PYTHON|LLDB_ENABLE_LIBXML2|LLDB_ENABLE_LZMA|LLDB_ENABLE_LIBEDIT|LLDB_ENABLE_CURSES|Python3_EXECUTABLE|Python3_LIBRARY|Python3_INCLUDE_DIR|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER):' "$build_dir/CMakeCache.txt" || true
+        grep -E '^(LLVM_ENABLE_PROJECTS|LLVM_ENABLE_RUNTIMES|LLVM_TARGETS_TO_BUILD|LLVM_ENABLE_ZLIB|LLVM_ENABLE_ZSTD|LLVM_ENABLE_LIBXML2|LLDB_ENABLE_PYTHON|LLDB_ENABLE_LIBXML2|LLDB_ENABLE_LZMA|LLDB_ENABLE_LIBEDIT|LLDB_ENABLE_CURSES|Python3_EXECUTABLE|Python3_LIBRARY|Python3_INCLUDE_DIR|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|COMPILER_RT_DEFAULT_TARGET_ONLY|COMPILER_RT_DEFAULT_TARGET_TRIPLE):' "$build_dir/CMakeCache.txt" || true
     fi
 
     cmake --build "$build_dir" --parallel "$CUP_JOBS"
@@ -494,9 +501,9 @@ write_llvm_info() {
     case "$TOOL" in
         clang)
             info+=(
-                "entry.clang=$(package_bin_entry_path "$PREFIX" clang)"
-                "entry.clang++=$(package_bin_entry_path "$PREFIX" clang++)"
-                "entry.lld=$(package_bin_entry_path "$PREFIX" ld.lld)"
+                "$(info_required_entry entry.clang "$PREFIX" clang)"
+                "$(info_required_entry entry.clang++ "$PREFIX" clang++)"
+                "$(info_entry_if_present entry.lld "$PREFIX" ld.lld)"
                 "features.c=$has_clang"
                 "features.cpp=$has_clangpp"
                 "features.resource_dir=$has_resource_dir"
@@ -520,9 +527,9 @@ write_llvm_info() {
             ;;
         lld)
             info+=(
-                "entry.ld_lld=$(package_bin_entry_path "$PREFIX" ld.lld)"
-                "entry.lld_link=$(package_bin_entry_path "$PREFIX" lld-link)"
-                "entry.wasm_ld=$(package_bin_entry_path "$PREFIX" wasm-ld)"
+                "$(info_required_entry entry.ld_lld "$PREFIX" ld.lld)"
+                "$(info_entry_if_present entry.lld_link "$PREFIX" lld-link)"
+                "$(info_entry_if_present entry.wasm_ld "$PREFIX" wasm-ld)"
                 "features.link_elf=$has_lld"
                 "features.link_coff=$has_lld_link"
                 "features.link_wasm=$has_wasm_ld"
@@ -536,9 +543,9 @@ write_llvm_info() {
                 info+=("contents.python_runtime=system")
             fi
             info+=(
-                "entry.lldb=$(package_bin_entry_path "$PREFIX" lldb)"
-                "entry.lldb_server=$(package_bin_entry_path "$PREFIX" lldb-server)"
-                "entry.lldb_dap=$(package_bin_entry_path "$PREFIX" lldb-dap)"
+                "$(info_required_entry entry.lldb "$PREFIX" lldb)"
+                "$(info_entry_if_present entry.lldb_server "$PREFIX" lldb-server)"
+                "$(info_entry_if_present entry.lldb_dap "$PREFIX" lldb-dap)"
                 "config.python=$cmake_python"
                 "config.libxml2=$cmake_libxml2"
                 "config.lzma=$cmake_lzma"
@@ -556,8 +563,8 @@ write_llvm_info() {
             ;;
         clangd)
             info+=(
-                "entry.clangd=$(package_bin_entry_path "$PREFIX" clangd)"
-                "entry.clangd_indexer=$(package_bin_entry_path "$PREFIX" clangd-indexer)"
+                "$(info_required_entry entry.clangd "$PREFIX" clangd)"
+                "$(info_entry_if_present entry.clangd_indexer "$PREFIX" clangd-indexer)"
                 "features.check_compile_commands=$has_clangd"
                 "features.background_index=$has_clangd"
                 "features.indexer=$has_clangd_indexer"
@@ -565,8 +572,8 @@ write_llvm_info() {
             ;;
         clang-format)
             info+=(
-                "entry.clang_format=$(package_bin_entry_path "$PREFIX" clang-format)"
-                "entry.git_clang_format=$(package_bin_entry_path "$PREFIX" git-clang-format)"
+                "$(info_required_entry entry.clang_format "$PREFIX" clang-format)"
+                "$(info_entry_if_present entry.git_clang_format "$PREFIX" git-clang-format)"
                 "features.format_file=$has_clang_format"
                 "features.style_config=$has_clang_format"
                 "features.dry_run_werror=$has_clang_format"
@@ -575,10 +582,10 @@ write_llvm_info() {
             ;;
         clang-tidy)
             info+=(
-                "entry.clang_tidy=$(package_bin_entry_path "$PREFIX" clang-tidy)"
-                "entry.clang_apply_replacements=$(package_bin_entry_path "$PREFIX" clang-apply-replacements)"
-                "entry.run_clang_tidy=$(package_bin_entry_path "$PREFIX" run-clang-tidy)"
-                "entry.clang_tidy_diff=$(package_bin_entry_path "$PREFIX" clang-tidy-diff)"
+                "$(info_required_entry entry.clang_tidy "$PREFIX" clang-tidy)"
+                "$(info_entry_if_present entry.clang_apply_replacements "$PREFIX" clang-apply-replacements)"
+                "$(info_entry_if_present entry.run_clang_tidy "$PREFIX" run-clang-tidy)"
+                "$(info_entry_if_present entry.clang_tidy_diff "$PREFIX" clang-tidy-diff)"
                 "features.list_checks=$has_clang_tidy"
                 "features.analyze_c=$has_clang_tidy"
                 "features.clang_analyzer=$has_clang_tidy"

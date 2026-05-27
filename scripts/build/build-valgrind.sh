@@ -226,7 +226,7 @@ write_valgrind_info() {
         "config.configure=--enable-only64bit"
         "config.only64bit=true"
         "config.mpi=auto"
-        "entry.valgrind=bin/valgrind"
+        "$(info_required_entry entry.valgrind "$PREFIX" valgrind)"
         "contents.self_contained=true"
         "contents.relocatable_wrapper=true"
         "contents.runtime_dir=${runtime_dir#$PREFIX/}"

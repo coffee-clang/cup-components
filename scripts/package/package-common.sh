@@ -312,6 +312,7 @@ write_info_file() {
 
     local line
     for line in "$@"; do
+        [ -n "$line" ] || continue
         printf '%s\n' "$line" >> "$prefix/info.txt"
     done
 }
@@ -382,6 +383,52 @@ package_bin_entry_path() {
 
     printf 'bin/%s\n' "$name"
 }
+
+package_bin_entry_path_if_present() {
+    local prefix="$1"
+    local name="$2"
+    local candidate
+
+    for candidate in "$name" "$name.exe" "$name.bat" "$name.cmd"; do
+        if [ -e "$prefix/bin/$candidate" ]; then
+            printf 'bin/%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+package_required_bin_entry_path() {
+    local prefix="$1"
+    local name="$2"
+
+    if package_bin_entry_path_if_present "$prefix" "$name"; then
+        return 0
+    fi
+
+    die "required package entry was not found in bin: $name"
+}
+
+info_entry_if_present() {
+    local key="$1"
+    local prefix="$2"
+    local name="$3"
+    local path
+
+    if path="$(package_bin_entry_path_if_present "$prefix" "$name")"; then
+        printf '%s=%s\n' "$key" "$path"
+    fi
+}
+
+info_required_entry() {
+    local key="$1"
+    local prefix="$2"
+    local name="$3"
+
+    printf '%s=%s\n' "$key" "$(package_required_bin_entry_path "$prefix" "$name")"
+}
+
 
 metadata_bool_for_files() {
     local prefix="$1"
@@ -473,7 +520,7 @@ windows_runtime_dll_name_is_system() {
         api-ms-win-*.dll|ext-ms-win-*.dll)
             return 0
             ;;
-        advapi32.dll|bcryptprimitives.dll|combase.dll|comdlg32.dll|crypt32.dll|gdi32.dll|gdi32full.dll|kernel32.dll|kernelbase.dll|msvcp_win.dll|msvcrt.dll|ntdll.dll|ole32.dll|oleaut32.dll|rpcrt4.dll|sechost.dll|shell32.dll|shlwapi.dll|ucrtbase.dll|user32.dll|version.dll|win32u.dll|wintypes.dll|ws2_32.dll|bcrypt.dll)
+        advapi32.dll|bcryptprimitives.dll|combase.dll|comdlg32.dll|crypt32.dll|dbghelp.dll|gdi32.dll|gdi32full.dll|kernel32.dll|kernelbase.dll|msvcp_win.dll|msvcrt.dll|ntdll.dll|ole32.dll|oleaut32.dll|psapi.dll|rpcrt4.dll|sechost.dll|shell32.dll|shlwapi.dll|ucrtbase.dll|user32.dll|version.dll|win32u.dll|wintypes.dll|ws2_32.dll|bcrypt.dll)
             return 0
             ;;
         vcruntime*.dll|msvcp*.dll|concrt*.dll)

@@ -51,9 +51,7 @@ jobs:
 
       - name: Test packaged Dr. Memory
         shell: pwsh
-        run: |
-          $env:Path = "C:\msys64\clang64\bin;C:\msys64\usr\bin;$env:Path"
-          scripts/test/test-drmemory-windows.ps1
+        run: scripts/test/test-drmemory-windows.ps1
 
       - name: Load release metadata
         id: release

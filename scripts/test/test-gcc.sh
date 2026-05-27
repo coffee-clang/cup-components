@@ -78,12 +78,7 @@ log_optional_feature() {
 
 bash scripts/test/package-capabilities.sh "$root" gcc
 
-if [ "$HOST_PLATFORM" != "linux-x64" ]; then
-    echo "unsupported host platform for this test script: $HOST_PLATFORM" >&2
-    exit 2
-fi
-
-if [ "$TARGET_PLATFORM" = "linux-x64" ]; then
+if [ "$HOST_PLATFORM" = "$TARGET_PLATFORM" ] && [ "${HOST_PLATFORM#linux-}" != "$HOST_PLATFORM" ]; then
     export PATH="$root/bin:$PATH"
 
     require_executable "$root/bin/gcc"

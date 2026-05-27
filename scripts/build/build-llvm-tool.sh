@@ -118,6 +118,19 @@ llvm_target_feature_bool() {
 
 LLVM_TARGETS="$(llvm_targets_to_build)"
 
+llvm_runtimes_for_tool() {
+    case "$TOOL" in
+        clang)
+            printf '%s\n' "compiler-rt"
+            ;;
+        *)
+            printf '%s\n' ""
+            ;;
+    esac
+}
+
+LLVM_RUNTIMES="$(llvm_runtimes_for_tool)"
+
 PREFIX="$CUP_STAGE_DIR/$(package_base_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
 
 need_common_tools() {
@@ -157,6 +170,14 @@ prune_bin_except() {
 
         base="$(basename "$entry")"
 
+        if is_windows_platform "$HOST_PLATFORM"; then
+            case "$base" in
+                *.dll)
+                    continue
+                    ;;
+            esac
+        fi
+
         if is_kept_bin_tool "$base" "${keep_tools[@]}"; then
             if [ -L "$entry" ]; then
                 local tmp
@@ -172,6 +193,33 @@ prune_bin_except() {
             rm -f "$entry"
         fi
     done
+}
+
+copy_clang_sanitizer_runtime_dlls() {
+    local dll
+    local bin_dir="$PREFIX/bin"
+
+    if ! is_windows_platform "$HOST_PLATFORM" || [ "$TOOL" != "clang" ]; then
+        return 0
+    fi
+
+    [ -d "$PREFIX" ] || return 0
+    mkdir -p "$bin_dir"
+
+    log "copying Clang sanitizer runtime DLLs to bin"
+
+    while IFS= read -r dll; do
+        [ -n "$dll" ] || continue
+        [ -f "$dll" ] || continue
+
+        if [ ! -f "$bin_dir/$(basename "$dll")" ]; then
+            cp -f "$dll" "$bin_dir/$(basename "$dll")"
+            log "  copied sanitizer runtime: $(basename "$dll")"
+        fi
+    done < <(find "$PREFIX" -type f \
+        \( -name 'clang_rt.asan*.dll' -o \
+           -name 'clang_rt.ubsan*.dll' -o \
+           -name 'clang_rt.profile*.dll' \) | sort)
 }
 
 prune_llvm_package_bins() {
@@ -262,6 +310,12 @@ build_llvm_tool() {
         )
     fi
 
+    if [ -n "$LLVM_RUNTIMES" ]; then
+        cmake_extra_args+=(
+            -DLLVM_ENABLE_RUNTIMES="$LLVM_RUNTIMES"
+        )
+    fi
+
     cmake -S "$source_dir/llvm" -B "$build_dir" -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX="$PREFIX" \
@@ -274,7 +328,7 @@ build_llvm_tool() {
 
     log "selected LLVM CMake cache entries:"
     if [ -f "$build_dir/CMakeCache.txt" ]; then
-        grep -E '^(LLVM_ENABLE_PROJECTS|LLVM_TARGETS_TO_BUILD|LLVM_ENABLE_ZLIB|LLVM_ENABLE_ZSTD|LLVM_ENABLE_LIBXML2|LLDB_ENABLE_PYTHON|LLDB_ENABLE_LIBXML2|LLDB_ENABLE_LZMA|LLDB_ENABLE_LIBEDIT|LLDB_ENABLE_CURSES|Python3_EXECUTABLE|Python3_LIBRARY|Python3_INCLUDE_DIR|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER):' "$build_dir/CMakeCache.txt" || true
+        grep -E '^(LLVM_ENABLE_PROJECTS|LLVM_ENABLE_RUNTIMES|LLVM_TARGETS_TO_BUILD|LLVM_ENABLE_ZLIB|LLVM_ENABLE_ZSTD|LLVM_ENABLE_LIBXML2|LLDB_ENABLE_PYTHON|LLDB_ENABLE_LIBXML2|LLDB_ENABLE_LZMA|LLDB_ENABLE_LIBEDIT|LLDB_ENABLE_CURSES|Python3_EXECUTABLE|Python3_LIBRARY|Python3_INCLUDE_DIR|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER):' "$build_dir/CMakeCache.txt" || true
     fi
 
     cmake --build "$build_dir" --parallel "$CUP_JOBS"
@@ -286,6 +340,7 @@ build_llvm_tool() {
         copy_windows_python_runtime "$build_dir"
     fi
 
+    copy_clang_sanitizer_runtime_dlls
     copy_windows_runtime_dlls "$PREFIX/bin"
     verify_windows_runtime_dlls "$PREFIX/bin"
 }
@@ -369,6 +424,9 @@ write_llvm_info() {
     local cmake_zstd
     local has_target_x86
     local has_target_aarch64
+    local has_compiler_rt
+    local has_asan
+    local has_ubsan
 
     has_clang="$(metadata_bool_for_executable "$PREFIX" clang)"
     has_clangpp="$(metadata_bool_for_executable "$PREFIX" clang++)"
@@ -398,6 +456,9 @@ write_llvm_info() {
     cmake_zstd="$(cmake_cache_bool "${LLVM_BUILD_DIR:-}" LLVM_ENABLE_ZSTD)"
     has_target_x86="$(llvm_target_feature_bool X86)"
     has_target_aarch64="$(llvm_target_feature_bool AArch64)"
+    has_compiler_rt="$(metadata_bool_for_files "$PREFIX" 'clang_rt.*' 'libclang_rt.*')"
+    has_asan="$(metadata_bool_for_files "$PREFIX" 'clang_rt.asan*' 'libclang_rt.asan*')"
+    has_ubsan="$(metadata_bool_for_files "$PREFIX" 'clang_rt.ubsan*' 'libclang_rt.ubsan*')"
 
     local info=(
         "package.component=$COMPONENT"
@@ -420,6 +481,7 @@ write_llvm_info() {
         "source.primary.url=$SOURCE_URL"
         "config.llvm_projects=$LLVM_PROJECTS"
         "config.llvm_targets=$LLVM_TARGETS"
+        "config.llvm_runtimes=$LLVM_RUNTIMES"
         "config.zlib=$cmake_zlib"
         "config.zstd=$cmake_zstd"
         "contents.self_contained=true"
@@ -450,6 +512,10 @@ write_llvm_info() {
                 "features.target_windows_x64=$( [ "$TARGET_PLATFORM" = "windows-x64" ] && printf true || printf false )"
                 "features.target_macos_x64=$( [ "$TARGET_PLATFORM" = "macos-x64" ] && printf true || printf false )"
                 "features.target_macos_arm64=$( [ "$TARGET_PLATFORM" = "macos-arm64" ] && printf true || printf false )"
+                "contents.compiler_rt=$has_compiler_rt"
+                "features.sanitizers=$has_compiler_rt"
+                "features.asan=$has_asan"
+                "features.ubsan=$has_ubsan"
             )
             ;;
         lld)

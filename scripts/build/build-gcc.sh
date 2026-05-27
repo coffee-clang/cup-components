@@ -242,6 +242,40 @@ create_native_windows_aliases() {
     done
 }
 
+ensure_prefixed_gcc_tools() {
+    local tool
+    local exe_suffix
+    local plain
+    local prefixed
+
+    if [ "$HOST_PLATFORM" != "windows-x64" ] || [ "$TARGET_PLATFORM" != "windows-x64" ]; then
+        return 0
+    fi
+
+    exe_suffix="$(tool_exe_suffix)"
+
+    log "ensuring native Windows target-prefixed GCC tool names"
+
+    for tool in gcc g++ c++ cpp gcov gcov-dump gcov-tool lto-dump; do
+        plain="$PREFIX/bin/$tool$exe_suffix"
+        prefixed="$PREFIX/bin/$TARGET_TRIPLE-$tool$exe_suffix"
+
+        if [ -x "$prefixed" ]; then
+            log "  existing: $prefixed"
+            continue
+        fi
+
+        if [ ! -x "$plain" ]; then
+            log "  missing plain tool for prefixed alias: $plain"
+            continue
+        fi
+
+        cp -f "$plain" "$prefixed"
+        chmod +x "$prefixed"
+        log "  created: $prefixed from $plain"
+    done
+}
+
 host_c_compiler() {
     if [ "$HOST_PLATFORM" = "windows-x64" ]; then
         if [ -z "${MINGW_PREFIX:-}" ]; then
@@ -788,6 +822,7 @@ build_gcc_final() {
     )
 
     create_native_windows_aliases
+    ensure_prefixed_gcc_tools
     copy_windows_runtime_dlls "$PREFIX/bin"
     verify_windows_runtime_dlls "$PREFIX/bin"
 }
@@ -881,7 +916,7 @@ write_gcc_info() {
     has_sysroot="$(metadata_bool_for_dirs "$PREFIX" "$TARGET_TRIPLE")"
     has_target_prefix="$(metadata_bool_for_executable "$PREFIX" "$TARGET_TRIPLE-gcc")"
 
-    if [ "$TARGET_PLATFORM" = "linux-x64" ]; then
+    if is_linux_platform "$TARGET_PLATFORM"; then
         has_pthread="true"
     else
         has_pthread="$(metadata_bool_for_files "$PREFIX" 'libwinpthread*' 'pthread.h')"
@@ -898,7 +933,7 @@ write_gcc_info() {
         else
             tool_naming="native-and-target-prefixed"
         fi
-    elif [ "$HOST_PLATFORM" = "linux-x64" ] && [ "$TARGET_PLATFORM" = "linux-x64" ]; then
+    elif [ "$HOST_PLATFORM" = "$TARGET_PLATFORM" ] && is_linux_platform "$TARGET_PLATFORM"; then
         bundle_components="binutils"
         includes_binutils="true"
     fi

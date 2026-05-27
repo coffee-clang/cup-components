@@ -79,6 +79,16 @@ assert_output_contains() {
     fi
 }
 
+info_value() {
+    local key="$1"
+    sed -n "s/^${key}=//p" "$root/info.txt" | tail -n 1
+}
+
+info_bool_is_true() {
+    [ "$(info_value "$1")" = "true" ]
+}
+
+
 case "$LLVM_TOOL" in
     clang)
         require_executable "$root/bin/clang"
@@ -132,6 +142,39 @@ CPP_EOF
         mapfile -t sdk_args < <(macos_sdk_args)
         "$root/bin/clang++" "${sdk_args[@]}" "$tmp_root/clang-cpp-test.cpp" -o "$tmp_root/clang-cpp-test"
         "$tmp_root/clang-cpp-test" | grep -F "42"
+
+        if info_bool_is_true features.asan || info_bool_is_true features.sanitizers; then
+            cat > "$tmp_root/asan-test.c" <<'ASAN_C_EOF'
+#include <stdlib.h>
+
+int main(void) {
+    int *value = (int *)malloc(sizeof(int));
+    free(value);
+    return *value;
+}
+ASAN_C_EOF
+            set +e
+            ASAN_OPTIONS=detect_leaks=0 "$root/bin/clang" "${sdk_args[@]}" -g -O0 -fsanitize=address "$tmp_root/asan-test.c" -o "$tmp_root/asan-test" >"$tmp_root/asan-build.txt" 2>&1
+            asan_build_status=$?
+            set -e
+            if [ "$asan_build_status" -ne 0 ]; then
+                cat "$tmp_root/asan-build.txt" >&2
+                exit 1
+            fi
+
+            set +e
+            ASAN_OPTIONS=detect_leaks=0 "$tmp_root/asan-test" >"$tmp_root/asan-output.txt" 2>&1
+            asan_run_status=$?
+            set -e
+            if [ "$asan_run_status" -eq 0 ]; then
+                echo "ASan test unexpectedly succeeded" >&2
+                cat "$tmp_root/asan-output.txt" >&2
+                exit 1
+            fi
+            assert_output_contains "$tmp_root/asan-output.txt" "AddressSanitizer|heap-use-after-free"
+        else
+            echo "warning: clang sanitizer runtime not enabled; skipping ASan test"
+        fi
         ;;
     lld)
         require_executable "$root/bin/ld.lld"

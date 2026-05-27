@@ -447,8 +447,36 @@ package_formats_csv() {
 windows_runtime_dll_allowed_path() {
     local path="$1"
 
+    if [ -n "${PREFIX:-}" ]; then
+        case "$path" in
+            "$PREFIX"/bin/*.dll)
+                return 0
+                ;;
+        esac
+    fi
+
     case "$path" in
-        /ucrt64/bin/*.dll|/mingw64/bin/*.dll|/mingw32/bin/*.dll|/clang64/bin/*.dll|/clangarm64/bin/*.dll)
+        /ucrt64/bin/*.dll|/mingw64/bin/*.dll|/mingw32/bin/*.dll|/clang64/bin/*.dll|/clangarm64/bin/*.dll|/usr/bin/*.dll)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+windows_runtime_dll_name_is_system() {
+    local name
+    name="$(basename "$1" | tr '[:upper:]' '[:lower:]')"
+
+    case "$name" in
+        api-ms-win-*.dll|ext-ms-win-*.dll)
+            return 0
+            ;;
+        advapi32.dll|bcryptprimitives.dll|combase.dll|comdlg32.dll|crypt32.dll|gdi32.dll|gdi32full.dll|kernel32.dll|kernelbase.dll|msvcp_win.dll|msvcrt.dll|ntdll.dll|ole32.dll|oleaut32.dll|rpcrt4.dll|sechost.dll|shell32.dll|shlwapi.dll|ucrtbase.dll|user32.dll|version.dll|win32u.dll|wintypes.dll|ws2_32.dll|bcrypt.dll)
+            return 0
+            ;;
+        vcruntime*.dll|msvcp*.dll|concrt*.dll)
             return 0
             ;;
         *)
@@ -477,6 +505,18 @@ windows_runtime_dll_is_system_path() {
     return 1
 }
 
+windows_runtime_dll_search_dirs() {
+    local bin_dir="${1:-}"
+
+    [ -n "$bin_dir" ] && printf '%s\n' "$bin_dir"
+    [ -n "${PREFIX:-}" ] && [ -d "$PREFIX/bin" ] && printf '%s\n' "$PREFIX/bin"
+    [ -n "${MINGW_PREFIX:-}" ] && [ -d "$MINGW_PREFIX/bin" ] && printf '%s\n' "$MINGW_PREFIX/bin"
+
+    for dir in /clang64/bin /ucrt64/bin /mingw64/bin /mingw32/bin /clangarm64/bin /usr/bin; do
+        [ -d "$dir" ] && printf '%s\n' "$dir"
+    done
+}
+
 windows_runtime_dll_extract_paths() {
     local file="$1"
 
@@ -486,18 +526,42 @@ windows_runtime_dll_extract_paths() {
     done | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed '/^$/d' | sort -u
 }
 
-windows_runtime_dll_name_is_system() {
-    local name
-    name="$(basename "$1" | tr '[:upper:]' '[:lower:]')"
+windows_pe_import_dll_names() {
+    local file="$1"
+    local objdump_cmd=""
 
-    case "$name" in
-        advapi32.dll|bcryptprimitives.dll|combase.dll|gdi32.dll|gdi32full.dll|kernel32.dll|kernelbase.dll|msvcp_win.dll|msvcrt.dll|ntdll.dll|ole32.dll|rpcrt4.dll|sechost.dll|shell32.dll|ucrtbase.dll|user32.dll|win32u.dll|wintypes.dll|ws2_32.dll|version.dll|oleaut32.dll|shlwapi.dll|comdlg32.dll|crypt32.dll|bcrypt.dll)
+    if command -v llvm-objdump >/dev/null 2>&1; then
+        objdump_cmd="llvm-objdump"
+    elif command -v objdump >/dev/null 2>&1; then
+        objdump_cmd="objdump"
+    else
+        return 0
+    fi
+
+    "$objdump_cmd" -p "$file" 2>/dev/null | \
+        sed -n 's/^[[:space:]]*DLL Name:[[:space:]]*//p' | \
+        sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
+        sed '/^$/d' | sort -u
+}
+
+find_windows_runtime_dll_by_name() {
+    local dll_name="$1"
+    local bin_dir="${2:-}"
+    local dir
+    local candidate
+
+    [ -n "$dll_name" ] || return 0
+
+    while IFS= read -r dir; do
+        [ -n "$dir" ] || continue
+        candidate="$dir/$dll_name"
+        if [ -f "$candidate" ]; then
+            printf '%s\n' "$candidate"
             return 0
-            ;;
-        *)
-            return 1
-            ;;
-    esac
+        fi
+    done < <(windows_runtime_dll_search_dirs "$bin_dir")
+
+    return 0
 }
 
 copy_windows_runtime_dlls() {
@@ -520,7 +584,7 @@ copy_windows_runtime_dlls() {
         return 0
     fi
 
-    log "copying Windows runtime DLLs for binaries in $bin_dir"
+    log "copying Windows runtime DLL closure for binaries in $bin_dir"
 
     queue_file="$(mktemp)"
     seen_file="$(mktemp)"
@@ -561,6 +625,37 @@ copy_windows_runtime_dlls() {
             log "  copied: $dll_name"
             printf '%s\n' "$bin_dir/$dll_name" >> "$queue_file"
         done < <(windows_runtime_dll_extract_paths "$current")
+
+        while IFS= read -r dll_name; do
+            [ -n "$dll_name" ] || continue
+
+            if windows_runtime_dll_name_is_system "$dll_name"; then
+                continue
+            fi
+
+            if [ -f "$bin_dir/$dll_name" ]; then
+                continue
+            fi
+
+            dll_path="$(find_windows_runtime_dll_by_name "$dll_name" "$bin_dir")"
+            if [ -z "$dll_path" ] || [ ! -f "$dll_path" ]; then
+                log "  unresolved PE import for $(basename "$current"): $dll_name"
+                continue
+            fi
+
+            if windows_runtime_dll_is_system_path "$dll_path"; then
+                continue
+            fi
+
+            if ! windows_runtime_dll_allowed_path "$dll_path"; then
+                log "  skipping non-package PE import: $dll_path"
+                continue
+            fi
+
+            cp -f "$dll_path" "$bin_dir/$dll_name"
+            log "  copied PE import: $dll_name"
+            printf '%s\n' "$bin_dir/$dll_name" >> "$queue_file"
+        done < <(windows_pe_import_dll_names "$current")
     done
 
     rm -f "$queue_file" "$seen_file"
@@ -771,14 +866,32 @@ verify_windows_runtime_dlls() {
             fi
 
             if windows_runtime_dll_allowed_path "$dll_path"; then
-                if [ ! -f "$bin_dir/$dll_name" ]; then
-                    log "  missing packaged DLL dependency for $(basename "$current"): $dll_name from $dll_path"
-                    missing=1
-                fi
+                log "  missing packaged DLL dependency for $(basename "$current"): $dll_name from $dll_path"
+                missing=1
             else
                 log "  external DLL dependency not packaged for $(basename "$current"): $dll_path"
             fi
         done < <(windows_runtime_dll_extract_paths "$current")
+
+        while IFS= read -r dll_name; do
+            [ -n "$dll_name" ] || continue
+
+            if windows_runtime_dll_name_is_system "$dll_name"; then
+                continue
+            fi
+
+            if [ -f "$bin_dir/$dll_name" ]; then
+                continue
+            fi
+
+            dll_path="$(find_windows_runtime_dll_by_name "$dll_name" "$bin_dir")"
+            if [ -n "$dll_path" ] && [ -f "$dll_path" ]; then
+                log "  PE import not copied for $(basename "$current"): $dll_name from $dll_path"
+            else
+                log "  unresolved PE import for $(basename "$current"): $dll_name"
+            fi
+            missing=1
+        done < <(windows_pe_import_dll_names "$current")
     done < <(find "$bin_dir" -maxdepth 1 \( -name '*.exe' -o -name '*.dll' \) -type f | sort)
 
     if [ "$missing" -ne 0 ]; then

@@ -42,6 +42,55 @@ function Invoke-NativeCapture {
     return $output
 }
 
+function Invoke-NativeCaptureAllowFailure {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $FilePath,
+
+        [string[]] $ArgumentList = @()
+    )
+
+    Write-Host "==> $FilePath $($ArgumentList -join ' ')"
+    $output = & $FilePath @ArgumentList 2>&1
+    $exitCode = $LASTEXITCODE
+
+    $output | ForEach-Object { Write-Host $_ }
+
+    return @{ Output = $output; ExitCode = $exitCode }
+}
+
+function Get-InfoValue {
+    param([Parameter(Mandatory = $true)][string] $Key)
+
+    $line = Get-Content "$root\info.txt" | Where-Object { $_ -like "$Key=*" } | Select-Object -Last 1
+    if (-not $line) { return '' }
+    return ($line -replace "^$([regex]::Escape($Key))=", '')
+}
+
+function Test-InfoBool {
+    param([Parameter(Mandatory = $true)][string] $Key)
+    return (Get-InfoValue $Key) -eq 'true'
+}
+
+function Show-PEImports {
+    param([Parameter(Mandatory = $true)][string] $FilePath)
+
+    Write-Host "==> PE imports for $FilePath"
+    $objdump = Get-Command llvm-objdump.exe -ErrorAction SilentlyContinue
+    if (-not $objdump) {
+        $objdump = Get-Command objdump.exe -ErrorAction SilentlyContinue
+    }
+
+    if (-not $objdump) {
+        Write-Host 'warning: objdump not available for PE import diagnostics'
+        return
+    }
+
+    & $objdump.Source -p $FilePath 2>&1 | Select-String -Pattern 'DLL Name|Delay|delay' | ForEach-Object {
+        Write-Host $_.Line
+    }
+}
+
 function Invoke-OptionalNative {
     param(
         [Parameter(Mandatory = $true)]
@@ -134,6 +183,46 @@ switch ($Tool) {
         Invoke-Native -FilePath "$root\bin\clang++.exe" -ArgumentList @('-fsyntax-only', $cppSource)
         Invoke-Native -FilePath "$root\bin\clang++.exe" -ArgumentList @('-c', $cppSource, '-o', $cppObject)
         Assert-FileExists $cppObject
+
+        if ((Test-InfoBool 'features.asan') -or (Test-InfoBool 'features.sanitizers')) {
+            $asanSource = Join-Path $testDir 'asan-test.c'
+            $asanExe = Join-Path $testDir 'asan-test.exe'
+@'
+#include <stdlib.h>
+
+int main(void) {
+    int *value = (int *)malloc(sizeof(int));
+    free(value);
+    return *value;
+}
+'@ | Set-Content $asanSource
+
+            Invoke-Native -FilePath "$root\bin\clang.exe" -ArgumentList @(
+                '-g',
+                '-O0',
+                '-fsanitize=address',
+                $asanSource,
+                '-o',
+                $asanExe
+            )
+            Assert-FileExists $asanExe
+
+            $oldPath = $env:Path
+            $env:Path = "$root\bin;$oldPath"
+            try {
+                $result = Invoke-NativeCaptureAllowFailure -FilePath $asanExe
+            } finally {
+                $env:Path = $oldPath
+            }
+
+            if ($result.ExitCode -eq 0) {
+                throw 'ASan test unexpectedly succeeded'
+            }
+
+            Assert-OutputContains -Output $result.Output -Pattern 'AddressSanitizer|heap-use-after-free'
+        } else {
+            Write-Host 'warning: clang sanitizer runtime not enabled; skipping ASan test'
+        }
     }
 
     'lld' {
@@ -144,6 +233,10 @@ switch ($Tool) {
     }
 
     'lldb' {
+        Show-PEImports "$root\bin\lldb.exe"
+        if (Test-Path "$root\bin\lldb-dap.exe") { Show-PEImports "$root\bin\lldb-dap.exe" }
+        if (Test-Path "$root\bin\lldb-server.exe") { Show-PEImports "$root\bin\lldb-server.exe" }
+
         Invoke-Native -FilePath "$root\bin\lldb.exe" -ArgumentList @('--version')
         Invoke-Native -FilePath "$root\bin\lldb.exe" -ArgumentList @(
             '-b',

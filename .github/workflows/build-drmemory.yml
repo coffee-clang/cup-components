@@ -36,17 +36,9 @@ jobs:
         with:
           msystem: CLANG64
           update: true
-          install: >-
-            base-devel
-            git
-            curl
-            tar
-            gzip
-            bzip2
-            xz
-            zip
-            unzip
-            mingw-w64-clang-x86_64-clang
+
+      - name: Install test dependencies (Windows CLANG64)
+        run: scripts/setup/setup-windows-msys2.sh clang64
 
       - name: Build package
         run: |
@@ -59,7 +51,9 @@ jobs:
 
       - name: Test packaged Dr. Memory
         shell: pwsh
-        run: scripts/test/test-drmemory-windows.ps1
+        run: |
+          $env:Path = "C:\msys64\clang64\bin;C:\msys64\usr\bin;$env:Path"
+          scripts/test/test-drmemory-windows.ps1
 
       - name: Load release metadata
         id: release

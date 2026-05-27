@@ -710,6 +710,27 @@ EOF_DLLS
     if [ "$copied_any" -eq 0 ]; then
         die "could not locate Python runtime DLLs for Windows package"
     fi
+
+    create_windows_python_dll_aliases "$PREFIX/bin"
+}
+
+create_windows_python_dll_aliases() {
+    local bin_dir="$1"
+    local dll
+    local alias
+
+    [ -d "$bin_dir" ] || return 0
+
+    for dll in "$bin_dir"/libpython[0-9].*.dll; do
+        [ -f "$dll" ] || continue
+
+        alias="$(basename "$dll" | sed -E 's/^libpython([0-9]+)\.([0-9]+)\.dll$/python\1\2.dll/')"
+
+        if [ -n "$alias" ] && [ "$alias" != "$(basename "$dll")" ] && [ ! -f "$bin_dir/$alias" ]; then
+            cp -f "$dll" "$bin_dir/$alias"
+            log "  created Python runtime alias: $alias"
+        fi
+    done
 }
 
 verify_windows_runtime_dlls() {

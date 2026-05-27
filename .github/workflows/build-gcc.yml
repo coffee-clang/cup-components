@@ -7,38 +7,24 @@ on:
         description: GCC version, or stable/latest
         required: true
         default: stable
-      host_os:
-        description: Host OS
+      host_platform:
+        description: Host platform
         required: true
         type: choice
         options:
-          - linux
-          - windows
-        default: linux
-      host_arch:
-        description: Host architecture
+          - linux-x64
+          - linux-arm64
+          - windows-x64
+        default: linux-x64
+      target_platform:
+        description: Target platform
         required: true
         type: choice
         options:
-          - x64
-          - arm64
-        default: x64
-      target_os:
-        description: Target OS
-        required: true
-        type: choice
-        options:
-          - linux
-          - windows
-        default: linux
-      target_arch:
-        description: Target architecture
-        required: true
-        type: choice
-        options:
-          - x64
-          - arm64
-        default: x64
+          - linux-x64
+          - linux-arm64
+          - windows-x64
+        default: linux-x64
       revision:
         description: Package revision for recipe-sensitive builds
         required: true
@@ -63,8 +49,8 @@ jobs:
       - id: platform
         shell: bash
         run: |
-          host_platform="${{ inputs.host_os }}-${{ inputs.host_arch }}"
-          target_platform="${{ inputs.target_os }}-${{ inputs.target_arch }}"
+          host_platform="${{ inputs.host_platform }}"
+          target_platform="${{ inputs.target_platform }}"
 
           case "$host_platform" in
             linux-x64) runner="ubuntu-24.04" ;;
@@ -131,32 +117,11 @@ jobs:
         with:
           msystem: UCRT64
           update: true
-          install: >-
-            base-devel
-            git
-            curl
-            tar
-            gzip
-            bzip2
-            xz
-            zip
-            unzip
-            patch
-            texinfo
-            python
-            mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-binutils
-            mingw-w64-ucrt-x86_64-make
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-ninja
-            mingw-w64-ucrt-x86_64-autotools
-            mingw-w64-ucrt-x86_64-pkgconf
-            mingw-w64-ucrt-x86_64-gmp
-            mingw-w64-ucrt-x86_64-mpfr
-            mingw-w64-ucrt-x86_64-mpc
-            mingw-w64-ucrt-x86_64-isl
-            mingw-w64-ucrt-x86_64-zstd
-            mingw-w64-ucrt-x86_64-xz
+
+      - name: Install build dependencies (Windows UCRT64)
+        if: ${{ startsWith(needs.select.outputs.host_platform, 'windows-') }}
+        shell: msys2 {0}
+        run: scripts/setup/setup-windows-msys2.sh ucrt64
 
       - name: Build package (Windows)
         if: ${{ startsWith(needs.select.outputs.host_platform, 'windows-') }}

@@ -35,7 +35,16 @@ mkdir -p dist/package-test
 tar -xJf "dist/$package_base.tar.xz" -C dist/package-test
 
 root="dist/package-test/$package_base"
+root="$(cd "$root" && pwd)"
 export PATH="$root/bin:$PATH"
+
+macos_sdk_args() {
+    if [ "$(uname -s)" = "Darwin" ]; then
+        local sdk_path
+        sdk_path="$(xcrun --sdk macosx --show-sdk-path)"
+        printf '%s\n' -isysroot "$sdk_path"
+    fi
+}
 
 bash scripts/test/package-capabilities.sh "$root" "$LLVM_TOOL"
 
@@ -96,7 +105,8 @@ int main(void) {
     return 0;
 }
 C_EOF
-        "$root/bin/clang" "$tmp_root/clang-test.c" -o "$tmp_root/clang-test"
+        mapfile -t sdk_args < <(macos_sdk_args)
+        "$root/bin/clang" "${sdk_args[@]}" "$tmp_root/clang-test.c" -o "$tmp_root/clang-test"
         "$tmp_root/clang-test" | grep -F "hello clang 42"
 
         if [ "$(uname -s)" = "Darwin" ]; then
@@ -119,7 +129,8 @@ int main() {
     return 0;
 }
 CPP_EOF
-        "$root/bin/clang++" "$tmp_root/clang-cpp-test.cpp" -o "$tmp_root/clang-cpp-test"
+        mapfile -t sdk_args < <(macos_sdk_args)
+        "$root/bin/clang++" "${sdk_args[@]}" "$tmp_root/clang-cpp-test.cpp" -o "$tmp_root/clang-cpp-test"
         "$tmp_root/clang-cpp-test" | grep -F "42"
         ;;
     lld)

@@ -142,7 +142,6 @@ write_gdb_info() {
         source_highlight=true
         xxhash=true
         babeltrace=true
-
         if [ "$HOST_PLATFORM" = "linux-x64" ] && [ "$TARGET_PLATFORM" = "linux-x64" ]; then
             intel_pt=true
         fi

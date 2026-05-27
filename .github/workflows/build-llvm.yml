@@ -18,40 +18,28 @@ on:
         description: Tool version, or stable/latest
         required: true
         default: stable
-      host_os:
-        description: Host OS
+      host_platform:
+        description: Host platform
         required: true
         type: choice
         options:
-          - linux
-          - windows
-          - macos
-        default: linux
-      host_arch:
-        description: Host architecture
+          - linux-x64
+          - linux-arm64
+          - windows-x64
+          - macos-x64
+          - macos-arm64
+        default: linux-x64
+      target_platform:
+        description: Target platform
         required: true
         type: choice
         options:
-          - x64
-          - arm64
-        default: x64
-      target_os:
-        description: Target OS
-        required: true
-        type: choice
-        options:
-          - linux
-          - windows
-          - macos
-        default: linux
-      target_arch:
-        description: Target architecture
-        required: true
-        type: choice
-        options:
-          - x64
-          - arm64
-        default: x64
+          - linux-x64
+          - linux-arm64
+          - windows-x64
+          - macos-x64
+          - macos-arm64
+        default: linux-x64
       revision:
         description: Package revision metadata
         required: true
@@ -76,8 +64,8 @@ jobs:
       - id: platform
         shell: bash
         run: |
-          host_platform="${{ inputs.host_os }}-${{ inputs.host_arch }}"
-          target_platform="${{ inputs.target_os }}-${{ inputs.target_arch }}"
+          host_platform="${{ inputs.host_platform }}"
+          target_platform="${{ inputs.target_platform }}"
 
           case "$host_platform" in
             linux-x64) runner="ubuntu-24.04" ;;
@@ -147,29 +135,11 @@ jobs:
         with:
           msystem: CLANG64
           update: true
-          install: >-
-            base-devel
-            git
-            curl
-            tar
-            gzip
-            bzip2
-            xz
-            zip
-            unzip
-            patch
-            python
-            mingw-w64-clang-x86_64-clang
-            mingw-w64-clang-x86_64-lld
-            mingw-w64-clang-x86_64-cmake
-            mingw-w64-clang-x86_64-ninja
-            mingw-w64-clang-x86_64-pkgconf
-            mingw-w64-clang-x86_64-swig
-            mingw-w64-clang-x86_64-python
-            mingw-w64-clang-x86_64-zlib
-            mingw-w64-clang-x86_64-zstd
-            mingw-w64-clang-x86_64-libxml2
-            mingw-w64-clang-x86_64-xz
+
+      - name: Install build dependencies (Windows CLANG64)
+        if: ${{ startsWith(needs.select.outputs.host_platform, 'windows-') }}
+        shell: msys2 {0}
+        run: scripts/setup/setup-windows-msys2.sh clang64
 
       - name: Build package (Windows)
         if: ${{ startsWith(needs.select.outputs.host_platform, 'windows-') }}
@@ -191,16 +161,15 @@ jobs:
       - name: Install build dependencies (macOS)
         if: ${{ startsWith(needs.select.outputs.host_platform, 'macos-') }}
         shell: bash
-        run: |
-          brew update
-          brew install bash cmake ninja python swig xz zstd zlib libxml2 ncurses libedit
+        run: scripts/setup/setup-macos-builder.sh
 
       - name: Build package (macOS)
         if: ${{ startsWith(needs.select.outputs.host_platform, 'macos-') }}
         shell: bash
         run: |
+          brew_bash="$(brew --prefix bash)/bin/bash"
           export CUP_BUILD_ENVIRONMENT=github-macos
-          bash scripts/build/build-llvm-tool.sh \
+          "$brew_bash" scripts/build/build-llvm-tool.sh \
             "${{ inputs.tool }}" \
             "${{ inputs.version }}" \
             "${{ needs.select.outputs.host_platform }}" \
@@ -210,7 +179,9 @@ jobs:
       - name: Test packaged LLVM tool (macOS)
         if: ${{ startsWith(needs.select.outputs.host_platform, 'macos-') }}
         shell: bash
-        run: bash scripts/test/test-llvm-tool.sh "${{ inputs.tool }}"
+        run: |
+          brew_bash="$(brew --prefix bash)/bin/bash"
+          "$brew_bash" scripts/test/test-llvm-tool.sh "${{ inputs.tool }}"
 
       - name: Load release metadata
         id: release

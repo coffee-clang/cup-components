@@ -79,11 +79,41 @@ case "$TOOL" in
 esac
 
 llvm_targets_to_build() {
-    # The current package naming models host/target platform, not the set of
-    # LLVM code-generation backends bundled in the package. Keep the default
-    # narrow and explicit for now; future build inputs can extend this and
-    # include the selected backend set in the package name.
-    printf '%s\n' "${CUP_LLVM_TARGETS_TO_BUILD:-X86}"
+    if [ -n "${CUP_LLVM_TARGETS_TO_BUILD:-}" ]; then
+        printf '%s\n' "$CUP_LLVM_TARGETS_TO_BUILD"
+        return 0
+    fi
+
+    case "$TARGET_PLATFORM" in
+        linux-x64|windows-x64|macos-x64)
+            printf '%s\n' "X86"
+            ;;
+        linux-arm64|macos-arm64)
+            printf '%s\n' "AArch64"
+            ;;
+        *)
+            die "unsupported LLVM target platform for backend selection: $TARGET_PLATFORM"
+            ;;
+    esac
+}
+
+llvm_target_enabled() {
+    local target="$1"
+
+    case ";$LLVM_TARGETS;" in
+        *";$target;"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+llvm_target_feature_bool() {
+    local target="$1"
+
+    if llvm_target_enabled "$target"; then
+        printf '%s\n' true
+    else
+        printf '%s\n' false
+    fi
 }
 
 LLVM_TARGETS="$(llvm_targets_to_build)"
@@ -159,7 +189,7 @@ prune_llvm_package_bins() {
             ;;
         lldb)
             prune_bin_except \
-                lldb lldb-server lldb-dap lldb-vscode
+                lldb lldb-server lldb-dap lldb-vscode lldb-argdumper
             ;;
         clangd)
             prune_bin_except \
@@ -211,6 +241,12 @@ build_llvm_tool() {
                 -DLLDB_ENABLE_LIBEDIT=ON
                 -DLLDB_ENABLE_CURSES=ON
             )
+
+            if is_macos_platform "$HOST_PLATFORM"; then
+                cmake_extra_args+=(
+                    -DLLDB_USE_SYSTEM_DEBUGSERVER=ON
+                )
+            fi
         fi
     fi
 
@@ -331,6 +367,8 @@ write_llvm_info() {
     local cmake_curses
     local cmake_zlib
     local cmake_zstd
+    local has_target_x86
+    local has_target_aarch64
 
     has_clang="$(metadata_bool_for_executable "$PREFIX" clang)"
     has_clangpp="$(metadata_bool_for_executable "$PREFIX" clang++)"
@@ -358,6 +396,8 @@ write_llvm_info() {
     cmake_curses="$(cmake_cache_bool "${LLVM_BUILD_DIR:-}" LLDB_ENABLE_CURSES)"
     cmake_zlib="$(cmake_cache_bool "${LLVM_BUILD_DIR:-}" LLVM_ENABLE_ZLIB)"
     cmake_zstd="$(cmake_cache_bool "${LLVM_BUILD_DIR:-}" LLVM_ENABLE_ZSTD)"
+    has_target_x86="$(llvm_target_feature_bool X86)"
+    has_target_aarch64="$(llvm_target_feature_bool AArch64)"
 
     local info=(
         "package.component=$COMPONENT"
@@ -403,9 +443,13 @@ write_llvm_info() {
                 "features.llvm_ar=$(metadata_bool_for_executable "$PREFIX" llvm-ar)"
                 "features.llvm_ranlib=$(metadata_bool_for_executable "$PREFIX" llvm-ranlib)"
                 "features.llvm_objdump=$(metadata_bool_for_executable "$PREFIX" llvm-objdump)"
-                "features.target_x86=true"
+                "features.target_x86=$has_target_x86"
+                "features.target_aarch64=$has_target_aarch64"
                 "features.target_linux_x64=$( [ "$TARGET_PLATFORM" = "linux-x64" ] && printf true || printf false )"
+                "features.target_linux_arm64=$( [ "$TARGET_PLATFORM" = "linux-arm64" ] && printf true || printf false )"
                 "features.target_windows_x64=$( [ "$TARGET_PLATFORM" = "windows-x64" ] && printf true || printf false )"
+                "features.target_macos_x64=$( [ "$TARGET_PLATFORM" = "macos-x64" ] && printf true || printf false )"
+                "features.target_macos_arm64=$( [ "$TARGET_PLATFORM" = "macos-arm64" ] && printf true || printf false )"
             )
             ;;
         lld)

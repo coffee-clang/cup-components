@@ -34,6 +34,30 @@ function Assert-TextContains {
     }
 }
 
+
+function Find-CCompiler {
+    $candidates = @(
+        'C:\msys64\clang64\bin\clang.exe',
+        'C:\msys64\ucrt64\bin\gcc.exe',
+        'C:\msys64\mingw64\bin\gcc.exe',
+        'clang.exe',
+        'gcc.exe'
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+
+        $cmd = Get-Command $candidate -ErrorAction SilentlyContinue
+        if ($cmd) {
+            return $cmd.Source
+        }
+    }
+
+    return $null
+}
+
 $releaseEnv = Get-Content dist/release.env
 $packageBase = ($releaseEnv | Where-Object { $_ -like 'package_base=*' }) -replace '^package_base=', ''
 if (-not $packageBase) { throw 'package_base not found in dist/release.env' }
@@ -67,15 +91,12 @@ int main(void) {
 }
 '@ | Set-Content $source
 
-$clang = 'C:\msys64\clang64\bin\clang.exe'
-$gcc = 'C:\msys64\ucrt64\bin\gcc.exe'
-if (Test-Path $clang) {
-    & $clang $source -g -O0 -o $exe
-} elseif (Test-Path $gcc) {
-    & $gcc $source -g -O0 -o $exe
-} else {
+$compiler = Find-CCompiler
+if (-not $compiler) {
     throw 'no Windows C compiler found for Dr. Memory functional test'
 }
+
+& $compiler $source -g -O0 -o $exe
 
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exe)) {
     throw 'failed to compile Dr. Memory leak test executable'

@@ -37,15 +37,17 @@ jobs:
           msystem: CLANG64
           update: true
 
-      - name: Install test dependencies (Windows CLANG64)
+      - name: Install build dependencies (Windows CLANG64)
         run: |
           scripts/setup/setup-windows-msys2.sh clang64
-          echo "MSYS2 clang: $(command -v clang || true)"
-          ls -l /clang64/bin/clang.exe || true
+          echo "clang: $(command -v clang || true)"
+          echo "clang++: $(command -v clang++ || true)"
+          echo "cmake: $(command -v cmake || true)"
+          echo "ninja: $(command -v ninja || true)"
 
-      - name: Build package
+      - name: Build package from source
         run: |
-          export CUP_BUILD_ENVIRONMENT=msys2-clang64
+          export CUP_BUILD_ENVIRONMENT=msys2-clang64-source
           bash scripts/build/build-drmemory.sh \
             "${{ inputs.version }}" \
             windows-x64 \

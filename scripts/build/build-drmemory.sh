@@ -36,12 +36,18 @@ TARGET_FAMILY="$(platform_family "$TARGET_PLATFORM")"
 TARGET_RUNTIME="$(platform_runtime "$TARGET_PLATFORM")"
 THREAD_MODEL="$(platform_thread_model "$TARGET_PLATFORM")"
 BUILD_ENVIRONMENT="${CUP_BUILD_ENVIRONMENT:-manual}"
-SOURCE_POLICY="binary-release"
-SOURCE_URL="$(source_url_drmemory_windows "$VERSION")"
+SOURCE_POLICY="source-release"
+SOURCE_URL="${CUP_DRMEMORY_GIT_URL:-https://github.com/DynamoRIO/drmemory.git}"
+SOURCE_REF="${CUP_DRMEMORY_GIT_REF:-release_$VERSION}"
 PREFIX="$CUP_STAGE_DIR/$(package_base_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
 
 need_drmemory_tools() {
-    need curl
+    need git
+    need cmake
+    need ninja
+    need clang
+    need clang++
+    need python
     need unzip
     need zip
     need tar
@@ -57,59 +63,173 @@ validate_platforms() {
     fi
 }
 
-find_drmemory_root() {
-    local extracted="$1"
-    local found
-    local root
+prepare_drmemory_source() {
+    local source_dir="$CUP_SRC_DIR/drmemory-$VERSION"
 
-    found="$(find "$extracted" -maxdepth 6 -type f -iname 'drmemory.exe' -print -quit)"
-    if [ -z "$found" ]; then
-        log "extracted Dr. Memory archive layout:"
-        find "$extracted" -maxdepth 4 -print | sort
-        die "could not find drmemory.exe in extracted Dr. Memory archive"
+    if [ ! -d "$source_dir/.git" ]; then
+        rm -rf "$source_dir"
+        log "cloning Dr. Memory source: $SOURCE_URL"
+        git clone "$SOURCE_URL" "$source_dir"
     fi
 
-    root="$(dirname "$(dirname "$found")")"
+    (
+        cd "$source_dir"
+        git fetch --tags --force
+        git checkout "$SOURCE_REF"
+        git submodule update --init --recursive
 
-    if [ ! -d "$root/bin" ] && [ -d "$root/bin64" ]; then
-        log "normalizing Dr. Memory bin64 directory to bin"
-        mkdir -p "$root/bin"
-        cp -a "$root/bin64"/. "$root/bin"/
-    fi
+        if [ -x make/git/devsetup.sh ]; then
+            make/git/devsetup.sh
+        fi
+    )
 
-    if [ ! -f "$root/bin/drmemory.exe" ]; then
-        log "Dr. Memory root candidate: $root"
-        find "$root" -maxdepth 3 -print | sort
-        die "could not find bin/drmemory.exe in Dr. Memory package root"
-    fi
-
-    printf '%s\n' "$root"
+    printf '%s\n' "$source_dir"
 }
 
-stage_drmemory() {
-    local archive="$CUP_SRC_DIR/$(archive_name_from_url "$SOURCE_URL" "DrMemory-Windows-$VERSION.zip")"
-    local extracted="$CUP_BUILD_DIR/drmemory-extract-$VERSION"
-    local source_root
+drmemory_cmake_args() {
+    local source_dir="$1"
+    local install_dir="$2"
 
-    fetch "$SOURCE_URL" "$archive"
+    printf '%s\n' \
+        -S "$source_dir" \
+        -B "$CUP_BUILD_DIR/drmemory-$VERSION" \
+        -G Ninja \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DCMAKE_INSTALL_PREFIX="$install_dir" \
+        -DCMAKE_C_COMPILER=clang \
+        -DCMAKE_CXX_COMPILER=clang++ \
+        -DCMAKE_MAKE_PROGRAM=ninja \
+        -DTOOL_DR_HEAPSTAT=OFF \
+        -DBUILD_VISUALIZER=OFF \
+        -DBUILD_DOCS=OFF \
+        -DDynamoRIO_BUILD_DOCS=OFF \
+        -DCMAKE_RULE_MESSAGES=OFF
+}
 
-    rm -rf "$extracted" "$PREFIX"
-    mkdir -p "$extracted" "$PREFIX"
+find_drmemory_runtime_root() {
+    local root="$1"
+    local found
+    local runtime_root
 
-    unzip -q "$archive" -d "$extracted"
-    source_root="$(find_drmemory_root "$extracted")"
-
-    log "staging Dr. Memory from $source_root"
-    cp -a "$source_root"/. "$PREFIX"/
-
-    if [ ! -f "$PREFIX/bin/drmemory.exe" ]; then
-        find "$PREFIX" -maxdepth 3 -print | sort
-        die "staged Dr. Memory package does not contain bin/drmemory.exe"
+    found="$(find "$root" -maxdepth 8 -type f \( -path '*/bin64/drmemory.exe' -o -path '*/bin/drmemory.exe' \) -print | sort | head -n 1)"
+    if [ -z "$found" ]; then
+        log "Dr. Memory runtime search root: $root"
+        find "$root" -maxdepth 5 -print | sort | sed -n '1,200p'
+        die "could not find drmemory.exe in built Dr. Memory tree"
     fi
 
-    if [ ! -x "$PREFIX/bin/drmemory.exe" ]; then
-        chmod +x "$PREFIX/bin/drmemory.exe"
+    case "$found" in
+        */bin64/drmemory.exe) runtime_root="$(dirname "$(dirname "$found")")" ;;
+        */bin/drmemory.exe) runtime_root="$(dirname "$(dirname "$found")")" ;;
+        *) die "internal error resolving Dr. Memory root from $found" ;;
+    esac
+
+    printf '%s\n' "$runtime_root"
+}
+
+find_built_package() {
+    local build_dir="$1"
+    find "$build_dir" -type f \( -iname 'DrMemory*.zip' -o -iname 'drmemory*.zip' \) -print | sort | head -n 1
+}
+
+stage_from_runtime_root() {
+    local runtime_root="$1"
+
+    rm -rf "$PREFIX"
+    mkdir -p "$PREFIX"
+
+    log "staging Dr. Memory runtime from $runtime_root"
+    cp -a "$runtime_root"/. "$PREFIX"/
+
+    if [ ! -f "$PREFIX/bin64/drmemory.exe" ] && [ ! -f "$PREFIX/bin/drmemory.exe" ]; then
+        find "$PREFIX" -maxdepth 4 -print | sort
+        die "staged Dr. Memory package does not contain bin64/drmemory.exe or bin/drmemory.exe"
     fi
+}
+
+stage_from_package_zip() {
+    local package_zip="$1"
+    local extracted="$CUP_BUILD_DIR/drmemory-package-extract-$VERSION"
+    local runtime_root
+
+    rm -rf "$extracted"
+    mkdir -p "$extracted"
+    unzip -q "$package_zip" -d "$extracted"
+
+    runtime_root="$(find_drmemory_runtime_root "$extracted")"
+    stage_from_runtime_root "$runtime_root"
+}
+
+build_drmemory_from_source() {
+    local source_dir
+    local build_dir="$CUP_BUILD_DIR/drmemory-$VERSION"
+    local install_dir="$CUP_BUILD_DIR/drmemory-install-$VERSION"
+    local package_zip
+    local runtime_root
+
+    source_dir="$(prepare_drmemory_source)"
+
+    rm -rf "$build_dir" "$install_dir"
+    mkdir -p "$build_dir" "$install_dir"
+
+    log "configuring Dr. Memory source build with CLANG64"
+    cmake $(drmemory_cmake_args "$source_dir" "$install_dir")
+
+    log "building Dr. Memory from source"
+    cmake --build "$build_dir" --parallel "$CUP_JOBS"
+
+    log "trying to create Dr. Memory package through CPack/CMake"
+    if cmake --build "$build_dir" --target package --parallel "$CUP_JOBS"; then
+        package_zip="$(find_built_package "$build_dir")"
+        if [ -n "$package_zip" ]; then
+            log "using built Dr. Memory package: $package_zip"
+            stage_from_package_zip "$package_zip"
+            return 0
+        fi
+    fi
+
+    log "no CPack zip package found; trying CMake install"
+    if cmake --install "$build_dir" --prefix "$install_dir"; then
+        runtime_root="$(find_drmemory_runtime_root "$install_dir")"
+        stage_from_runtime_root "$runtime_root"
+        return 0
+    fi
+
+    log "CMake install did not produce a package; staging runtime files from build tree"
+    runtime_root="$(find_drmemory_runtime_root "$build_dir")"
+    stage_from_runtime_root "$runtime_root"
+}
+
+drmemory_entry_path() {
+    local name="$1"
+    local candidate
+
+    for candidate in \
+        "bin64/$name.exe" \
+        "bin/$name.exe" \
+        "bin64/$name" \
+        "bin/$name"; do
+        if [ -e "$PREFIX/$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    printf 'bin64/%s.exe\n' "$name"
+}
+
+drmemory_executable_exists() {
+    local name="$1"
+
+    [ -x "$PREFIX/bin64/$name.exe" ] || \
+        [ -x "$PREFIX/bin/$name.exe" ] || \
+        [ -x "$PREFIX/bin64/$name" ] || \
+        [ -x "$PREFIX/bin/$name" ]
+}
+
+drmemory_executable_bool() {
+    local name="$1"
+    info_bool drmemory_executable_exists "$name"
 }
 
 write_drmemory_info() {
@@ -120,10 +240,10 @@ write_drmemory_info() {
     local has_dynamorio
     local has_docs
 
-    has_drmemory="$(metadata_bool_for_executable "$PREFIX" drmemory)"
-    has_drconfig="$(metadata_bool_for_executable "$PREFIX" drconfig)"
-    has_symquery="$(metadata_bool_for_executable "$PREFIX" symquery)"
-    has_drstrace="$(metadata_bool_for_executable "$PREFIX" drstrace)"
+    has_drmemory="$(drmemory_executable_bool drmemory)"
+    has_drconfig="$(drmemory_executable_bool drconfig)"
+    has_symquery="$(drmemory_executable_bool symquery)"
+    has_drstrace="$(drmemory_executable_bool drstrace)"
     has_dynamorio="$(metadata_bool_for_dirs "$PREFIX" 'dynamorio')"
     has_docs="$(metadata_bool_for_dirs "$PREFIX" 'docs' 'doc')"
 
@@ -146,10 +266,11 @@ write_drmemory_info() {
         "source.primary.name=drmemory"
         "source.primary.version=$VERSION"
         "source.primary.url=$SOURCE_URL"
-        "entry.drmemory=$(package_bin_entry_path "$PREFIX" drmemory)"
-        "entry.drconfig=$(package_bin_entry_path "$PREFIX" drconfig)"
-        "entry.symquery=$(package_bin_entry_path "$PREFIX" symquery)"
-        "entry.drstrace=$(package_bin_entry_path "$PREFIX" drstrace)"
+        "source.primary.ref=$SOURCE_REF"
+        "entry.drmemory=$(drmemory_entry_path drmemory)"
+        "entry.drconfig=$(drmemory_entry_path drconfig)"
+        "entry.symquery=$(drmemory_entry_path symquery)"
+        "entry.drstrace=$(drmemory_entry_path drstrace)"
         "contents.self_contained=true"
         "contents.dynamorio=$has_dynamorio"
         "contents.docs=$has_docs"
@@ -172,7 +293,7 @@ main() {
     make_dirs
     need_drmemory_tools
 
-    stage_drmemory
+    build_drmemory_from_source
     write_drmemory_info
     create_packages "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION" "$PREFIX"
 }

@@ -24,3 +24,5 @@ mingw-w64-clang-x86_64-sqlite3
 mingw-w64-clang-x86_64-ncurses
 mingw-w64-clang-x86_64-xz
 mingw-w64-clang-x86_64-curl
+perl
+mingw-w64-clang-x86_64-doxygen

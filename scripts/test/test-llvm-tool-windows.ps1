@@ -151,7 +151,18 @@ $env:Path = "$root\bin;$env:SystemRoot\System32;$env:SystemRoot"
 
 $pythonDirs = Get-ChildItem -Directory -Path (Join-Path $root 'lib') -Filter 'python*' -ErrorAction SilentlyContinue
 if ($pythonDirs) {
-    $env:PYTHONPATH = ($pythonDirs | Select-Object -First 1).FullName
+    $pythonDir = ($pythonDirs | Select-Object -First 1).FullName
+    $pythonDynloadDir = Join-Path $pythonDir 'lib-dynload'
+
+    $env:PYTHONHOME = $root
+    if (Test-Path $pythonDynloadDir) {
+        $env:PYTHONPATH = "$pythonDir;$pythonDynloadDir"
+    } else {
+        $env:PYTHONPATH = $pythonDir
+    }
+
+    Write-Host "PYTHONHOME=$env:PYTHONHOME"
+    Write-Host "PYTHONPATH=$env:PYTHONPATH"
 }
 
 $testDir = Join-Path $env:TEMP "cup-llvm-$Tool-test"
@@ -241,7 +252,7 @@ int main(void) {
         Invoke-Native -FilePath "$root\bin\lldb.exe" -ArgumentList @(
             '-b',
             '-o',
-            "script import sys; print('python-ok', sys.version_info[0], sys.version_info[1])",
+            "script import sys; print('python-ok', sys.version_info[0], sys.version_info[1]); print('executable', sys.executable); print('prefix', sys.prefix); print('path', sys.path)",
             '-o',
             'quit'
         )

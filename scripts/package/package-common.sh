@@ -390,9 +390,6 @@ package_bin_exact_file_exists() {
     [ -n "$candidate" ] || return 1
     [ -d "$prefix/bin" ] || return 1
 
-    # MSYS2/MinGW can apply .exe convenience behavior to some file tests.
-    # Use find -name to require that the exact filename is present in the
-    # package, so metadata never says bin/gdb when the real file is bin/gdb.exe.
     [ -n "$(find "$prefix/bin" -maxdepth 1 -name "$candidate" -print -quit 2>/dev/null)" ]
 }
 
@@ -889,6 +886,8 @@ create_windows_python_path_config() {
     local version="$2"
     local major
     local minor
+    local names=()
+    local name
     local pth_file
 
     [ -d "$bin_dir" ] || return 0
@@ -901,15 +900,25 @@ create_windows_python_path_config() {
     [ -n "$major" ] || return 0
     [ -n "$minor" ] || return 0
 
-    pth_file="$bin_dir/python${major}${minor}._pth"
+    names+=(
+        "python${major}${minor}"
+        "libpython${version}"
+        "libpython${major}"
+        "lldb"
+        "lldb-dap"
+    )
 
-    log "creating Windows Python path config: $(basename "$pth_file")"
+    for name in "${names[@]}"; do
+        pth_file="$bin_dir/$name._pth"
 
-    {
-        printf '../lib/python%s\n' "$version"
-        printf '../lib/python%s/lib-dynload\n' "$version"
-        printf 'import site\n'
-    } > "$pth_file"
+        log "creating Windows Python path config: $(basename "$pth_file")"
+
+        {
+            printf '../lib/python%s\n' "$version"
+            printf '../lib/python%s/lib-dynload\n' "$version"
+            printf 'import site\n'
+        } > "$pth_file"
+    done
 }
 
 create_windows_python_dll_aliases() {

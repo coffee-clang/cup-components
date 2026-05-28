@@ -519,7 +519,7 @@ windows_runtime_dll_allowed_path() {
 
     if [ -n "${PREFIX:-}" ]; then
         case "$path" in
-            "$PREFIX"/bin/*.dll)
+            "$PREFIX"/bin/*.dll|"$PREFIX"/lib/*.dll)
                 return 0
                 ;;
         esac
@@ -543,7 +543,7 @@ windows_runtime_dll_name_is_system() {
         api-ms-win-*.dll|ext-ms-win-*.dll)
             return 0
             ;;
-        advapi32.dll|bcryptprimitives.dll|combase.dll|comdlg32.dll|crypt32.dll|dbghelp.dll|gdi32.dll|gdi32full.dll|kernel32.dll|kernelbase.dll|msvcp_win.dll|msvcrt.dll|ntdll.dll|ole32.dll|oleaut32.dll|psapi.dll|rpcrt4.dll|sechost.dll|shell32.dll|shlwapi.dll|ucrtbase.dll|user32.dll|version.dll|win32u.dll|wintypes.dll|ws2_32.dll|bcrypt.dll)
+        advapi32.dll|bcrypt.dll|bcryptprimitives.dll|combase.dll|comctl32.dll|comdlg32.dll|crypt32.dll|dbghelp.dll|dnsapi.dll|gdi32.dll|gdi32full.dll|imm32.dll|iphlpapi.dll|kernel32.dll|kernelbase.dll|msvcp_win.dll|msvcrt.dll|netapi32.dll|ntdll.dll|ole32.dll|oleaut32.dll|propsys.dll|psapi.dll|rpcrt4.dll|sechost.dll|shell32.dll|shcore.dll|shlwapi.dll|ucrtbase.dll|user32.dll|userenv.dll|uuid.dll|version.dll|win32u.dll|winhttp.dll|winmm.dll|wintypes.dll|ws2_32.dll)
             return 0
             ;;
         vcruntime*.dll|msvcp*.dll|concrt*.dll)
@@ -585,6 +585,18 @@ windows_runtime_dll_search_dirs() {
     for dir in /clang64/bin /ucrt64/bin /mingw64/bin /mingw32/bin /clangarm64/bin /usr/bin; do
         [ -d "$dir" ] && printf '%s\n' "$dir"
     done
+}
+
+collect_windows_package_pe_files() {
+    local bin_dir="$1"
+
+    if [ -d "$bin_dir" ]; then
+        find "$bin_dir" -maxdepth 1 -type f \( -name '*.exe' -o -name '*.dll' \)
+    fi
+
+    if [ -n "${PREFIX:-}" ] && [ -d "$PREFIX/lib" ]; then
+        find "$PREFIX/lib" -type f \( -name '*.dll' -o -name '*.pyd' \)
+    fi
 }
 
 windows_runtime_dll_extract_paths() {
@@ -629,6 +641,12 @@ find_windows_runtime_dll_by_name() {
             printf '%s\n' "$candidate"
             return 0
         fi
+
+        candidate="$(find "$dir" -maxdepth 1 -type f -iname "$dll_name" -print -quit 2>/dev/null || true)"
+        if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
     done < <(windows_runtime_dll_search_dirs "$bin_dir")
 
     return 0
@@ -659,12 +677,7 @@ copy_windows_runtime_dlls() {
     queue_file="$(mktemp)"
     seen_file="$(mktemp)"
 
-    {
-        find "$bin_dir" -maxdepth 1 \( -name '*.exe' -o -name '*.dll' \) -type f
-        if [ -n "${PREFIX:-}" ] && [ -d "$PREFIX/lib" ]; then
-            find "$PREFIX/lib" -type f -name '*.pyd'
-        fi
-    } | sort -u > "$queue_file"
+    collect_windows_package_pe_files "$bin_dir" | sort -u > "$queue_file"
     : > "$seen_file"
 
     while [ -s "$queue_file" ]; do
@@ -838,7 +851,8 @@ PYSCRIPT
     fi
 
     find "$dst" -type d -name __pycache__ -prune -exec rm -rf {} +
-    find "$dst" -type d \( -name test -o -name tests \) -prune -exec rm -rf {} +
+    find "$dst" -type d \( -name test -o -name tests -o -name idlelib -o -name tkinter -o -name turtledemo \) -prune -exec rm -rf {} +
+    find "$dst" -type f \( -name '_tkinter*.pyd' -o -name 'tkinter*.pyd' \) -delete
 
     mkdir -p "$PREFIX/bin"
 
@@ -1017,14 +1031,7 @@ verify_windows_runtime_dlls() {
             fi
             missing=1
         done < <(windows_pe_import_dll_names "$current")
-    done < <(
-        {
-            find "$bin_dir" -maxdepth 1 \( -name '*.exe' -o -name '*.dll' \) -type f
-            if [ -n "${PREFIX:-}" ] && [ -d "$PREFIX/lib" ]; then
-                find "$PREFIX/lib" -type f -name '*.pyd'
-            fi
-        } | sort -u
-    )
+    done < <(collect_windows_package_pe_files "$bin_dir" | sort -u)
 
     if [ "$missing" -ne 0 ]; then
         die "Windows runtime DLL verification failed"

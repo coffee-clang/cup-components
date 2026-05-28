@@ -252,7 +252,7 @@ int main(void) {
         Invoke-Native -FilePath "$root\bin\lldb.exe" -ArgumentList @(
             '-b',
             '-o',
-            "script import sys; print('python-ok', sys.version_info[0], sys.version_info[1]); print('executable', sys.executable); print('prefix', sys.prefix); print('path', sys.path)",
+            "script import sys; import lldb; print('python-ok', sys.version_info[0], sys.version_info[1]); print('lldb-module-ok', lldb.SBDebugger); print('executable', sys.executable); print('prefix', sys.prefix); print('path', sys.path)",
             '-o',
             'quit'
         )

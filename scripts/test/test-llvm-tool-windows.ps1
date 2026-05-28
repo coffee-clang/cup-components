@@ -153,13 +153,13 @@ $pythonDirs = Get-ChildItem -Directory -Path (Join-Path $root 'lib') -Filter 'py
 if ($pythonDirs) {
     $pythonDir = ($pythonDirs | Select-Object -First 1).FullName
     $pythonDynloadDir = Join-Path $pythonDir 'lib-dynload'
+    $pythonSitePackagesDir = Join-Path $pythonDir 'site-packages'
 
     $env:PYTHONHOME = $root
-    if (Test-Path $pythonDynloadDir) {
-        $env:PYTHONPATH = "$pythonDir;$pythonDynloadDir"
-    } else {
-        $env:PYTHONPATH = $pythonDir
-    }
+    $pythonPathEntries = @($pythonDir)
+    if (Test-Path $pythonDynloadDir) { $pythonPathEntries += $pythonDynloadDir }
+    if (Test-Path $pythonSitePackagesDir) { $pythonPathEntries += $pythonSitePackagesDir }
+    $env:PYTHONPATH = ($pythonPathEntries -join ';')
 
     Write-Host "PYTHONHOME=$env:PYTHONHOME"
     Write-Host "PYTHONPATH=$env:PYTHONPATH"

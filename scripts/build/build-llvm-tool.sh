@@ -267,6 +267,8 @@ build_llvm_tool() {
     if [ "$TOOL" = "lldb" ]; then
         cmake_extra_args+=(
             -DLLDB_ENABLE_PYTHON=ON
+            -DLLDB_ENABLE_SWIG=ON
+            -DLLDB_EMBED_PYTHON_HOME=OFF
             -DLLDB_ENABLE_LIBXML2=ON
             -DLLDB_ENABLE_LZMA=ON
         )
@@ -307,11 +309,25 @@ build_llvm_tool() {
         cmake_extra_args+=(
             -DCMAKE_C_COMPILER=clang
             -DCMAKE_CXX_COMPILER=clang++
+            -DLLVM_HOST_TRIPLE="$HOST_TRIPLE"
+            -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib
         )
 
         if [ -n "${MINGW_PREFIX:-}" ]; then
             cmake_extra_args+=(
                 -DDEFAULT_SYSROOT="$MINGW_PREFIX"
+            )
+        fi
+
+        if [ "$TOOL" = "clang" ]; then
+            cmake_extra_args+=(
+                -DLLVM_ENABLE_LIBCXX=ON
+                -DCLANG_DEFAULT_RTLIB=compiler-rt
+                -DCLANG_DEFAULT_UNWINDLIB=libunwind
+                -DCLANG_DEFAULT_CXX_STDLIB=libc++
+                -DCOMPILER_RT_USE_BUILTINS_LIBRARY=ON
+                -DCOMPILER_RT_USE_LIBCXX=ON
+                -DCOMPILER_RT_EXCLUDE_ATOMIC_BUILTIN=OFF
             )
         fi
     fi
@@ -340,7 +356,7 @@ build_llvm_tool() {
 
     log "selected LLVM CMake cache entries:"
     if [ -f "$build_dir/CMakeCache.txt" ]; then
-        grep -E '^(LLVM_ENABLE_PROJECTS|LLVM_ENABLE_RUNTIMES|LLVM_TARGETS_TO_BUILD|LLVM_ENABLE_ZLIB|LLVM_ENABLE_ZSTD|LLVM_ENABLE_LIBXML2|LLDB_ENABLE_PYTHON|LLDB_ENABLE_LIBXML2|LLDB_ENABLE_LZMA|LLDB_ENABLE_LIBEDIT|LLDB_ENABLE_CURSES|Python3_EXECUTABLE|Python3_LIBRARY|Python3_INCLUDE_DIR|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|DEFAULT_SYSROOT|COMPILER_RT_DEFAULT_TARGET_ONLY):' "$build_dir/CMakeCache.txt" || true
+        grep -E '^(LLVM_ENABLE_PROJECTS|LLVM_ENABLE_RUNTIMES|LLVM_TARGETS_TO_BUILD|LLVM_ENABLE_ZLIB|LLVM_ENABLE_ZSTD|LLVM_ENABLE_LIBXML2|LLVM_ENABLE_LIBCXX|LLVM_HOST_TRIPLE|CLANG_DEFAULT_RTLIB|CLANG_DEFAULT_UNWINDLIB|CLANG_DEFAULT_CXX_STDLIB|COMPILER_RT_USE_BUILTINS_LIBRARY|COMPILER_RT_USE_LIBCXX|COMPILER_RT_EXCLUDE_ATOMIC_BUILTIN|LLDB_ENABLE_PYTHON|LLDB_ENABLE_SWIG|LLDB_EMBED_PYTHON_HOME|LLDB_ENABLE_LIBXML2|LLDB_ENABLE_LZMA|LLDB_ENABLE_LIBEDIT|LLDB_ENABLE_CURSES|Python3_EXECUTABLE|Python3_LIBRARY|Python3_INCLUDE_DIR|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|DEFAULT_SYSROOT|COMPILER_RT_DEFAULT_TARGET_ONLY):' "$build_dir/CMakeCache.txt" || true
     fi
 
     cmake --build "$build_dir" --parallel "$CUP_JOBS"

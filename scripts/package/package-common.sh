@@ -659,7 +659,12 @@ copy_windows_runtime_dlls() {
     queue_file="$(mktemp)"
     seen_file="$(mktemp)"
 
-    find "$bin_dir" -maxdepth 1 \( -name '*.exe' -o -name '*.dll' \) -type f | sort > "$queue_file"
+    {
+        find "$bin_dir" -maxdepth 1 \( -name '*.exe' -o -name '*.dll' \) -type f
+        if [ -n "${PREFIX:-}" ] && [ -d "$PREFIX/lib" ]; then
+            find "$PREFIX/lib" -type f -name '*.pyd'
+        fi
+    } | sort -u > "$queue_file"
     : > "$seen_file"
 
     while [ -s "$queue_file" ]; do
@@ -821,9 +826,16 @@ PYSCRIPT
 
     log "copying Python standard library: $stdlib -> $dst"
 
-    rm -rf "$dst"
-    mkdir -p "$(dirname "$dst")"
-    cp -a "$stdlib" "$dst"
+    mkdir -p "$dst"
+    cp -a "$stdlib"/. "$dst"/
+
+    if [ -d "$dst/site-packages/lldb" ]; then
+        log "preserved LLDB Python package: $dst/site-packages/lldb"
+        "$python_executable" -m compileall -q "$dst/site-packages/lldb" || true
+        "$python_executable" -O -m compileall -q "$dst/site-packages/lldb" || true
+    else
+        log "warning: LLDB Python package was not found under $dst/site-packages/lldb"
+    fi
 
     find "$dst" -type d -name __pycache__ -prune -exec rm -rf {} +
     find "$dst" -type d \( -name test -o -name tests \) -prune -exec rm -rf {} +
@@ -916,6 +928,7 @@ create_windows_python_path_config() {
         {
             printf '../lib/python%s\n' "$version"
             printf '../lib/python%s/lib-dynload\n' "$version"
+            printf '../lib/python%s/site-packages\n' "$version"
             printf 'import site\n'
         } > "$pth_file"
     done
@@ -1004,7 +1017,14 @@ verify_windows_runtime_dlls() {
             fi
             missing=1
         done < <(windows_pe_import_dll_names "$current")
-    done < <(find "$bin_dir" -maxdepth 1 \( -name '*.exe' -o -name '*.dll' \) -type f | sort)
+    done < <(
+        {
+            find "$bin_dir" -maxdepth 1 \( -name '*.exe' -o -name '*.dll' \) -type f
+            if [ -n "${PREFIX:-}" ] && [ -d "$PREFIX/lib" ]; then
+                find "$PREFIX/lib" -type f -name '*.pyd'
+            fi
+        } | sort -u
+    )
 
     if [ "$missing" -ne 0 ]; then
         die "Windows runtime DLL verification failed"

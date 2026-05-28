@@ -328,11 +328,15 @@ info_bool() {
 prefix_executable_exists() {
     local prefix="$1"
     local name="$2"
+    local candidate
 
-    [ -x "$prefix/bin/$name" ] ||
-        [ -x "$prefix/bin/$name.exe" ] ||
-        [ -x "$prefix/bin/$name.bat" ] ||
-        [ -x "$prefix/bin/$name.cmd" ]
+    while IFS= read -r candidate; do
+        if package_bin_exact_file_exists "$prefix" "$candidate"; then
+            return 0
+        fi
+    done < <(package_bin_candidate_names "$name")
+
+    return 1
 }
 
 prefix_file_exists_any() {
@@ -369,17 +373,40 @@ metadata_bool_for_executable() {
     info_bool prefix_executable_exists "$prefix" "$name"
 }
 
+package_bin_candidate_names() {
+    local name="$1"
+
+    if is_windows_platform "$HOST_PLATFORM"; then
+        printf '%s\n' "$name.exe" "$name.bat" "$name.cmd" "$name"
+    else
+        printf '%s\n' "$name"
+    fi
+}
+
+package_bin_exact_file_exists() {
+    local prefix="$1"
+    local candidate="$2"
+
+    [ -n "$candidate" ] || return 1
+    [ -d "$prefix/bin" ] || return 1
+
+    # MSYS2/MinGW can apply .exe convenience behavior to some file tests.
+    # Use find -name to require that the exact filename is present in the
+    # package, so metadata never says bin/gdb when the real file is bin/gdb.exe.
+    [ -n "$(find "$prefix/bin" -maxdepth 1 -name "$candidate" -print -quit 2>/dev/null)" ]
+}
+
 package_bin_entry_path() {
     local prefix="$1"
     local name="$2"
     local candidate
 
-    for candidate in "$name" "$name.exe" "$name.bat" "$name.cmd"; do
-        if [ -e "$prefix/bin/$candidate" ]; then
+    while IFS= read -r candidate; do
+        if package_bin_exact_file_exists "$prefix" "$candidate"; then
             printf 'bin/%s\n' "$candidate"
             return 0
         fi
-    done
+    done < <(package_bin_candidate_names "$name")
 
     printf 'bin/%s\n' "$name"
 }
@@ -389,12 +416,12 @@ package_bin_entry_path_if_present() {
     local name="$2"
     local candidate
 
-    for candidate in "$name" "$name.exe" "$name.bat" "$name.cmd"; do
-        if [ -e "$prefix/bin/$candidate" ]; then
+    while IFS= read -r candidate; do
+        if package_bin_exact_file_exists "$prefix" "$candidate"; then
             printf 'bin/%s\n' "$candidate"
             return 0
         fi
-    done
+    done < <(package_bin_candidate_names "$name")
 
     return 1
 }
@@ -428,7 +455,6 @@ info_required_entry() {
 
     printf '%s=%s\n' "$key" "$(package_required_bin_entry_path "$prefix" "$name")"
 }
-
 
 metadata_bool_for_files() {
     local prefix="$1"
@@ -854,6 +880,36 @@ EOF_DLLS
     fi
 
     create_windows_python_dll_aliases "$PREFIX/bin"
+    create_windows_python_path_config "$PREFIX/bin" "$version"
+}
+
+
+create_windows_python_path_config() {
+    local bin_dir="$1"
+    local version="$2"
+    local major
+    local minor
+    local pth_file
+
+    [ -d "$bin_dir" ] || return 0
+    [ -n "$version" ] || return 0
+
+    major="${version%%.*}"
+    minor="${version#*.}"
+    minor="${minor%%.*}"
+
+    [ -n "$major" ] || return 0
+    [ -n "$minor" ] || return 0
+
+    pth_file="$bin_dir/python${major}${minor}._pth"
+
+    log "creating Windows Python path config: $(basename "$pth_file")"
+
+    {
+        printf '../lib/python%s\n' "$version"
+        printf '../lib/python%s/lib-dynload\n' "$version"
+        printf 'import site\n'
+    } > "$pth_file"
 }
 
 create_windows_python_dll_aliases() {

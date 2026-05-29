@@ -56,7 +56,7 @@ case "$TOOL" in
     lldb)
         COMPONENT="debugger"
         LLVM_PROJECTS="clang;lld;lldb"
-        CONTENTS_EXTRA=("contents.uses_clang=true" "contents.uses_lld=true")
+        CONTENTS_EXTRA=("contents.uses_clang=true" "contents.uses_lld=true" "config.python=true" "config.libxml2=true" "config.lzma=true")
         ;;
     clangd)
         COMPONENT="language-server"
@@ -332,18 +332,37 @@ build_llvm_tool() {
                 -DCOMPILER_RT_USE_BUILTINS_LIBRARY=ON
                 -DCOMPILER_RT_USE_LIBCXX=ON
                 -DCOMPILER_RT_EXCLUDE_ATOMIC_BUILTIN=OFF
+
+                # These runtime options must be provided both as ordinary cache
+                # entries and as per-runtime-target entries.  With
+                # LLVM_RUNTIME_TARGETS set, LLVM configures the runtimes through
+                # an external project and only RUNTIMES_<triple>_* variables are
+                # reliably forwarded to that nested CMake invocation.
+                -DLIBUNWIND_ENABLE_SHARED=OFF
+                -DLIBUNWIND_ENABLE_STATIC=ON
                 -DLIBCXXABI_ENABLE_SHARED=OFF
                 -DLIBCXXABI_ENABLE_STATIC=ON
                 -DLIBCXXABI_USE_LLVM_UNWINDER=ON
-                -DLIBCXXABI_LIBCXX_INCLUDES="$source_dir/libcxx/include"
                 -DLIBCXX_ENABLE_SHARED=OFF
                 -DLIBCXX_ENABLE_STATIC=ON
                 -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON
-                -DLIBUNWIND_ENABLE_SHARED=OFF
-                -DLIBUNWIND_ENABLE_STATIC=ON
+                -DCOMPILER_RT_BUILD_BUILTINS=ON
                 -DCOMPILER_RT_BUILD_SANITIZERS=ON
                 -DCOMPILER_RT_BUILD_PROFILE=ON
                 -DCOMPILER_RT_BUILD_LIBFUZZER=OFF
+
+                "-DRUNTIMES_${HOST_TRIPLE}_LIBUNWIND_ENABLE_SHARED=OFF"
+                "-DRUNTIMES_${HOST_TRIPLE}_LIBUNWIND_ENABLE_STATIC=ON"
+                "-DRUNTIMES_${HOST_TRIPLE}_LIBCXXABI_ENABLE_SHARED=OFF"
+                "-DRUNTIMES_${HOST_TRIPLE}_LIBCXXABI_ENABLE_STATIC=ON"
+                "-DRUNTIMES_${HOST_TRIPLE}_LIBCXXABI_USE_LLVM_UNWINDER=ON"
+                "-DRUNTIMES_${HOST_TRIPLE}_LIBCXX_ENABLE_SHARED=OFF"
+                "-DRUNTIMES_${HOST_TRIPLE}_LIBCXX_ENABLE_STATIC=ON"
+                "-DRUNTIMES_${HOST_TRIPLE}_LIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON"
+                "-DRUNTIMES_${HOST_TRIPLE}_COMPILER_RT_BUILD_BUILTINS=ON"
+                "-DRUNTIMES_${HOST_TRIPLE}_COMPILER_RT_BUILD_SANITIZERS=ON"
+                "-DRUNTIMES_${HOST_TRIPLE}_COMPILER_RT_BUILD_PROFILE=ON"
+                "-DRUNTIMES_${HOST_TRIPLE}_COMPILER_RT_BUILD_LIBFUZZER=OFF"
             )
         fi
     fi
@@ -373,10 +392,17 @@ build_llvm_tool() {
 
     log "selected LLVM CMake cache entries:"
     if [ -f "$build_dir/CMakeCache.txt" ]; then
-        grep -E '^(LLVM_ENABLE_PROJECTS|LLVM_ENABLE_RUNTIMES|LLVM_TARGETS_TO_BUILD|LLVM_ENABLE_ZLIB|LLVM_ENABLE_ZSTD|LLVM_ENABLE_LIBXML2|LLVM_ENABLE_LIBCXX|LLVM_HOST_TRIPLE|CLANG_DEFAULT_RTLIB|CLANG_DEFAULT_UNWINDLIB|CLANG_DEFAULT_CXX_STDLIB|COMPILER_RT_USE_BUILTINS_LIBRARY|COMPILER_RT_USE_LIBCXX|COMPILER_RT_EXCLUDE_ATOMIC_BUILTIN|COMPILER_RT_BUILD_SANITIZERS|COMPILER_RT_BUILD_PROFILE|COMPILER_RT_BUILD_LIBFUZZER|LLVM_RUNTIME_TARGETS|LIBCXXABI_ENABLE_SHARED|LIBCXXABI_ENABLE_STATIC|LIBCXXABI_USE_LLVM_UNWINDER|LIBCXXABI_LIBCXX_INCLUDES|LIBCXX_ENABLE_SHARED|LIBCXX_ENABLE_STATIC|LIBCXX_ENABLE_STATIC_ABI_LIBRARY|LIBUNWIND_ENABLE_SHARED|LIBUNWIND_ENABLE_STATIC|LLDB_ENABLE_PYTHON|LLDB_ENABLE_SWIG|LLDB_EMBED_PYTHON_HOME|LLDB_ENABLE_LIBXML2|LLDB_ENABLE_LZMA|LLDB_ENABLE_LIBEDIT|LLDB_ENABLE_CURSES|Python3_EXECUTABLE|Python3_LIBRARY|Python3_INCLUDE_DIR|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|DEFAULT_SYSROOT|COMPILER_RT_DEFAULT_TARGET_ONLY):' "$build_dir/CMakeCache.txt" || true
+        grep -E '^(LLVM_ENABLE_PROJECTS|LLVM_ENABLE_RUNTIMES|LLVM_TARGETS_TO_BUILD|LLVM_ENABLE_ZLIB|LLVM_ENABLE_ZSTD|LLVM_ENABLE_LIBXML2|LLVM_ENABLE_LIBCXX|LLVM_HOST_TRIPLE|CLANG_DEFAULT_RTLIB|CLANG_DEFAULT_UNWINDLIB|CLANG_DEFAULT_CXX_STDLIB|COMPILER_RT_USE_BUILTINS_LIBRARY|COMPILER_RT_USE_LIBCXX|COMPILER_RT_EXCLUDE_ATOMIC_BUILTIN|LLVM_RUNTIME_TARGETS|LIBUNWIND_ENABLE_SHARED|LIBUNWIND_ENABLE_STATIC|LIBCXXABI_ENABLE_SHARED|LIBCXXABI_ENABLE_STATIC|LIBCXXABI_USE_LLVM_UNWINDER|LIBCXX_ENABLE_SHARED|LIBCXX_ENABLE_STATIC|LIBCXX_ENABLE_STATIC_ABI_LIBRARY|COMPILER_RT_BUILD_BUILTINS|COMPILER_RT_BUILD_SANITIZERS|COMPILER_RT_BUILD_PROFILE|COMPILER_RT_BUILD_LIBFUZZER|RUNTIMES_.*_(LIBUNWIND|LIBCXXABI|LIBCXX|COMPILER_RT)_.*|LLDB_ENABLE_PYTHON|LLDB_ENABLE_SWIG|LLDB_EMBED_PYTHON_HOME|LLDB_ENABLE_LIBXML2|LLDB_ENABLE_LZMA|LLDB_ENABLE_LIBEDIT|LLDB_ENABLE_CURSES|Python3_EXECUTABLE|Python3_LIBRARY|Python3_INCLUDE_DIR|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|DEFAULT_SYSROOT|COMPILER_RT_DEFAULT_TARGET_ONLY):' "$build_dir/CMakeCache.txt" || true
     fi
 
-    cmake --build "$build_dir" --parallel "$CUP_JOBS"
+    if ! cmake --build "$build_dir" --parallel "$CUP_JOBS"; then
+        log "LLVM build failed; dumping nested runtime CMake cache entries when available"
+        find "$build_dir/runtimes" -name CMakeCache.txt -print 2>/dev/null | while IFS= read -r runtime_cache; do
+            log "runtime cache: $runtime_cache"
+            grep -E '^(LLVM_ENABLE_RUNTIMES|LLVM_DEFAULT_TARGET_TRIPLE|LLVM_RUNTIMES_TARGET|CMAKE_C_COMPILER_TARGET|CMAKE_CXX_COMPILER_TARGET|LIBUNWIND_ENABLE_SHARED|LIBUNWIND_ENABLE_STATIC|LIBCXXABI_ENABLE_SHARED|LIBCXXABI_ENABLE_STATIC|LIBCXXABI_USE_LLVM_UNWINDER|LIBCXX_ENABLE_SHARED|LIBCXX_ENABLE_STATIC|LIBCXX_ENABLE_STATIC_ABI_LIBRARY|COMPILER_RT_BUILD_BUILTINS|COMPILER_RT_BUILD_SANITIZERS|COMPILER_RT_BUILD_PROFILE|COMPILER_RT_BUILD_LIBFUZZER):' "$runtime_cache" || true
+        done
+        return 1
+    fi
     cmake --install "$build_dir"
 
     prune_llvm_package_bins
@@ -472,9 +498,6 @@ write_llvm_info() {
     local has_compiler_rt
     local has_asan
     local has_ubsan
-    local has_sanitizers
-    local has_profile_runtime
-    local has_cxx_runtime
 
     has_clang="$(metadata_bool_for_executable "$PREFIX" clang)"
     has_clangpp="$(metadata_bool_for_executable "$PREFIX" clang++)"
@@ -507,14 +530,6 @@ write_llvm_info() {
     has_compiler_rt="$(metadata_bool_for_files "$PREFIX" 'clang_rt.*' 'libclang_rt.*')"
     has_asan="$(metadata_bool_for_files "$PREFIX" 'clang_rt.asan*' 'libclang_rt.asan*')"
     has_ubsan="$(metadata_bool_for_files "$PREFIX" 'clang_rt.ubsan*' 'libclang_rt.ubsan*')"
-    has_profile_runtime="$(metadata_bool_for_files "$PREFIX" 'clang_rt.profile*' 'libclang_rt.profile*')"
-    has_cxx_runtime="$(metadata_bool_for_files "$PREFIX" 'libc++*' 'libcxx*')"
-
-    if [ "$has_asan" = "true" ] || [ "$has_ubsan" = "true" ]; then
-        has_sanitizers=true
-    else
-        has_sanitizers=false
-    fi
 
     local info=(
         "package.component=$COMPONENT"
@@ -555,7 +570,6 @@ write_llvm_info() {
                 "$(info_entry_if_present entry.lld "$PREFIX" ld.lld)"
                 "features.c=$has_clang"
                 "features.cpp=$has_clangpp"
-                "features.cxx_runtime=$has_cxx_runtime"
                 "features.resource_dir=$has_resource_dir"
                 "features.lld_integration=$has_lld"
                 "features.lto=$has_lld"
@@ -570,10 +584,11 @@ write_llvm_info() {
                 "features.target_macos_x64=$( [ "$TARGET_PLATFORM" = "macos-x64" ] && printf true || printf false )"
                 "features.target_macos_arm64=$( [ "$TARGET_PLATFORM" = "macos-arm64" ] && printf true || printf false )"
                 "contents.compiler_rt=$has_compiler_rt"
-                "features.sanitizers=$has_sanitizers"
+                "features.sanitizers=$( [ "$has_asan" = true ] || [ "$has_ubsan" = true ]; then printf true; else printf false; fi )"
                 "features.asan=$has_asan"
                 "features.ubsan=$has_ubsan"
-                "features.profile_runtime=$has_profile_runtime"
+                "features.profile_runtime=$(metadata_bool_for_files "$PREFIX" 'clang_rt.profile*' 'libclang_rt.profile*')"
+                "features.cxx_runtime=$(metadata_bool_for_files "$PREFIX" 'libc++*' 'libcxx*' 'libunwind*')"
             )
             ;;
         lld)

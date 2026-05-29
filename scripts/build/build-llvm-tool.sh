@@ -181,6 +181,50 @@ llvm_cxx_runtime_files_present() {
         'libc++*' 'libcxx*' 'libc++abi*' 'libcxxabi*' 'libunwind*'
 }
 
+
+clang_installed_resource_dir() {
+    local resource_root="$PREFIX/lib/clang"
+    local resource_dir
+
+    [ -d "$resource_root" ] || return 1
+
+    while IFS= read -r resource_dir; do
+        [ -d "$resource_dir" ] || continue
+        printf '%s\n' "$resource_dir"
+        return 0
+    done < <(find "$resource_root" -mindepth 1 -maxdepth 1 -type d | sort -Vr)
+
+    return 1
+}
+
+copy_clang_runtimes_to_resource_dir() {
+    local resource_dir
+    local runtime_dir
+    local runtime_name
+    local dst
+
+    if [ "$TOOL" != "clang" ]; then
+        return 0
+    fi
+
+    resource_dir="$(clang_installed_resource_dir || true)"
+    if [ -z "$resource_dir" ]; then
+        log "Clang resource directory not found; skipping runtime layout normalization"
+        return 0
+    fi
+
+    for runtime_dir in "$PREFIX/lib/darwin" "$PREFIX/lib/linux" "$PREFIX/lib/windows"; do
+        [ -d "$runtime_dir" ] || continue
+
+        runtime_name="$(basename "$runtime_dir")"
+        dst="$resource_dir/lib/$runtime_name"
+
+        log "normalizing Clang runtime layout: $runtime_dir -> $dst"
+        mkdir -p "$dst"
+        cp -a "$runtime_dir"/. "$dst"/
+    done
+}
+
 PREFIX="$CUP_STAGE_DIR/$(package_base_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
 
 need_common_tools() {
@@ -304,6 +348,106 @@ prune_llvm_package_bins() {
     esac
 }
 
+build_llvm_builtins_runtime() {
+    local source_dir="$1"
+    local tool_build_dir="$2"
+    local builtins_build_dir="$CUP_BUILD_DIR/llvm-$TOOL-builtins-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
+    local exe_suffix
+    local clang_c
+    local clang_cxx
+    local llvm_ar
+    local llvm_ranlib
+    local llvm_nm
+    local cmake_builtins_args=()
+    local sdk_path
+
+    if ! llvm_runtimes_enabled; then
+        return 0
+    fi
+
+    if [ "$TOOL" != "clang" ]; then
+        return 0
+    fi
+
+    if is_windows_platform "$HOST_PLATFORM"; then
+        exe_suffix=".exe"
+    else
+        exe_suffix=""
+    fi
+
+    clang_c="$tool_build_dir/bin/clang$exe_suffix"
+    clang_cxx="$tool_build_dir/bin/clang++$exe_suffix"
+    llvm_ar="$tool_build_dir/bin/llvm-ar$exe_suffix"
+    llvm_ranlib="$tool_build_dir/bin/llvm-ranlib$exe_suffix"
+    llvm_nm="$tool_build_dir/bin/llvm-nm$exe_suffix"
+
+    [ -x "$clang_c" ] || die "just-built clang not found: $clang_c"
+    [ -x "$clang_cxx" ] || die "just-built clang++ not found: $clang_cxx"
+
+    log "building LLVM compiler-rt builtins for $TOOL $VERSION"
+
+    rm -rf "$builtins_build_dir"
+    mkdir -p "$builtins_build_dir"
+
+    cmake_builtins_args+=(
+        -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_INSTALL_PREFIX="$PREFIX"
+        -DCMAKE_C_COMPILER="$clang_c"
+        -DCMAKE_CXX_COMPILER="$clang_cxx"
+        -DCMAKE_C_COMPILER_TARGET="$HOST_TRIPLE"
+        -DCMAKE_CXX_COMPILER_TARGET="$HOST_TRIPLE"
+        -DLLVM_DEFAULT_TARGET_TRIPLE="$HOST_TRIPLE"
+        -DLLVM_ENABLE_RUNTIMES=compiler-rt
+        -DCOMPILER_RT_BUILD_BUILTINS=ON
+        -DCOMPILER_RT_BUILD_SANITIZERS=OFF
+        -DCOMPILER_RT_BUILD_PROFILE=OFF
+        -DCOMPILER_RT_BUILD_LIBFUZZER=OFF
+        -DCOMPILER_RT_BUILD_XRAY=OFF
+        -DCOMPILER_RT_BUILD_MEMPROF=OFF
+        -DCOMPILER_RT_BUILD_ORC=OFF
+        -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON
+    )
+
+    [ -x "$llvm_ar" ] && cmake_builtins_args+=(-DCMAKE_AR="$llvm_ar")
+    [ -x "$llvm_ranlib" ] && cmake_builtins_args+=(-DCMAKE_RANLIB="$llvm_ranlib")
+    [ -x "$llvm_nm" ] && cmake_builtins_args+=(-DCMAKE_NM="$llvm_nm")
+
+    while IFS= read -r arg; do
+        [ -n "$arg" ] && cmake_builtins_args+=("$arg")
+    done < <(llvm_common_cmake_args)
+
+    if is_windows_platform "$HOST_PLATFORM"; then
+        [ -n "${MINGW_PREFIX:-}" ] || die "MINGW_PREFIX is not set; run this build inside an MSYS2 CLANG64 environment"
+        cmake_builtins_args+=(
+            -DCMAKE_SYSROOT="$MINGW_PREFIX"
+            -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib
+            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
+        )
+    elif is_macos_platform "$HOST_PLATFORM"; then
+        sdk_path="$(macos_sdk_path)"
+        if [ -n "$sdk_path" ]; then
+            cmake_builtins_args+=(-DCMAKE_OSX_SYSROOT="$sdk_path")
+        fi
+    fi
+
+    cmake -S "$source_dir/runtimes" -B "$builtins_build_dir" -G Ninja \
+        "${cmake_builtins_args[@]}"
+
+    log "selected LLVM builtins CMake cache entries:"
+    if [ -f "$builtins_build_dir/CMakeCache.txt" ]; then
+        llvm_dump_cmake_cache_entries "$builtins_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|LLVM_DEFAULT_TARGET_TRIPLE|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_C_COMPILER_TARGET|CMAKE_CXX_COMPILER_TARGET|CMAKE_SYSROOT|CMAKE_OSX_SYSROOT|CMAKE_TRY_COMPILE_TARGET_TYPE|COMPILER_RT_BUILD_BUILTINS|COMPILER_RT_BUILD_SANITIZERS|COMPILER_RT_BUILD_PROFILE|COMPILER_RT_BUILD_LIBFUZZER|COMPILER_RT_DEFAULT_TARGET_ONLY):'
+    fi
+
+    if ! cmake --build "$builtins_build_dir" --parallel "$CUP_JOBS"; then
+        log "LLVM compiler-rt builtins build failed; selected CMake cache entries:"
+        llvm_dump_cmake_cache_entries "$builtins_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_SYSROOT|CMAKE_OSX_SYSROOT|COMPILER_RT_):'
+        return 1
+    fi
+
+    cmake --install "$builtins_build_dir"
+    copy_clang_runtimes_to_resource_dir
+}
+
 build_llvm_runtimes() {
     local source_dir="$1"
     local tool_build_dir="$2"
@@ -317,6 +461,7 @@ build_llvm_runtimes() {
     local llvm_linker
     local cmake_runtime_args=()
     local sdk_path
+    local installed_resource_dir
 
     if ! llvm_runtimes_enabled; then
         return 0
@@ -338,6 +483,11 @@ build_llvm_runtimes() {
     [ -x "$clang_c" ] || die "just-built clang not found: $clang_c"
     [ -x "$clang_cxx" ] || die "just-built clang++ not found: $clang_cxx"
 
+    installed_resource_dir="$(clang_installed_resource_dir || true)"
+    if [ -z "$installed_resource_dir" ]; then
+        die "Clang resource directory not found after builtins install"
+    fi
+
     LLVM_RUNTIME_BUILD_DIR="$runtime_build_dir"
     log "building LLVM runtimes for $TOOL $VERSION: $LLVM_RUNTIMES"
 
@@ -353,7 +503,7 @@ build_llvm_runtimes() {
         -DCMAKE_CXX_COMPILER_TARGET="$HOST_TRIPLE"
         -DLLVM_DEFAULT_TARGET_TRIPLE="$HOST_TRIPLE"
         -DLLVM_ENABLE_RUNTIMES="$LLVM_RUNTIMES"
-        -DCOMPILER_RT_BUILD_BUILTINS=ON
+        -DCOMPILER_RT_BUILD_BUILTINS=OFF
         -DCOMPILER_RT_BUILD_SANITIZERS=ON
         -DCOMPILER_RT_BUILD_PROFILE=ON
         -DCOMPILER_RT_BUILD_LIBFUZZER=OFF
@@ -390,10 +540,20 @@ build_llvm_runtimes() {
     fi
 
     if is_windows_platform "$HOST_PLATFORM"; then
+        cmake_runtime_args+=(
+            "-DCMAKE_C_FLAGS_INIT=-resource-dir $installed_resource_dir --rtlib=compiler-rt"
+            "-DCMAKE_CXX_FLAGS_INIT=-resource-dir $installed_resource_dir --rtlib=compiler-rt"
+            "-DCMAKE_EXE_LINKER_FLAGS_INIT=-resource-dir $installed_resource_dir --rtlib=compiler-rt -fuse-ld=lld"
+            "-DCMAKE_SHARED_LINKER_FLAGS_INIT=-resource-dir $installed_resource_dir --rtlib=compiler-rt -fuse-ld=lld"
+        )
+    fi
+
+    if is_windows_platform "$HOST_PLATFORM"; then
         [ -n "${MINGW_PREFIX:-}" ] || die "MINGW_PREFIX is not set; run this build inside an MSYS2 CLANG64 environment"
         cmake_runtime_args+=(
             -DCMAKE_SYSROOT="$MINGW_PREFIX"
             -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib
+            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
         )
     elif is_macos_platform "$HOST_PLATFORM"; then
         sdk_path="$(macos_sdk_path)"
@@ -418,6 +578,7 @@ build_llvm_runtimes() {
         return 1
     fi
     cmake --install "$runtime_build_dir"
+    copy_clang_runtimes_to_resource_dir
 }
 
 build_llvm_tool() {
@@ -516,6 +677,7 @@ build_llvm_tool() {
     fi
     cmake --install "$build_dir"
 
+    build_llvm_builtins_runtime "$source_dir" "$build_dir"
     build_llvm_runtimes "$source_dir" "$build_dir"
 
     prune_llvm_package_bins

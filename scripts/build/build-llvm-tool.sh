@@ -498,6 +498,9 @@ write_llvm_info() {
     local has_compiler_rt
     local has_asan
     local has_ubsan
+    local has_sanitizers
+    local has_profile_runtime
+    local has_cxx_runtime
 
     has_clang="$(metadata_bool_for_executable "$PREFIX" clang)"
     has_clangpp="$(metadata_bool_for_executable "$PREFIX" clang++)"
@@ -530,6 +533,13 @@ write_llvm_info() {
     has_compiler_rt="$(metadata_bool_for_files "$PREFIX" 'clang_rt.*' 'libclang_rt.*')"
     has_asan="$(metadata_bool_for_files "$PREFIX" 'clang_rt.asan*' 'libclang_rt.asan*')"
     has_ubsan="$(metadata_bool_for_files "$PREFIX" 'clang_rt.ubsan*' 'libclang_rt.ubsan*')"
+    if [ "$has_asan" = true ] || [ "$has_ubsan" = true ]; then
+        has_sanitizers=true
+    else
+        has_sanitizers=false
+    fi
+    has_profile_runtime="$(metadata_bool_for_files "$PREFIX" 'clang_rt.profile*' 'libclang_rt.profile*')"
+    has_cxx_runtime="$(metadata_bool_for_files "$PREFIX" 'libc++*' 'libcxx*' 'libunwind*')"
 
     local info=(
         "package.component=$COMPONENT"
@@ -584,11 +594,11 @@ write_llvm_info() {
                 "features.target_macos_x64=$( [ "$TARGET_PLATFORM" = "macos-x64" ] && printf true || printf false )"
                 "features.target_macos_arm64=$( [ "$TARGET_PLATFORM" = "macos-arm64" ] && printf true || printf false )"
                 "contents.compiler_rt=$has_compiler_rt"
-                "features.sanitizers=$( [ "$has_asan" = true ] || [ "$has_ubsan" = true ]; then printf true; else printf false; fi )"
+                "features.sanitizers=$has_sanitizers"
                 "features.asan=$has_asan"
                 "features.ubsan=$has_ubsan"
-                "features.profile_runtime=$(metadata_bool_for_files "$PREFIX" 'clang_rt.profile*' 'libclang_rt.profile*')"
-                "features.cxx_runtime=$(metadata_bool_for_files "$PREFIX" 'libc++*' 'libcxx*' 'libunwind*')"
+                "features.profile_runtime=$has_profile_runtime"
+                "features.cxx_runtime=$has_cxx_runtime"
             )
             ;;
         lld)

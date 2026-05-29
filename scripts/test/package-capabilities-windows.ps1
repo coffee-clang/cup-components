@@ -74,6 +74,13 @@ function Show-InfoContract {
     $info = Join-Path $Root 'info.txt'
     if (-not (Test-Path $info)) { Write-Host 'info.txt: missing'; return }
 
+    $duplicateKeys = Get-Content $info | ForEach-Object { ($_ -split '=', 2)[0] } | Group-Object | Where-Object { $_.Count -gt 1 } | Sort-Object Name
+    if ($duplicateKeys) {
+        Write-Host ""
+        Write-Host '[duplicate metadata keys]'
+        foreach ($key in $duplicateKeys) { Write-Host "  WARNING: $($key.Name)" }
+    }
+
     Write-Host ""
     Write-Host '[package identity]'
     foreach ($key in @(

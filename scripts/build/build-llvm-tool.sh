@@ -56,7 +56,7 @@ case "$TOOL" in
     lldb)
         COMPONENT="debugger"
         LLVM_PROJECTS="clang;lld;lldb"
-        CONTENTS_EXTRA=("contents.uses_clang=true" "contents.uses_lld=true" "config.python=true" "config.libxml2=true" "config.lzma=true")
+        CONTENTS_EXTRA=("contents.uses_clang=true" "contents.uses_lld=true")
         ;;
     clangd)
         COMPONENT="language-server"
@@ -130,6 +130,45 @@ llvm_runtimes_for_tool() {
 }
 
 LLVM_RUNTIMES="$(llvm_runtimes_for_tool)"
+LLVM_RUNTIME_BUILD_DIR=""
+
+llvm_runtimes_enabled() {
+    case "${CUP_LLVM_ENABLE_RUNTIMES:-auto}" in
+        auto|on|yes|true|1)
+            [ "$TOOL" = "clang" ] && [ -n "$LLVM_RUNTIMES" ]
+            ;;
+        off|no|false|0)
+            return 1
+            ;;
+        *)
+            die "unsupported CUP_LLVM_ENABLE_RUNTIMES value: ${CUP_LLVM_ENABLE_RUNTIMES:-}"
+            ;;
+    esac
+}
+
+llvm_common_cmake_args() {
+    printf '%s\n' \
+        -DLLVM_INCLUDE_TESTS=OFF \
+        -DLLVM_INCLUDE_BENCHMARKS=OFF \
+        -DLLVM_INCLUDE_DOCS=OFF \
+        -DLLVM_BUILD_DOCS=OFF \
+        -DLLVM_ENABLE_BINDINGS=OFF \
+        -DLLVM_ENABLE_ASSERTIONS=OFF
+}
+
+macos_sdk_path() {
+    if is_macos_platform "$HOST_PLATFORM" && command -v xcrun >/dev/null 2>&1; then
+        xcrun --sdk macosx --show-sdk-path
+    fi
+}
+
+llvm_dump_cmake_cache_entries() {
+    local cache_file="$1"
+    local pattern="$2"
+
+    [ -f "$cache_file" ] || return 0
+    grep -E "$pattern" "$cache_file" || true
+}
 
 PREFIX="$CUP_STAGE_DIR/$(package_base_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
 
@@ -264,9 +303,11 @@ build_llvm_runtimes() {
     local llvm_ar
     local llvm_ranlib
     local llvm_nm
+    local llvm_linker
     local cmake_runtime_args=()
+    local sdk_path
 
-    if [ "$TOOL" != "clang" ] || [ -z "$LLVM_RUNTIMES" ]; then
+    if ! llvm_runtimes_enabled; then
         return 0
     fi
 
@@ -281,10 +322,12 @@ build_llvm_runtimes() {
     llvm_ar="$tool_build_dir/bin/llvm-ar$exe_suffix"
     llvm_ranlib="$tool_build_dir/bin/llvm-ranlib$exe_suffix"
     llvm_nm="$tool_build_dir/bin/llvm-nm$exe_suffix"
+    llvm_linker="$tool_build_dir/bin/ld.lld$exe_suffix"
 
     [ -x "$clang_c" ] || die "just-built clang not found: $clang_c"
     [ -x "$clang_cxx" ] || die "just-built clang++ not found: $clang_cxx"
 
+    LLVM_RUNTIME_BUILD_DIR="$runtime_build_dir"
     log "building LLVM runtimes for $TOOL $VERSION: $LLVM_RUNTIMES"
 
     rm -rf "$runtime_build_dir"
@@ -299,9 +342,6 @@ build_llvm_runtimes() {
         -DCMAKE_CXX_COMPILER_TARGET="$HOST_TRIPLE"
         -DLLVM_DEFAULT_TARGET_TRIPLE="$HOST_TRIPLE"
         -DLLVM_ENABLE_RUNTIMES="$LLVM_RUNTIMES"
-        -DLLVM_INCLUDE_TESTS=OFF
-        -DLLVM_INCLUDE_BENCHMARKS=OFF
-        -DLLVM_ENABLE_LLD=ON
         -DCOMPILER_RT_BUILD_BUILTINS=ON
         -DCOMPILER_RT_BUILD_SANITIZERS=ON
         -DCOMPILER_RT_BUILD_PROFILE=ON
@@ -325,7 +365,18 @@ build_llvm_runtimes() {
 
     [ -x "$llvm_ar" ] && cmake_runtime_args+=(-DCMAKE_AR="$llvm_ar")
     [ -x "$llvm_ranlib" ] && cmake_runtime_args+=(-DCMAKE_RANLIB="$llvm_ranlib")
+    while IFS= read -r arg; do
+        [ -n "$arg" ] && cmake_runtime_args+=("$arg")
+    done < <(llvm_common_cmake_args)
+
     [ -x "$llvm_nm" ] && cmake_runtime_args+=(-DCMAKE_NM="$llvm_nm")
+
+    if ! is_macos_platform "$HOST_PLATFORM" && [ -x "$llvm_linker" ]; then
+        cmake_runtime_args+=(
+            -DLLVM_ENABLE_LLD=ON
+            -DCMAKE_LINKER="$llvm_linker"
+        )
+    fi
 
     if is_windows_platform "$HOST_PLATFORM"; then
         [ -n "${MINGW_PREFIX:-}" ] || die "MINGW_PREFIX is not set; run this build inside an MSYS2 CLANG64 environment"
@@ -333,6 +384,13 @@ build_llvm_runtimes() {
             -DCMAKE_SYSROOT="$MINGW_PREFIX"
             -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib
         )
+    elif is_macos_platform "$HOST_PLATFORM"; then
+        sdk_path="$(macos_sdk_path)"
+        if [ -n "$sdk_path" ]; then
+            cmake_runtime_args+=(
+                -DCMAKE_OSX_SYSROOT="$sdk_path"
+            )
+        fi
     fi
 
     cmake -S "$source_dir/runtimes" -B "$runtime_build_dir" -G Ninja \
@@ -340,10 +398,14 @@ build_llvm_runtimes() {
 
     log "selected LLVM runtimes CMake cache entries:"
     if [ -f "$runtime_build_dir/CMakeCache.txt" ]; then
-        grep -E '^(LLVM_ENABLE_RUNTIMES|LLVM_DEFAULT_TARGET_TRIPLE|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_C_COMPILER_TARGET|CMAKE_CXX_COMPILER_TARGET|CMAKE_SYSROOT|LLVM_ENABLE_LLD|COMPILER_RT_BUILD_BUILTINS|COMPILER_RT_BUILD_SANITIZERS|COMPILER_RT_BUILD_PROFILE|COMPILER_RT_BUILD_LIBFUZZER|COMPILER_RT_USE_BUILTINS_LIBRARY|COMPILER_RT_USE_LIBCXX|COMPILER_RT_DEFAULT_TARGET_ONLY|LIBUNWIND_ENABLE_SHARED|LIBUNWIND_ENABLE_STATIC|LIBUNWIND_USE_COMPILER_RT|LIBCXXABI_ENABLE_SHARED|LIBCXXABI_ENABLE_STATIC|LIBCXXABI_USE_LLVM_UNWINDER|LIBCXXABI_USE_COMPILER_RT|LIBCXX_ENABLE_SHARED|LIBCXX_ENABLE_STATIC|LIBCXX_ENABLE_STATIC_ABI_LIBRARY|LIBCXX_USE_COMPILER_RT):' "$runtime_build_dir/CMakeCache.txt" || true
+        llvm_dump_cmake_cache_entries "$runtime_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|LLVM_DEFAULT_TARGET_TRIPLE|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_C_COMPILER_TARGET|CMAKE_CXX_COMPILER_TARGET|CMAKE_SYSROOT|CMAKE_OSX_SYSROOT|CMAKE_LINKER|LLVM_ENABLE_LLD|LLVM_INCLUDE_TESTS|LLVM_INCLUDE_BENCHMARKS|LLVM_INCLUDE_DOCS|LLVM_ENABLE_BINDINGS|LLVM_ENABLE_ASSERTIONS|COMPILER_RT_BUILD_BUILTINS|COMPILER_RT_BUILD_SANITIZERS|COMPILER_RT_BUILD_PROFILE|COMPILER_RT_BUILD_LIBFUZZER|COMPILER_RT_USE_BUILTINS_LIBRARY|COMPILER_RT_USE_LIBCXX|COMPILER_RT_DEFAULT_TARGET_ONLY|LIBUNWIND_ENABLE_SHARED|LIBUNWIND_ENABLE_STATIC|LIBUNWIND_USE_COMPILER_RT|LIBCXXABI_ENABLE_SHARED|LIBCXXABI_ENABLE_STATIC|LIBCXXABI_USE_LLVM_UNWINDER|LIBCXXABI_USE_COMPILER_RT|LIBCXX_ENABLE_SHARED|LIBCXX_ENABLE_STATIC|LIBCXX_ENABLE_STATIC_ABI_LIBRARY|LIBCXX_USE_COMPILER_RT):'
     fi
 
-    cmake --build "$runtime_build_dir" --parallel "$CUP_JOBS"
+    if ! cmake --build "$runtime_build_dir" --parallel "$CUP_JOBS"; then
+        log "LLVM runtime build failed; selected runtime CMake cache entries:"
+        llvm_dump_cmake_cache_entries "$runtime_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_SYSROOT|CMAKE_OSX_SYSROOT|COMPILER_RT_|LIBUNWIND_|LIBCXXABI_|LIBCXX_):'
+        return 1
+    fi
     cmake --install "$runtime_build_dir"
 }
 
@@ -352,6 +414,8 @@ build_llvm_tool() {
     local build_dir="$CUP_BUILD_DIR/llvm-$TOOL-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
     LLVM_BUILD_DIR="$build_dir"
     local cmake_extra_args=()
+    local cmake_common_args=()
+    local sdk_path
 
     if is_cross_build "$HOST_PLATFORM" "$TARGET_PLATFORM"; then
         die "cross LLVM tool builds are not supported by this recipe yet: $HOST_PLATFORM -> $TARGET_PLATFORM"
@@ -407,22 +471,38 @@ build_llvm_tool() {
         )
     fi
 
+    while IFS= read -r arg; do
+        [ -n "$arg" ] && cmake_common_args+=("$arg")
+    done < <(llvm_common_cmake_args)
+
+    if is_macos_platform "$HOST_PLATFORM"; then
+        sdk_path="$(macos_sdk_path)"
+        if [ -n "$sdk_path" ]; then
+            cmake_extra_args+=(
+                -DCMAKE_OSX_SYSROOT="$sdk_path"
+            )
+        fi
+    fi
+
     cmake -S "$source_dir/llvm" -B "$build_dir" -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX="$PREFIX" \
         -DLLVM_ENABLE_PROJECTS="$LLVM_PROJECTS" \
         -DLLVM_TARGETS_TO_BUILD="$LLVM_TARGETS" \
-        -DLLVM_INCLUDE_TESTS=OFF \
-        -DLLVM_INCLUDE_BENCHMARKS=OFF \
         -DLLDB_INCLUDE_TESTS=OFF \
+        "${cmake_common_args[@]}" \
         "${cmake_extra_args[@]}"
 
     log "selected LLVM CMake cache entries:"
     if [ -f "$build_dir/CMakeCache.txt" ]; then
-        grep -E '^(LLVM_ENABLE_PROJECTS|LLVM_ENABLE_RUNTIMES|LLVM_TARGETS_TO_BUILD|LLVM_ENABLE_ZLIB|LLVM_ENABLE_ZSTD|LLVM_ENABLE_LIBXML2|LLVM_HOST_TRIPLE|LLDB_ENABLE_PYTHON|LLDB_ENABLE_SWIG|LLDB_EMBED_PYTHON_HOME|LLDB_ENABLE_LIBXML2|LLDB_ENABLE_LZMA|LLDB_ENABLE_LIBEDIT|LLDB_ENABLE_CURSES|Python3_EXECUTABLE|Python3_LIBRARY|Python3_INCLUDE_DIR|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER):' "$build_dir/CMakeCache.txt" || true
+        llvm_dump_cmake_cache_entries "$build_dir/CMakeCache.txt" '^(LLVM_ENABLE_PROJECTS|LLVM_ENABLE_RUNTIMES|LLVM_TARGETS_TO_BUILD|LLVM_ENABLE_ZLIB|LLVM_ENABLE_ZSTD|LLVM_ENABLE_LIBXML2|LLVM_INCLUDE_TESTS|LLVM_INCLUDE_BENCHMARKS|LLVM_INCLUDE_DOCS|LLVM_ENABLE_BINDINGS|LLVM_ENABLE_ASSERTIONS|LLVM_HOST_TRIPLE|LLDB_ENABLE_PYTHON|LLDB_ENABLE_SWIG|LLDB_EMBED_PYTHON_HOME|LLDB_ENABLE_LIBXML2|LLDB_ENABLE_LZMA|LLDB_ENABLE_LIBEDIT|LLDB_ENABLE_CURSES|Python3_EXECUTABLE|Python3_LIBRARY|Python3_INCLUDE_DIR|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_OSX_SYSROOT):'
     fi
 
-    cmake --build "$build_dir" --parallel "$CUP_JOBS"
+    if ! cmake --build "$build_dir" --parallel "$CUP_JOBS"; then
+        log "LLVM tool build failed; selected CMake cache entries:"
+        llvm_dump_cmake_cache_entries "$build_dir/CMakeCache.txt" '^(LLVM_ENABLE_PROJECTS|LLVM_TARGETS_TO_BUILD|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|LLVM_HOST_TRIPLE|LLDB_|Python3_):'
+        return 1
+    fi
     cmake --install "$build_dir"
 
     build_llvm_runtimes "$source_dir" "$build_dir"
@@ -585,6 +665,7 @@ write_llvm_info() {
         "config.llvm_projects=$LLVM_PROJECTS"
         "config.llvm_targets=$LLVM_TARGETS"
         "config.llvm_runtimes=$LLVM_RUNTIMES"
+        "config.llvm_runtimes_enabled=$(llvm_runtimes_enabled && printf true || printf false)"
         "config.zlib=$cmake_zlib"
         "config.zstd=$cmake_zstd"
         "contents.self_contained=true"
@@ -616,6 +697,7 @@ write_llvm_info() {
                 "features.target_macos_x64=$( [ "$TARGET_PLATFORM" = "macos-x64" ] && printf true || printf false )"
                 "features.target_macos_arm64=$( [ "$TARGET_PLATFORM" = "macos-arm64" ] && printf true || printf false )"
                 "contents.compiler_rt=$has_compiler_rt"
+                "contents.llvm_runtimes=$has_compiler_rt"
                 "features.sanitizers=$has_sanitizers"
                 "features.asan=$has_asan"
                 "features.ubsan=$has_ubsan"

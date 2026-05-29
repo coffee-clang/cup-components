@@ -92,6 +92,13 @@ show_info_contract() {
         return 0
     fi
 
+    duplicate_keys="$(awk -F= '{ count[$1]++ } END { for (key in count) if (count[key] > 1) print key }' "$info" | sort)"
+    if [ -n "$duplicate_keys" ]; then
+        echo ""
+        echo "[duplicate metadata keys]"
+        printf '%s\n' "$duplicate_keys" | sed 's/^/  WARNING: /'
+    fi
+
     echo ""
     echo "[package identity]"
     for key in \

@@ -121,11 +121,7 @@ LLVM_TARGETS="$(llvm_targets_to_build)"
 llvm_runtimes_for_tool() {
     case "$TOOL" in
         clang)
-            if is_windows_platform "$HOST_PLATFORM"; then
-                printf '%s\n' "libunwind;libcxxabi;libcxx;compiler-rt"
-            else
-                printf '%s\n' "compiler-rt"
-            fi
+            printf '%s\n' "compiler-rt;libunwind;libcxxabi;libcxx"
             ;;
         *)
             printf '%s\n' ""
@@ -258,6 +254,99 @@ prune_llvm_package_bins() {
     esac
 }
 
+build_llvm_runtimes() {
+    local source_dir="$1"
+    local tool_build_dir="$2"
+    local runtime_build_dir="$CUP_BUILD_DIR/llvm-$TOOL-runtimes-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
+    local exe_suffix
+    local clang_c
+    local clang_cxx
+    local llvm_ar
+    local llvm_ranlib
+    local llvm_nm
+    local cmake_runtime_args=()
+
+    if [ "$TOOL" != "clang" ] || [ -z "$LLVM_RUNTIMES" ]; then
+        return 0
+    fi
+
+    if is_windows_platform "$HOST_PLATFORM"; then
+        exe_suffix=".exe"
+    else
+        exe_suffix=""
+    fi
+
+    clang_c="$tool_build_dir/bin/clang$exe_suffix"
+    clang_cxx="$tool_build_dir/bin/clang++$exe_suffix"
+    llvm_ar="$tool_build_dir/bin/llvm-ar$exe_suffix"
+    llvm_ranlib="$tool_build_dir/bin/llvm-ranlib$exe_suffix"
+    llvm_nm="$tool_build_dir/bin/llvm-nm$exe_suffix"
+
+    [ -x "$clang_c" ] || die "just-built clang not found: $clang_c"
+    [ -x "$clang_cxx" ] || die "just-built clang++ not found: $clang_cxx"
+
+    log "building LLVM runtimes for $TOOL $VERSION: $LLVM_RUNTIMES"
+
+    rm -rf "$runtime_build_dir"
+    mkdir -p "$runtime_build_dir"
+
+    cmake_runtime_args+=(
+        -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_INSTALL_PREFIX="$PREFIX"
+        -DCMAKE_C_COMPILER="$clang_c"
+        -DCMAKE_CXX_COMPILER="$clang_cxx"
+        -DCMAKE_C_COMPILER_TARGET="$HOST_TRIPLE"
+        -DCMAKE_CXX_COMPILER_TARGET="$HOST_TRIPLE"
+        -DLLVM_DEFAULT_TARGET_TRIPLE="$HOST_TRIPLE"
+        -DLLVM_ENABLE_RUNTIMES="$LLVM_RUNTIMES"
+        -DLLVM_INCLUDE_TESTS=OFF
+        -DLLVM_INCLUDE_BENCHMARKS=OFF
+        -DLLVM_ENABLE_LLD=ON
+        -DCOMPILER_RT_BUILD_BUILTINS=ON
+        -DCOMPILER_RT_BUILD_SANITIZERS=ON
+        -DCOMPILER_RT_BUILD_PROFILE=ON
+        -DCOMPILER_RT_BUILD_LIBFUZZER=OFF
+        -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON
+        -DCOMPILER_RT_USE_BUILTINS_LIBRARY=ON
+        -DCOMPILER_RT_USE_LIBCXX=ON
+        -DCOMPILER_RT_EXCLUDE_ATOMIC_BUILTIN=OFF
+        -DLIBUNWIND_ENABLE_SHARED=OFF
+        -DLIBUNWIND_ENABLE_STATIC=ON
+        -DLIBUNWIND_USE_COMPILER_RT=ON
+        -DLIBCXXABI_ENABLE_SHARED=OFF
+        -DLIBCXXABI_ENABLE_STATIC=ON
+        -DLIBCXXABI_USE_LLVM_UNWINDER=ON
+        -DLIBCXXABI_USE_COMPILER_RT=ON
+        -DLIBCXX_ENABLE_SHARED=OFF
+        -DLIBCXX_ENABLE_STATIC=ON
+        -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON
+        -DLIBCXX_USE_COMPILER_RT=ON
+    )
+
+    [ -x "$llvm_ar" ] && cmake_runtime_args+=(-DCMAKE_AR="$llvm_ar")
+    [ -x "$llvm_ranlib" ] && cmake_runtime_args+=(-DCMAKE_RANLIB="$llvm_ranlib")
+    [ -x "$llvm_nm" ] && cmake_runtime_args+=(-DCMAKE_NM="$llvm_nm")
+
+    if is_windows_platform "$HOST_PLATFORM"; then
+        [ -n "${MINGW_PREFIX:-}" ] || die "MINGW_PREFIX is not set; run this build inside an MSYS2 CLANG64 environment"
+        cmake_runtime_args+=(
+            -DCMAKE_SYSROOT="$MINGW_PREFIX"
+            -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib
+        )
+    fi
+
+    cmake -S "$source_dir/runtimes" -B "$runtime_build_dir" -G Ninja \
+        "${cmake_runtime_args[@]}"
+
+    log "selected LLVM runtimes CMake cache entries:"
+    if [ -f "$runtime_build_dir/CMakeCache.txt" ]; then
+        grep -E '^(LLVM_ENABLE_RUNTIMES|LLVM_DEFAULT_TARGET_TRIPLE|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_C_COMPILER_TARGET|CMAKE_CXX_COMPILER_TARGET|CMAKE_SYSROOT|LLVM_ENABLE_LLD|COMPILER_RT_BUILD_BUILTINS|COMPILER_RT_BUILD_SANITIZERS|COMPILER_RT_BUILD_PROFILE|COMPILER_RT_BUILD_LIBFUZZER|COMPILER_RT_USE_BUILTINS_LIBRARY|COMPILER_RT_USE_LIBCXX|COMPILER_RT_DEFAULT_TARGET_ONLY|LIBUNWIND_ENABLE_SHARED|LIBUNWIND_ENABLE_STATIC|LIBUNWIND_USE_COMPILER_RT|LIBCXXABI_ENABLE_SHARED|LIBCXXABI_ENABLE_STATIC|LIBCXXABI_USE_LLVM_UNWINDER|LIBCXXABI_USE_COMPILER_RT|LIBCXX_ENABLE_SHARED|LIBCXX_ENABLE_STATIC|LIBCXX_ENABLE_STATIC_ABI_LIBRARY|LIBCXX_USE_COMPILER_RT):' "$runtime_build_dir/CMakeCache.txt" || true
+    fi
+
+    cmake --build "$runtime_build_dir" --parallel "$CUP_JOBS"
+    cmake --install "$runtime_build_dir"
+}
+
 build_llvm_tool() {
     local source_dir="$1"
     local build_dir="$CUP_BUILD_DIR/llvm-$TOOL-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
@@ -316,68 +405,6 @@ build_llvm_tool() {
             -DLLVM_HOST_TRIPLE="$HOST_TRIPLE"
             -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib
         )
-
-        if [ -n "${MINGW_PREFIX:-}" ]; then
-            cmake_extra_args+=(
-                -DDEFAULT_SYSROOT="$MINGW_PREFIX"
-            )
-        fi
-
-        if [ "$TOOL" = "clang" ]; then
-            cmake_extra_args+=(
-                -DLLVM_ENABLE_LIBCXX=ON
-                -DCLANG_DEFAULT_RTLIB=compiler-rt
-                -DCLANG_DEFAULT_UNWINDLIB=libunwind
-                -DCLANG_DEFAULT_CXX_STDLIB=libc++
-                -DCOMPILER_RT_USE_BUILTINS_LIBRARY=ON
-                -DCOMPILER_RT_USE_LIBCXX=ON
-                -DCOMPILER_RT_EXCLUDE_ATOMIC_BUILTIN=OFF
-
-                # These runtime options must be provided both as ordinary cache
-                # entries and as per-runtime-target entries.  With
-                # LLVM_RUNTIME_TARGETS set, LLVM configures the runtimes through
-                # an external project and only RUNTIMES_<triple>_* variables are
-                # reliably forwarded to that nested CMake invocation.
-                -DLIBUNWIND_ENABLE_SHARED=OFF
-                -DLIBUNWIND_ENABLE_STATIC=ON
-                -DLIBCXXABI_ENABLE_SHARED=OFF
-                -DLIBCXXABI_ENABLE_STATIC=ON
-                -DLIBCXXABI_USE_LLVM_UNWINDER=ON
-                -DLIBCXX_ENABLE_SHARED=OFF
-                -DLIBCXX_ENABLE_STATIC=ON
-                -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON
-                -DCOMPILER_RT_BUILD_BUILTINS=ON
-                -DCOMPILER_RT_BUILD_SANITIZERS=ON
-                -DCOMPILER_RT_BUILD_PROFILE=ON
-                -DCOMPILER_RT_BUILD_LIBFUZZER=OFF
-
-                "-DRUNTIMES_${HOST_TRIPLE}_LIBUNWIND_ENABLE_SHARED=OFF"
-                "-DRUNTIMES_${HOST_TRIPLE}_LIBUNWIND_ENABLE_STATIC=ON"
-                "-DRUNTIMES_${HOST_TRIPLE}_LIBCXXABI_ENABLE_SHARED=OFF"
-                "-DRUNTIMES_${HOST_TRIPLE}_LIBCXXABI_ENABLE_STATIC=ON"
-                "-DRUNTIMES_${HOST_TRIPLE}_LIBCXXABI_USE_LLVM_UNWINDER=ON"
-                "-DRUNTIMES_${HOST_TRIPLE}_LIBCXX_ENABLE_SHARED=OFF"
-                "-DRUNTIMES_${HOST_TRIPLE}_LIBCXX_ENABLE_STATIC=ON"
-                "-DRUNTIMES_${HOST_TRIPLE}_LIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON"
-                "-DRUNTIMES_${HOST_TRIPLE}_COMPILER_RT_BUILD_BUILTINS=ON"
-                "-DRUNTIMES_${HOST_TRIPLE}_COMPILER_RT_BUILD_SANITIZERS=ON"
-                "-DRUNTIMES_${HOST_TRIPLE}_COMPILER_RT_BUILD_PROFILE=ON"
-                "-DRUNTIMES_${HOST_TRIPLE}_COMPILER_RT_BUILD_LIBFUZZER=OFF"
-            )
-        fi
-    fi
-
-    if [ -n "$LLVM_RUNTIMES" ]; then
-        cmake_extra_args+=(
-            -DLLVM_ENABLE_RUNTIMES="$LLVM_RUNTIMES"
-        )
-
-        if is_windows_platform "$HOST_PLATFORM"; then
-            cmake_extra_args+=(
-                -DLLVM_RUNTIME_TARGETS="$HOST_TRIPLE"
-                -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON
-            )
-        fi
     fi
 
     cmake -S "$source_dir/llvm" -B "$build_dir" -G Ninja \
@@ -392,18 +419,13 @@ build_llvm_tool() {
 
     log "selected LLVM CMake cache entries:"
     if [ -f "$build_dir/CMakeCache.txt" ]; then
-        grep -E '^(LLVM_ENABLE_PROJECTS|LLVM_ENABLE_RUNTIMES|LLVM_TARGETS_TO_BUILD|LLVM_ENABLE_ZLIB|LLVM_ENABLE_ZSTD|LLVM_ENABLE_LIBXML2|LLVM_ENABLE_LIBCXX|LLVM_HOST_TRIPLE|CLANG_DEFAULT_RTLIB|CLANG_DEFAULT_UNWINDLIB|CLANG_DEFAULT_CXX_STDLIB|COMPILER_RT_USE_BUILTINS_LIBRARY|COMPILER_RT_USE_LIBCXX|COMPILER_RT_EXCLUDE_ATOMIC_BUILTIN|LLVM_RUNTIME_TARGETS|LIBUNWIND_ENABLE_SHARED|LIBUNWIND_ENABLE_STATIC|LIBCXXABI_ENABLE_SHARED|LIBCXXABI_ENABLE_STATIC|LIBCXXABI_USE_LLVM_UNWINDER|LIBCXX_ENABLE_SHARED|LIBCXX_ENABLE_STATIC|LIBCXX_ENABLE_STATIC_ABI_LIBRARY|COMPILER_RT_BUILD_BUILTINS|COMPILER_RT_BUILD_SANITIZERS|COMPILER_RT_BUILD_PROFILE|COMPILER_RT_BUILD_LIBFUZZER|RUNTIMES_.*_(LIBUNWIND|LIBCXXABI|LIBCXX|COMPILER_RT)_.*|LLDB_ENABLE_PYTHON|LLDB_ENABLE_SWIG|LLDB_EMBED_PYTHON_HOME|LLDB_ENABLE_LIBXML2|LLDB_ENABLE_LZMA|LLDB_ENABLE_LIBEDIT|LLDB_ENABLE_CURSES|Python3_EXECUTABLE|Python3_LIBRARY|Python3_INCLUDE_DIR|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|DEFAULT_SYSROOT|COMPILER_RT_DEFAULT_TARGET_ONLY):' "$build_dir/CMakeCache.txt" || true
+        grep -E '^(LLVM_ENABLE_PROJECTS|LLVM_ENABLE_RUNTIMES|LLVM_TARGETS_TO_BUILD|LLVM_ENABLE_ZLIB|LLVM_ENABLE_ZSTD|LLVM_ENABLE_LIBXML2|LLVM_HOST_TRIPLE|LLDB_ENABLE_PYTHON|LLDB_ENABLE_SWIG|LLDB_EMBED_PYTHON_HOME|LLDB_ENABLE_LIBXML2|LLDB_ENABLE_LZMA|LLDB_ENABLE_LIBEDIT|LLDB_ENABLE_CURSES|Python3_EXECUTABLE|Python3_LIBRARY|Python3_INCLUDE_DIR|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER):' "$build_dir/CMakeCache.txt" || true
     fi
 
-    if ! cmake --build "$build_dir" --parallel "$CUP_JOBS"; then
-        log "LLVM build failed; dumping nested runtime CMake cache entries when available"
-        find "$build_dir/runtimes" -name CMakeCache.txt -print 2>/dev/null | while IFS= read -r runtime_cache; do
-            log "runtime cache: $runtime_cache"
-            grep -E '^(LLVM_ENABLE_RUNTIMES|LLVM_DEFAULT_TARGET_TRIPLE|LLVM_RUNTIMES_TARGET|CMAKE_C_COMPILER_TARGET|CMAKE_CXX_COMPILER_TARGET|LIBUNWIND_ENABLE_SHARED|LIBUNWIND_ENABLE_STATIC|LIBCXXABI_ENABLE_SHARED|LIBCXXABI_ENABLE_STATIC|LIBCXXABI_USE_LLVM_UNWINDER|LIBCXX_ENABLE_SHARED|LIBCXX_ENABLE_STATIC|LIBCXX_ENABLE_STATIC_ABI_LIBRARY|COMPILER_RT_BUILD_BUILTINS|COMPILER_RT_BUILD_SANITIZERS|COMPILER_RT_BUILD_PROFILE|COMPILER_RT_BUILD_LIBFUZZER):' "$runtime_cache" || true
-        done
-        return 1
-    fi
+    cmake --build "$build_dir" --parallel "$CUP_JOBS"
     cmake --install "$build_dir"
+
+    build_llvm_runtimes "$source_dir" "$build_dir"
 
     prune_llvm_package_bins
 

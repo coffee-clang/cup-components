@@ -170,6 +170,17 @@ llvm_dump_cmake_cache_entries() {
     grep -E "$pattern" "$cache_file" || true
 }
 
+llvm_runtime_files_present() {
+    metadata_bool_for_files "$PREFIX" \
+        'clang_rt.*' 'libclang_rt.*' \
+        'libc++*' 'libcxx*' 'libc++abi*' 'libcxxabi*' 'libunwind*'
+}
+
+llvm_cxx_runtime_files_present() {
+    metadata_bool_for_files "$PREFIX" \
+        'libc++*' 'libcxx*' 'libc++abi*' 'libcxxabi*' 'libunwind*'
+}
+
 PREFIX="$CUP_STAGE_DIR/$(package_base_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
 
 need_common_tools() {
@@ -603,6 +614,7 @@ write_llvm_info() {
     local has_sanitizers
     local has_profile_runtime
     local has_cxx_runtime
+    local has_llvm_runtimes
 
     has_clang="$(metadata_bool_for_executable "$PREFIX" clang)"
     has_clangpp="$(metadata_bool_for_executable "$PREFIX" clang++)"
@@ -641,7 +653,8 @@ write_llvm_info() {
         has_sanitizers=false
     fi
     has_profile_runtime="$(metadata_bool_for_files "$PREFIX" 'clang_rt.profile*' 'libclang_rt.profile*')"
-    has_cxx_runtime="$(metadata_bool_for_files "$PREFIX" 'libc++*' 'libcxx*' 'libunwind*')"
+    has_cxx_runtime="$(llvm_cxx_runtime_files_present)"
+    has_llvm_runtimes="$(llvm_runtime_files_present)"
 
     local info=(
         "package.component=$COMPONENT"
@@ -697,12 +710,13 @@ write_llvm_info() {
                 "features.target_macos_x64=$( [ "$TARGET_PLATFORM" = "macos-x64" ] && printf true || printf false )"
                 "features.target_macos_arm64=$( [ "$TARGET_PLATFORM" = "macos-arm64" ] && printf true || printf false )"
                 "contents.compiler_rt=$has_compiler_rt"
-                "contents.llvm_runtimes=$has_compiler_rt"
+                "contents.llvm_runtimes=$has_llvm_runtimes"
                 "features.sanitizers=$has_sanitizers"
                 "features.asan=$has_asan"
                 "features.ubsan=$has_ubsan"
                 "features.profile_runtime=$has_profile_runtime"
                 "features.cxx_runtime=$has_cxx_runtime"
+                "features.cxx_runtime_default=false"
             )
             ;;
         lld)

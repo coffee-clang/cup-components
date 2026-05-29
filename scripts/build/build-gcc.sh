@@ -583,7 +583,10 @@ build_native_gcc() {
         "$(configure_script_for_build "$gcc_src" "$build_dir")" \
             --prefix="$PREFIX" \
             --disable-werror \
+            --disable-nls \
             --disable-multilib \
+            --enable-checking=release \
+            --with-system-zlib \
             --enable-bootstrap \
             "${gcc_feature_args[@]}" \
             --with-gnu-as \
@@ -660,7 +663,10 @@ build_gcc_stage1() {
             --prefix="$PREFIX" \
             --target="$TARGET_TRIPLE" \
             --disable-werror \
+            --disable-nls \
             --disable-multilib \
+            --enable-checking=release \
+            --with-system-zlib \
             --enable-languages=c,c++ \
             --enable-threads=posix \
             --with-gnu-as \
@@ -809,7 +815,10 @@ build_gcc_final() {
             --prefix="$PREFIX" \
             --target="$TARGET_TRIPLE" \
             --disable-werror \
+            --disable-nls \
             --disable-multilib \
+            --enable-checking=release \
+            --with-system-zlib \
             "${gcc_bootstrap_args[@]}" \
             "${gcc_feature_args[@]}" \
             --enable-threads=posix \
@@ -959,6 +968,9 @@ write_gcc_info() {
         "source.primary.url=$GCC_SOURCE_URL"
         "config.languages=c,c++,lto"
         "config.multilib=false"
+        "config.nls=false"
+        "config.checking=release"
+        "config.zlib=system"
         "config.bootstrap=$bootstrap"
         "config.tool_naming=$tool_naming"
         "config.openmp=attempted"

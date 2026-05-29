@@ -51,6 +51,10 @@ need_valgrind_tools() {
     need mpicc
 }
 
+valgrind_mpicc_command() {
+    command -v mpicc 2>/dev/null || printf '%s\n' mpicc
+}
+
 validate_platforms() {
     case "$HOST_PLATFORM" in
         linux-x64|linux-arm64)
@@ -171,9 +175,14 @@ WRAPPER
 build_valgrind() {
     local source_dir="$1"
     local build_dir="$CUP_BUILD_DIR/valgrind-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
+    local mpicc
+
+    mpicc="$(valgrind_mpicc_command)"
+
     local configure_args=(
         --prefix="$PREFIX"
         --enable-only64bit
+        --with-mpicc="$mpicc"
     )
 
     log "building Valgrind $VERSION for $HOST_PLATFORM -> $TARGET_PLATFORM"
@@ -226,6 +235,7 @@ write_valgrind_info() {
         "config.configure=--enable-only64bit"
         "config.only64bit=true"
         "config.mpi=auto"
+        "config.mpicc=$(valgrind_mpicc_command)"
         "$(info_required_entry entry.valgrind "$PREFIX" valgrind)"
         "contents.self_contained=true"
         "contents.relocatable_wrapper=true"

@@ -83,6 +83,27 @@ gdb_linux_feature_configure_args() {
     fi
 }
 
+gdb_supports_python() {
+    local gdb_bin="$PREFIX/bin/gdb"
+    local output
+
+    if is_windows_platform "$HOST_PLATFORM"; then
+        gdb_bin="$PREFIX/bin/gdb.exe"
+    fi
+
+    [ -x "$gdb_bin" ] || {
+        printf '%s\n' false
+        return 0
+    }
+
+    if output="$($gdb_bin -q -batch -ex 'python import sys, gdb; print("python-ok")' 2>/dev/null)" \
+        && printf '%s\n' "$output" | grep -F 'python-ok' >/dev/null; then
+        printf '%s\n' true
+    else
+        printf '%s\n' false
+    fi
+}
+
 build_gdb() {
     local source_dir="$1"
     local build_dir="$CUP_BUILD_DIR/gdb-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
@@ -109,9 +130,11 @@ build_gdb() {
             --prefix="$PREFIX" \
             --disable-werror \
             --with-python="$python_cmd" \
+            --enable-tui \
+            --with-curses \
             --with-expat \
             --with-system-readline \
-            --with-zlib \
+            --with-system-zlib \
             --with-lzma \
             --with-zstd \
             "${feature_args[@]}"
@@ -134,7 +157,7 @@ write_gdb_info() {
     local intel_pt=false
     local has_gdb
     local has_gdbserver
-    local has_python=true
+    local has_python
     local has_tui=true
 
     if ! is_windows_platform "$HOST_PLATFORM"; then
@@ -151,6 +174,7 @@ write_gdb_info() {
 
     has_gdb="$(metadata_bool_for_executable "$PREFIX" gdb)"
     has_gdbserver="$(metadata_bool_for_executable "$PREFIX" gdbserver)"
+    has_python="$(gdb_supports_python)"
 
     local info=(
         "package.component=$COMPONENT"
@@ -173,6 +197,7 @@ write_gdb_info() {
         "source.primary.url=$SOURCE_URL"
         "config.cross=false"
         "config.python=$has_python"
+        "config.tui=$has_tui"
         "config.readline=system"
         "config.expat=true"
         "config.zlib=true"

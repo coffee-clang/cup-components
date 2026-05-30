@@ -143,6 +143,15 @@ tool_exe_suffix() {
     fi
 }
 
+
+gcc_driver_tools() {
+    printf '%s\n' gcc g++ c++ cpp gcov gcov-dump gcov-tool lto-dump
+}
+
+gcc_binutils_tools() {
+    printf '%s\n' as ld ar ranlib strip dlltool dllwrap windres windmc nm objdump objcopy readelf size strings addr2line c++filt elfedit gprof
+}
+
 ensure_prefixed_binutils_tools() {
     local tool
     local src
@@ -154,7 +163,7 @@ ensure_prefixed_binutils_tools() {
 
     log "ensuring prefixed Binutils target tool names"
 
-    for tool in as ld ar ranlib strip dlltool dllwrap windres windmc nm objdump objcopy readelf size strings addr2line c++filt elfedit gprof; do
+    for tool in $(gcc_binutils_tools); do
         src="$PREFIX/bin/$tool$exe_suffix"
         dst="$PREFIX/bin/$TARGET_TRIPLE-$tool$exe_suffix"
         tmp="$dst.tmp"
@@ -198,7 +207,7 @@ remove_unprefixed_binutils_tools() {
 
     log "removing unprefixed Binutils tools from cross package prefix"
 
-    for tool in as ld ar ranlib strip dlltool dllwrap windres windmc nm objdump objcopy readelf size strings addr2line c++filt elfedit gprof; do
+    for tool in $(gcc_binutils_tools); do
         path="$PREFIX/bin/$tool$exe_suffix"
 
         if [ -e "$path" ] || [ -L "$path" ]; then
@@ -222,7 +231,7 @@ create_native_windows_aliases() {
 
     log "ensuring native Windows tool aliases"
 
-    for tool in gcc g++ c++ cpp gcov gcov-dump gcov-tool ar as ld nm ranlib strip dlltool dllwrap windres windmc objdump objcopy readelf size strings addr2line c++filt elfedit gprof; do
+    for tool in $(gcc_driver_tools; gcc_binutils_tools); do
         prefixed="$PREFIX/bin/$TARGET_TRIPLE-$tool$exe_suffix"
         plain="$PREFIX/bin/$tool$exe_suffix"
 
@@ -256,7 +265,7 @@ ensure_prefixed_gcc_tools() {
 
     log "ensuring native Windows target-prefixed GCC tool names"
 
-    for tool in gcc g++ c++ cpp gcov gcov-dump gcov-tool lto-dump; do
+    for tool in $(gcc_driver_tools); do
         plain="$PREFIX/bin/$tool$exe_suffix"
         prefixed="$PREFIX/bin/$TARGET_TRIPLE-$tool$exe_suffix"
 
@@ -274,6 +283,87 @@ ensure_prefixed_gcc_tools() {
         chmod +x "$prefixed"
         log "  created: $prefixed from $plain"
     done
+}
+
+
+prune_native_windows_prefixed_binutils_from_bin() {
+    local tool
+    local exe_suffix
+    local prefixed
+    local plain
+    local target_layout_tool
+
+    if [ "$HOST_PLATFORM" != "windows-x64" ] || [ "$TARGET_PLATFORM" != "windows-x64" ]; then
+        return 0
+    fi
+
+    exe_suffix="$(tool_exe_suffix)"
+
+    log "pruning duplicate target-prefixed Binutils from native Windows bin directory"
+
+    for tool in $(gcc_binutils_tools); do
+        prefixed="$PREFIX/bin/$TARGET_TRIPLE-$tool$exe_suffix"
+        plain="$PREFIX/bin/$tool$exe_suffix"
+        target_layout_tool="$PREFIX/$TARGET_TRIPLE/bin/$tool$exe_suffix"
+
+        if [ ! -e "$prefixed" ] && [ ! -L "$prefixed" ]; then
+            continue
+        fi
+
+        if [ ! -e "$plain" ] || [ ! -e "$target_layout_tool" ]; then
+            log "  keeping: $prefixed"
+            continue
+        fi
+
+        rm -f "$prefixed"
+        log "  removed duplicate: $prefixed"
+    done
+}
+
+strip_gcc_package_binaries() {
+    local strip_tool
+    local file
+
+    strip_tool="$(command -v strip 2>/dev/null || true)"
+
+    if [ -z "$strip_tool" ]; then
+        log "strip not found; skipping GCC package stripping"
+        return 0
+    fi
+
+    log "stripping GCC package binaries where safe"
+
+    while IFS= read -r file; do
+        [ -f "$file" ] || continue
+        "$strip_tool" --strip-unneeded "$file" >/dev/null 2>&1 || true
+    done < <(
+        {
+            find "$PREFIX" -type f -path '*/bin/*' 2>/dev/null || true
+            find "$PREFIX/libexec/gcc" -type f \( \
+                -name 'cc1' -o -name 'cc1plus' -o -name 'collect2' -o \
+                -name 'lto1' -o -name 'lto-wrapper' -o -name 'lto-dump' \
+            \) 2>/dev/null || true
+            find "$PREFIX" -type f \( \
+                -name '*.dll' -o -name '*.so' -o -name '*.so.*' \
+            \) 2>/dev/null || true
+        } | sort -u
+    )
+}
+
+gcc_metadata_bool_for_tool() {
+    local name="$1"
+
+    if prefix_executable_exists "$PREFIX" "$name"; then
+        printf 'true\n'
+        return 0
+    fi
+
+    if prefix_executable_exists "$PREFIX" "$TARGET_TRIPLE-$name"; then
+        printf 'true\n'
+        return 0
+    fi
+
+    printf 'false\n'
 }
 
 host_c_compiler() {
@@ -832,6 +922,7 @@ build_gcc_final() {
 
     create_native_windows_aliases
     ensure_prefixed_gcc_tools
+    prune_native_windows_prefixed_binutils_from_bin
     copy_windows_runtime_dlls "$PREFIX/bin"
     verify_windows_runtime_dlls "$PREFIX/bin"
 }
@@ -916,11 +1007,11 @@ write_gcc_info() {
     includes_sanitizers="$(metadata_bool_for_files "$PREFIX" 'libasan*' 'libubsan*' 'libtsan*' 'liblsan*')"
     includes_asan="$(metadata_bool_for_files "$PREFIX" 'libasan*')"
     includes_ubsan="$(metadata_bool_for_files "$PREFIX" 'libubsan*')"
-    has_gcc="$(metadata_bool_for_executable "$PREFIX" gcc)"
-    has_gpp="$(metadata_bool_for_executable "$PREFIX" g++)"
-    has_cpp="$(metadata_bool_for_executable "$PREFIX" cpp)"
-    has_lto_dump="$(metadata_bool_for_executable "$PREFIX" lto-dump)"
-    has_gcov="$(metadata_bool_for_executable "$PREFIX" gcov)"
+    has_gcc="$(gcc_metadata_bool_for_tool gcc)"
+    has_gpp="$(gcc_metadata_bool_for_tool g++)"
+    has_cpp="$(gcc_metadata_bool_for_tool cpp)"
+    has_lto_dump="$(gcc_metadata_bool_for_tool lto-dump)"
+    has_gcov="$(gcc_metadata_bool_for_tool gcov)"
     has_plugin="$(metadata_bool_for_files "$PREFIX" 'liblto_plugin*')"
     has_sysroot="$(metadata_bool_for_dirs "$PREFIX" "$TARGET_TRIPLE")"
     has_target_prefix="$(metadata_bool_for_executable "$PREFIX" "$TARGET_TRIPLE-gcc")"
@@ -940,7 +1031,7 @@ write_gcc_info() {
         if is_cross_build "$HOST_PLATFORM" "$TARGET_PLATFORM"; then
             tool_naming="target-prefixed"
         else
-            tool_naming="native-and-target-prefixed"
+            tool_naming="native-with-prefixed-compiler-drivers"
         fi
     elif [ "$HOST_PLATFORM" = "$TARGET_PLATFORM" ] && is_linux_platform "$TARGET_PLATFORM"; then
         bundle_components="binutils"
@@ -975,8 +1066,8 @@ write_gcc_info() {
         "config.tool_naming=$tool_naming"
         "config.openmp=attempted"
         "config.sanitizers=attempted"
-        "$(info_required_entry entry.gcc "$PREFIX" gcc)"
-        "$(info_required_entry entry.g++ "$PREFIX" g++)"
+        "$(info_entry_if_present entry.gcc "$PREFIX" gcc)"
+        "$(info_entry_if_present entry.g++ "$PREFIX" g++)"
         "$(info_entry_if_present entry.cpp "$PREFIX" cpp)"
         "$(info_entry_if_present entry.gcov "$PREFIX" gcov)"
         "contents.self_contained=true"
@@ -1016,6 +1107,8 @@ write_gcc_info() {
             "config.native_system_header_dir=/include"
             "$(info_entry_if_present entry.target_gcc "$PREFIX" "$TARGET_TRIPLE-gcc")"
             "$(info_entry_if_present entry.target_g++ "$PREFIX" "$TARGET_TRIPLE-g++")"
+            "$(info_entry_if_present entry.target_cpp "$PREFIX" "$TARGET_TRIPLE-cpp")"
+            "$(info_entry_if_present entry.target_gcov "$PREFIX" "$TARGET_TRIPLE-gcov")"
             "$(info_entry_if_present entry.target_ar "$PREFIX" "$TARGET_TRIPLE-ar")"
             "$(info_entry_if_present entry.target_ld "$PREFIX" "$TARGET_TRIPLE-ld")"
             "features.windows_target=true"
@@ -1075,6 +1168,7 @@ main() {
         build_bundled_native_gcc "$gcc_src" "$binutils_src"
     fi
 
+    strip_gcc_package_binaries
     write_gcc_info
     create_packages "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION" "$PREFIX"
 }

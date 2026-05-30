@@ -154,7 +154,8 @@ int main(void) {
 ASAN_C_EOF
             if "$root/bin/clang" "${sdk_args[@]}" -g -O0 -fsanitize=address "$tmp_root/asan-test.c" -o "$tmp_root/asan-test"; then
                 set +e
-                "$tmp_root/asan-test" >"$tmp_root/asan-output.txt" 2>&1
+                ASAN_OPTIONS=abort_on_error=0:detect_leaks=0 \
+                    "$tmp_root/asan-test" >"$tmp_root/asan-output.txt" 2>&1
                 asan_status=$?
                 set -e
                 if [ "$asan_status" -eq 0 ]; then
@@ -163,6 +164,7 @@ ASAN_C_EOF
                     exit 1
                 fi
                 assert_output_contains "$tmp_root/asan-output.txt" 'AddressSanitizer|heap-use-after-free'
+                echo "ASan produced the expected diagnostic and non-zero exit status"
             else
                 echo "ASan feature is declared but ASan compile/link failed" >&2
                 exit 1

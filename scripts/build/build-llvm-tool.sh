@@ -367,6 +367,44 @@ copy_clang_runtimes_to_resource_dir() {
     fi
 }
 
+copy_clang_builtins_to_resource_dir() {
+    local builtins_build_dir="$1"
+    local resource_dir
+    local platform_dir
+    local destination
+    local builtin
+    local copied=false
+
+    if ! llvm_runtimes_enabled; then
+        return 0
+    fi
+
+    resource_dir="$(clang_resource_dir || true)"
+    if [ -z "$resource_dir" ]; then
+        log "warning: unable to locate installed clang resource dir under $PREFIX/lib/clang"
+        return 0
+    fi
+
+    platform_dir="$(clang_runtime_platform_dir)"
+    destination="$resource_dir/lib/$platform_dir"
+    mkdir -p "$destination"
+
+    while IFS= read -r builtin; do
+        [ -n "$builtin" ] || continue
+        [ -f "$builtin" ] || continue
+        cp -f "$builtin" "$destination/$(basename "$builtin")"
+        log "  copied compiler-rt builtin: $(basename "$builtin")"
+        copied=true
+    done < <(find "$builtins_build_dir" -type f \
+        \( -name 'libclang_rt.builtins*.a' -o \
+           -name 'clang_rt.builtins*.lib' -o \
+           -name 'libclang_rt.builtins*.lib' \) | sort)
+
+    if [ "$copied" = false ]; then
+        die "compiler-rt builtins were not produced under $builtins_build_dir"
+    fi
+}
+
 llvm_runtime_common_args() {
     local clang_c="$1"
     local clang_cxx="$2"
@@ -485,14 +523,13 @@ build_clang_builtins_runtime() {
         llvm_dump_cmake_cache_entries "$builtins_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|LLVM_DEFAULT_TARGET_TRIPLE|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_C_COMPILER_TARGET|CMAKE_CXX_COMPILER_TARGET|CMAKE_SYSROOT|CMAKE_OSX_SYSROOT|CMAKE_TRY_COMPILE_TARGET_TYPE|COMPILER_RT_BUILD_BUILTINS|COMPILER_RT_BUILD_SANITIZERS|COMPILER_RT_BUILD_PROFILE|COMPILER_RT_BUILD_LIBFUZZER|COMPILER_RT_BUILD_XRAY|COMPILER_RT_BUILD_MEMPROF|COMPILER_RT_BUILD_ORC|COMPILER_RT_BUILD_GWP_ASAN|COMPILER_RT_BUILD_STATS|COMPILER_RT_DEFAULT_TARGET_ONLY):'
     fi
 
-    if ! cmake --build "$builtins_build_dir" --parallel "$CUP_JOBS"; then
+    if ! cmake --build "$builtins_build_dir" --target builtins --parallel "$CUP_JOBS"; then
         log "compiler-rt builtins build failed; selected CMake cache entries:"
         llvm_dump_cmake_cache_entries "$builtins_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_SYSROOT|CMAKE_OSX_SYSROOT|CMAKE_TRY_COMPILE_TARGET_TYPE|COMPILER_RT_):'
         return 1
     fi
 
-    cmake --install "$builtins_build_dir"
-    copy_clang_runtimes_to_resource_dir
+    copy_clang_builtins_to_resource_dir "$builtins_build_dir"
 }
 
 build_llvm_runtimes() {

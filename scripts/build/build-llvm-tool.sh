@@ -328,6 +328,20 @@ clang_runtime_platform_dir() {
     esac
 }
 
+clang_resource_runtime_alias_dirs() {
+    local resource_dir="$1"
+    local platform_dir
+
+    platform_dir="$(clang_runtime_platform_dir)"
+    printf '%s\n' "$resource_dir/lib/$platform_dir"
+
+    if is_windows_platform "$HOST_PLATFORM"; then
+        printf '%s\n' "$resource_dir/lib/$HOST_TRIPLE"
+        printf '%s\n' "$resource_dir/lib/$TARGET_TRIPLE"
+        printf '%s\n' "$resource_dir/lib/x86_64-w64-windows-gnu"
+    fi
+}
+
 copy_clang_runtimes_to_resource_dir() {
     local resource_dir
     local platform_dir
@@ -349,11 +363,7 @@ copy_clang_runtimes_to_resource_dir() {
     destination="$resource_dir/lib/$platform_dir"
     mkdir -p "$destination"
 
-    for source_dir_candidate in \
-        "$PREFIX/lib/$platform_dir" \
-        "$PREFIX/lib/clang_rt/$platform_dir" \
-        "$PREFIX/lib/$HOST_TRIPLE" \
-        "$PREFIX/lib/$TARGET_TRIPLE"
+    for source_dir_candidate in         "$PREFIX/lib/$platform_dir"         "$PREFIX/lib/clang_rt/$platform_dir"         "$PREFIX/lib/$HOST_TRIPLE"         "$PREFIX/lib/$TARGET_TRIPLE"
     do
         if [ -d "$source_dir_candidate" ]; then
             log "copying clang runtimes from $source_dir_candidate to $destination"
@@ -362,9 +372,75 @@ copy_clang_runtimes_to_resource_dir() {
         fi
     done
 
+    if [ "$copied" = true ] && is_windows_platform "$HOST_PLATFORM"; then
+        copy_clang_resource_runtime_aliases "$destination" "$resource_dir"
+    fi
+
     if [ "$copied" = false ]; then
         log "no separate clang runtime directory found to copy into resource dir"
     fi
+}
+
+copy_clang_resource_runtime_aliases() {
+    local canonical_dir="$1"
+    local resource_dir="$2"
+    local alias_dir
+
+    if ! is_windows_platform "$HOST_PLATFORM"; then
+        return 0
+    fi
+
+    while IFS= read -r alias_dir; do
+        [ -n "$alias_dir" ] || continue
+        [ "$alias_dir" != "$canonical_dir" ] || continue
+        mkdir -p "$alias_dir"
+        cp -a "$canonical_dir"/. "$alias_dir"/
+    done < <(clang_resource_runtime_alias_dirs "$resource_dir" | sort -u)
+}
+
+copy_compiler_rt_builtins_to_resource_dir() {
+    local builtins_build_dir="$1"
+    local resource_dir
+    local builtin
+    local copied=false
+    local destinations=()
+    local destination
+
+    resource_dir="$(clang_resource_dir || true)"
+    if [ -z "$resource_dir" ]; then
+        log "warning: unable to locate installed clang resource dir before copying compiler-rt builtins"
+        return 0
+    fi
+
+    while IFS= read -r destination; do
+        [ -n "$destination" ] && destinations+=("$destination")
+    done < <(clang_resource_runtime_alias_dirs "$resource_dir" | sort -u)
+
+    while IFS= read -r builtin; do
+        [ -n "$builtin" ] || continue
+        [ -f "$builtin" ] || continue
+
+        for destination in "${destinations[@]}"; do
+            mkdir -p "$destination"
+            cp -f "$builtin" "$destination/$(basename "$builtin")"
+        done
+
+        log "  copied compiler-rt builtin: $(basename "$builtin")"
+        copied=true
+    done < <(find "$builtins_build_dir" -type f         \( -name 'libclang_rt.builtins*.a' -o -name 'clang_rt.builtins*.lib' \) | sort -u)
+
+    if [ "$copied" = false ]; then
+        log "warning: no compiler-rt builtins were found under $builtins_build_dir"
+    fi
+}
+
+find_compiler_rt_builtins_library() {
+    local resource_dir
+
+    resource_dir="$(clang_resource_dir || true)"
+    [ -n "$resource_dir" ] || return 1
+
+    find "$resource_dir/lib" -type f         \( -name 'libclang_rt.builtins*.a' -o -name 'clang_rt.builtins*.lib' \)         | sort | head -n 1
 }
 
 llvm_runtime_common_args() {
@@ -485,14 +561,13 @@ build_clang_builtins_runtime() {
         llvm_dump_cmake_cache_entries "$builtins_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|LLVM_DEFAULT_TARGET_TRIPLE|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_C_COMPILER_TARGET|CMAKE_CXX_COMPILER_TARGET|CMAKE_SYSROOT|CMAKE_OSX_SYSROOT|CMAKE_TRY_COMPILE_TARGET_TYPE|COMPILER_RT_BUILD_BUILTINS|COMPILER_RT_BUILD_SANITIZERS|COMPILER_RT_BUILD_PROFILE|COMPILER_RT_BUILD_LIBFUZZER|COMPILER_RT_BUILD_XRAY|COMPILER_RT_BUILD_MEMPROF|COMPILER_RT_BUILD_ORC|COMPILER_RT_BUILD_GWP_ASAN|COMPILER_RT_BUILD_STATS|COMPILER_RT_DEFAULT_TARGET_ONLY):'
     fi
 
-    if ! cmake --build "$builtins_build_dir" --parallel "$CUP_JOBS"; then
+    if ! cmake --build "$builtins_build_dir" --target builtins --parallel "$CUP_JOBS"; then
         log "compiler-rt builtins build failed; selected CMake cache entries:"
         llvm_dump_cmake_cache_entries "$builtins_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_SYSROOT|CMAKE_OSX_SYSROOT|CMAKE_TRY_COMPILE_TARGET_TYPE|COMPILER_RT_):'
         return 1
     fi
 
-    cmake --install "$builtins_build_dir"
-    copy_clang_runtimes_to_resource_dir
+    copy_compiler_rt_builtins_to_resource_dir "$builtins_build_dir"
 }
 
 build_llvm_runtimes() {
@@ -508,6 +583,7 @@ build_llvm_runtimes() {
     local llvm_linker
     local cmake_runtime_args=()
     local resource_dir
+    local builtins_library
 
     if ! llvm_runtimes_enabled; then
         return 0
@@ -584,16 +660,33 @@ build_llvm_runtimes() {
                 "-DCMAKE_SHARED_LINKER_FLAGS_INIT=-resource-dir $resource_dir --rtlib=compiler-rt -fuse-ld=lld"
             )
         fi
+
+        if is_windows_platform "$HOST_PLATFORM"; then
+            builtins_library="$(find_compiler_rt_builtins_library || true)"
+            cmake_runtime_args+=(
+                "-DCOMPILER_RT_TEST_COMPILER_CFLAGS=-resource-dir $resource_dir --rtlib=compiler-rt"
+                "-DCOMPILER_RT_TEST_TARGET_TRIPLE=$HOST_TRIPLE"
+            )
+            if [ -n "$builtins_library" ]; then
+                cmake_runtime_args+=("-DCOMPILER_RT_BUILTINS_LIBRARY=$builtins_library")
+            else
+                log "warning: no compiler-rt builtins library found before full Windows runtime configure"
+            fi
+        fi
     else
         log "warning: clang resource dir not found before full runtime build; runtime CMake may not find just-built builtins"
     fi
 
-    cmake -S "$source_dir/runtimes" -B "$runtime_build_dir" -G Ninja \
-        "${cmake_runtime_args[@]}"
+    if ! cmake -S "$source_dir/runtimes" -B "$runtime_build_dir" -G Ninja \
+        "${cmake_runtime_args[@]}"; then
+        log "LLVM runtime configure failed; selected runtime CMake cache entries:"
+        llvm_dump_cmake_cache_entries "$runtime_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_SYSROOT|CMAKE_OSX_SYSROOT|CMAKE_TRY_COMPILE_TARGET_TYPE|CMAKE_C_FLAGS|CMAKE_CXX_FLAGS|CMAKE_EXE_LINKER_FLAGS|CMAKE_SHARED_LINKER_FLAGS|COMPILER_RT_|LIBUNWIND_|LIBCXXABI_|LIBCXX_):'
+        return 1
+    fi
 
     log "selected LLVM runtimes CMake cache entries:"
     if [ -f "$runtime_build_dir/CMakeCache.txt" ]; then
-        llvm_dump_cmake_cache_entries "$runtime_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|LLVM_DEFAULT_TARGET_TRIPLE|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_C_COMPILER_TARGET|CMAKE_CXX_COMPILER_TARGET|CMAKE_SYSROOT|CMAKE_OSX_SYSROOT|CMAKE_TRY_COMPILE_TARGET_TYPE|CMAKE_C_FLAGS|CMAKE_CXX_FLAGS|CMAKE_EXE_LINKER_FLAGS|CMAKE_SHARED_LINKER_FLAGS|CMAKE_LINKER|LLVM_ENABLE_LLD|LLVM_INCLUDE_TESTS|LLVM_INCLUDE_BENCHMARKS|LLVM_INCLUDE_DOCS|LLVM_ENABLE_BINDINGS|LLVM_ENABLE_ASSERTIONS|COMPILER_RT_BUILD_BUILTINS|COMPILER_RT_BUILD_SANITIZERS|COMPILER_RT_BUILD_PROFILE|COMPILER_RT_BUILD_LIBFUZZER|COMPILER_RT_BUILD_XRAY|COMPILER_RT_BUILD_MEMPROF|COMPILER_RT_BUILD_ORC|COMPILER_RT_BUILD_GWP_ASAN|COMPILER_RT_BUILD_STATS|COMPILER_RT_USE_BUILTINS_LIBRARY|COMPILER_RT_USE_LIBCXX|COMPILER_RT_DEFAULT_TARGET_ONLY|LIBUNWIND_ENABLE_SHARED|LIBUNWIND_ENABLE_STATIC|LIBUNWIND_USE_COMPILER_RT|LIBCXXABI_ENABLE_SHARED|LIBCXXABI_ENABLE_STATIC|LIBCXXABI_USE_LLVM_UNWINDER|LIBCXXABI_USE_COMPILER_RT|LIBCXX_ENABLE_SHARED|LIBCXX_ENABLE_STATIC|LIBCXX_ENABLE_STATIC_ABI_LIBRARY|LIBCXX_USE_COMPILER_RT):'
+        llvm_dump_cmake_cache_entries "$runtime_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|LLVM_DEFAULT_TARGET_TRIPLE|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_C_COMPILER_TARGET|CMAKE_CXX_COMPILER_TARGET|CMAKE_SYSROOT|CMAKE_OSX_SYSROOT|CMAKE_TRY_COMPILE_TARGET_TYPE|CMAKE_C_FLAGS|CMAKE_CXX_FLAGS|CMAKE_EXE_LINKER_FLAGS|CMAKE_SHARED_LINKER_FLAGS|CMAKE_LINKER|LLVM_ENABLE_LLD|LLVM_INCLUDE_TESTS|LLVM_INCLUDE_BENCHMARKS|LLVM_INCLUDE_DOCS|LLVM_ENABLE_BINDINGS|LLVM_ENABLE_ASSERTIONS|COMPILER_RT_BUILD_BUILTINS|COMPILER_RT_BUILD_SANITIZERS|COMPILER_RT_BUILD_PROFILE|COMPILER_RT_BUILD_LIBFUZZER|COMPILER_RT_BUILD_XRAY|COMPILER_RT_BUILD_MEMPROF|COMPILER_RT_BUILD_ORC|COMPILER_RT_BUILD_GWP_ASAN|COMPILER_RT_BUILD_STATS|COMPILER_RT_USE_BUILTINS_LIBRARY|COMPILER_RT_USE_LIBCXX|COMPILER_RT_DEFAULT_TARGET_ONLY|COMPILER_RT_TEST_COMPILER_CFLAGS|COMPILER_RT_TEST_TARGET_TRIPLE|COMPILER_RT_BUILTINS_LIBRARY|LIBUNWIND_ENABLE_SHARED|LIBUNWIND_ENABLE_STATIC|LIBUNWIND_USE_COMPILER_RT|LIBCXXABI_ENABLE_SHARED|LIBCXXABI_ENABLE_STATIC|LIBCXXABI_USE_LLVM_UNWINDER|LIBCXXABI_USE_COMPILER_RT|LIBCXX_ENABLE_SHARED|LIBCXX_ENABLE_STATIC|LIBCXX_ENABLE_STATIC_ABI_LIBRARY|LIBCXX_USE_COMPILER_RT):'
     fi
 
     if ! cmake --build "$runtime_build_dir" --parallel "$CUP_JOBS"; then

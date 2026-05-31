@@ -104,6 +104,12 @@ gdb_supports_python() {
     fi
 }
 
+validate_gdb_required_features() {
+    if [ "$(gdb_supports_python)" != "true" ]; then
+        die "required GDB Python support is not working"
+    fi
+}
+
 build_gdb() {
     local source_dir="$1"
     local build_dir="$CUP_BUILD_DIR/gdb-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
@@ -147,6 +153,8 @@ build_gdb() {
         copy_windows_runtime_dlls "$PREFIX/bin"
         verify_windows_runtime_dlls "$PREFIX/bin"
     fi
+
+    validate_gdb_required_features
 }
 
 write_gdb_info() {

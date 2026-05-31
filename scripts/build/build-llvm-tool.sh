@@ -133,17 +133,7 @@ LLVM_RUNTIMES="$(llvm_runtimes_for_tool)"
 LLVM_RUNTIME_BUILD_DIR=""
 
 llvm_runtimes_enabled() {
-    case "${CUP_LLVM_ENABLE_RUNTIMES:-auto}" in
-        auto|on|yes|true|1)
-            [ "$TOOL" = "clang" ] && [ -n "$LLVM_RUNTIMES" ]
-            ;;
-        off|no|false|0)
-            return 1
-            ;;
-        *)
-            die "unsupported CUP_LLVM_ENABLE_RUNTIMES value: ${CUP_LLVM_ENABLE_RUNTIMES:-}"
-            ;;
-    esac
+    [ "$TOOL" = "clang" ] && [ -n "$LLVM_RUNTIMES" ]
 }
 
 llvm_common_cmake_args() {
@@ -443,6 +433,48 @@ find_compiler_rt_builtins_library() {
     find "$resource_dir/lib" -type f         \( -name 'libclang_rt.builtins*.a' -o -name 'clang_rt.builtins*.lib' \)         | sort | head -n 1
 }
 
+
+create_clang_runtime_compiler_wrappers() {
+    local wrapper_dir="$1"
+    local clang_c="$2"
+    local clang_cxx="$3"
+    local resource_dir="$4"
+    local cc_wrapper="$wrapper_dir/clang-runtime-cc"
+    local cxx_wrapper="$wrapper_dir/clang-runtime-cxx"
+    local common_flags="-resource-dir $resource_dir"
+
+    if ! is_macos_platform "$HOST_PLATFORM"; then
+        common_flags="$common_flags --rtlib=compiler-rt"
+    fi
+
+    mkdir -p "$wrapper_dir"
+
+    cat > "$cc_wrapper" <<EOF
+#!/usr/bin/env bash
+exec "$clang_c" $common_flags "\$@"
+EOF
+
+    cat > "$cxx_wrapper" <<EOF
+#!/usr/bin/env bash
+exec "$clang_cxx" $common_flags "\$@"
+EOF
+
+    chmod +x "$cc_wrapper" "$cxx_wrapper"
+
+    printf '%s\n%s\n' "$cc_wrapper" "$cxx_wrapper"
+}
+
+require_compiler_rt_builtins_library() {
+    local builtins_library
+    builtins_library="$(find_compiler_rt_builtins_library || true)"
+
+    if [ -z "$builtins_library" ]; then
+        die "compiler-rt builtins library was not staged into clang resource dir"
+    fi
+
+    printf '%s\n' "$builtins_library"
+}
+
 llvm_runtime_common_args() {
     local clang_c="$1"
     local clang_cxx="$2"
@@ -584,6 +616,11 @@ build_llvm_runtimes() {
     local cmake_runtime_args=()
     local resource_dir
     local builtins_library
+    local wrapper_dir
+    local runtime_cc
+    local runtime_cxx
+    local runtime_wrappers=()
+    local compiler_rt_test_cflags
 
     if ! llvm_runtimes_enabled; then
         return 0
@@ -646,35 +683,37 @@ build_llvm_runtimes() {
     )
 
     resource_dir="$(clang_resource_dir || true)"
-    if [ -n "$resource_dir" ]; then
-        if is_macos_platform "$HOST_PLATFORM"; then
-            cmake_runtime_args+=(
-                "-DCMAKE_C_FLAGS_INIT=-resource-dir $resource_dir"
-                "-DCMAKE_CXX_FLAGS_INIT=-resource-dir $resource_dir"
-            )
-        else
-            cmake_runtime_args+=(
-                "-DCMAKE_C_FLAGS_INIT=-resource-dir $resource_dir --rtlib=compiler-rt"
-                "-DCMAKE_CXX_FLAGS_INIT=-resource-dir $resource_dir --rtlib=compiler-rt"
-                "-DCMAKE_EXE_LINKER_FLAGS_INIT=-resource-dir $resource_dir --rtlib=compiler-rt -fuse-ld=lld"
-                "-DCMAKE_SHARED_LINKER_FLAGS_INIT=-resource-dir $resource_dir --rtlib=compiler-rt -fuse-ld=lld"
-            )
-        fi
+    if [ -z "$resource_dir" ]; then
+        die "clang resource dir not found before full runtime build"
+    fi
 
-        if is_windows_platform "$HOST_PLATFORM"; then
-            builtins_library="$(find_compiler_rt_builtins_library || true)"
-            cmake_runtime_args+=(
-                "-DCOMPILER_RT_TEST_COMPILER_CFLAGS=-resource-dir $resource_dir --rtlib=compiler-rt"
-                "-DCOMPILER_RT_TEST_TARGET_TRIPLE=$HOST_TRIPLE"
-            )
-            if [ -n "$builtins_library" ]; then
-                cmake_runtime_args+=("-DCOMPILER_RT_BUILTINS_LIBRARY=$builtins_library")
-            else
-                log "warning: no compiler-rt builtins library found before full Windows runtime configure"
-            fi
-        fi
-    else
-        log "warning: clang resource dir not found before full runtime build; runtime CMake may not find just-built builtins"
+    builtins_library="$(require_compiler_rt_builtins_library)"
+    log "clang runtime resource dir: $resource_dir"
+    log "compiler-rt builtins staged for runtime build: $builtins_library"
+
+    wrapper_dir="$runtime_build_dir/compiler-wrappers"
+    mapfile -t runtime_wrappers < <(create_clang_runtime_compiler_wrappers "$wrapper_dir" "$clang_c" "$clang_cxx" "$resource_dir")
+    runtime_cc="${runtime_wrappers[0]}"
+    runtime_cxx="${runtime_wrappers[1]}"
+
+    compiler_rt_test_cflags="-resource-dir $resource_dir"
+    if ! is_macos_platform "$HOST_PLATFORM"; then
+        compiler_rt_test_cflags="$compiler_rt_test_cflags --rtlib=compiler-rt"
+    fi
+
+    cmake_runtime_args+=(
+        "-DCMAKE_C_COMPILER=$runtime_cc"
+        "-DCMAKE_CXX_COMPILER=$runtime_cxx"
+        "-DCOMPILER_RT_BUILTINS_LIBRARY=$builtins_library"
+        "-DCOMPILER_RT_TEST_COMPILER_CFLAGS=$compiler_rt_test_cflags"
+        "-DCOMPILER_RT_TEST_TARGET_TRIPLE=$HOST_TRIPLE"
+    )
+
+    if ! is_macos_platform "$HOST_PLATFORM"; then
+        cmake_runtime_args+=(
+            "-DCMAKE_EXE_LINKER_FLAGS_INIT=-resource-dir $resource_dir --rtlib=compiler-rt -fuse-ld=lld"
+            "-DCMAKE_SHARED_LINKER_FLAGS_INIT=-resource-dir $resource_dir --rtlib=compiler-rt -fuse-ld=lld"
+        )
     fi
 
     if ! cmake -S "$source_dir/runtimes" -B "$runtime_build_dir" -G Ninja \
@@ -854,8 +893,6 @@ append_lld_frontend_info() {
         local joined
         joined="$(IFS=,; printf '%s' "${frontends[*]}")"
         out_ref+=("contents.frontends=$joined")
-    else
-        out_ref+=("contents.frontends=")
     fi
 }
 

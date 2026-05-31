@@ -303,6 +303,15 @@ prepare_source_tree() {
     printf '%s\n' "$source_dir"
 }
 
+info_key_is_valid() {
+    local key="$1"
+
+    case "$key" in
+        ""|*[!A-Za-z0-9_.-]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
 write_info_file() {
     local prefix="$1"
     shift
@@ -310,11 +319,47 @@ write_info_file() {
     mkdir -p "$prefix"
     : > "$prefix/info.txt"
 
+    local seen_file="$prefix/.info-keys.tmp"
     local line
+    local key
+    local value
+
+    : > "$seen_file"
+
     for line in "$@"; do
         [ -n "$line" ] || continue
+
+        case "$line" in
+            *=*) ;;
+            *)
+                rm -f "$seen_file"
+                die "invalid info metadata line without '=': $line"
+                ;;
+        esac
+
+        key="${line%%=*}"
+        value="${line#*=}"
+
+        if ! info_key_is_valid "$key"; then
+            rm -f "$seen_file"
+            die "invalid info metadata key: $key"
+        fi
+
+        if [ -z "$value" ]; then
+            rm -f "$seen_file"
+            die "empty value for info metadata key: $key"
+        fi
+
+        if grep -Fx -- "$key" "$seen_file" >/dev/null 2>&1; then
+            rm -f "$seen_file"
+            die "duplicate info metadata key: $key"
+        fi
+
+        printf '%s\n' "$key" >> "$seen_file"
         printf '%s\n' "$line" >> "$prefix/info.txt"
     done
+
+    rm -f "$seen_file"
 }
 
 info_bool() {

@@ -170,7 +170,8 @@ ASAN_C_EOF
                 exit 1
             fi
         else
-            echo "warning: clang sanitizer runtime not enabled; skipping ASan test"
+            echo "required Clang sanitizer runtime is not declared; ASan test cannot run" >&2
+            exit 1
         fi
         ;;
     lld)

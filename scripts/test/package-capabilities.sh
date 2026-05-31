@@ -154,9 +154,15 @@ show_gcc() {
     target_triple="$(info_value platform.target_triple)"
     if [ -n "$target_triple" ]; then
         echo ""
-        echo "[target-prefixed probes: $target_triple]"
-        for exe in gcc g++ cpp as ld ar ranlib strip objdump readelf; do
-            mark_exe "$target_triple-$exe" features.target_prefixed_tools
+        echo "[target-prefixed compiler driver probes: $target_triple]"
+        for exe in gcc g++ cpp gcov; do
+            mark_exe "$target_triple-$exe" features.target_prefixed_compiler_drivers
+        done
+
+        echo ""
+        echo "[target-prefixed Binutils probes: $target_triple]"
+        for exe in as ld ar ranlib strip objdump readelf; do
+            mark_exe "$target_triple-$exe" features.target_prefixed_binutils
         done
     fi
 

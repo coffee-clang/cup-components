@@ -78,7 +78,8 @@ function Show-InfoContract {
     if ($duplicateKeys) {
         Write-Host ""
         Write-Host '[duplicate metadata keys]'
-        foreach ($key in $duplicateKeys) { Write-Host "  WARNING: $($key.Name)" }
+        foreach ($key in $duplicateKeys) { Write-Host "  ERROR: $($key.Name)" }
+        throw 'duplicate metadata keys found in info.txt'
     }
 
     Write-Host ""
@@ -133,8 +134,11 @@ switch ($Tool) {
         $triple = Get-InfoValue 'platform.target_triple'
         if ($triple) {
             Write-Host ""
-            Write-Host "[target-prefixed probes: $triple]"
-            foreach ($exe in @('gcc','g++','cpp','as','ld','ar','ranlib','strip','objdump','readelf')) { Show-Executable "$triple-$exe.exe" 'features.target_prefixed_tools' }
+            Write-Host "[target-prefixed compiler driver probes: $triple]"
+            foreach ($exe in @('gcc','g++','cpp','gcov')) { Show-Executable "$triple-$exe.exe" 'features.target_prefixed_compiler_drivers' }
+            Write-Host ""
+            Write-Host "[target-prefixed Binutils probes: $triple]"
+            foreach ($exe in @('as','ld','ar','ranlib','strip','objdump','readelf')) { Show-Executable "$triple-$exe.exe" 'features.target_prefixed_binutils' }
         }
         Show-Version 'gcc.exe'
         Show-Version 'g++.exe'

@@ -172,6 +172,13 @@ WRAPPER
     log "made Valgrind relocatable with runtime directory: $runtime_name"
 }
 
+
+validate_valgrind_required_features() {
+    if ! valgrind_has_mpi_support; then
+        die "required Valgrind MPI wrapper was not installed"
+    fi
+}
+
 build_valgrind() {
     local source_dir="$1"
     local build_dir="$CUP_BUILD_DIR/valgrind-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
@@ -198,6 +205,7 @@ build_valgrind() {
     )
 
     make_valgrind_relocatable
+    validate_valgrind_required_features
 }
 
 write_valgrind_info() {
@@ -234,7 +242,7 @@ write_valgrind_info() {
         "source.primary.url=$SOURCE_URL"
         "config.configure=--enable-only64bit"
         "config.only64bit=true"
-        "config.mpi=auto"
+        "config.mpi=true"
         "config.mpicc=$(valgrind_mpicc_command)"
         "$(info_required_entry entry.valgrind "$PREFIX" valgrind)"
         "contents.self_contained=true"

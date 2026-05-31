@@ -45,10 +45,11 @@ require_executable "$root/bin/valgrind"
 grep -A3 "available tools are:" "$tmpdir/valgrind-help.txt"
 
 if feature_enabled "features.mpiwrap"; then
-    echo "optional feature enabled: MPI wrapper"
+    echo "required feature present: MPI wrapper"
     find "$root" -type f -name "libmpiwrap-*" | grep .
 else
-    echo "optional feature not enabled: MPI wrapper"
+    echo "required Valgrind MPI wrapper is missing" >&2
+    exit 1
 fi
 
 cat > "$tmpdir/valgrind-leak.c" <<'C_EOF'

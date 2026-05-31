@@ -155,6 +155,35 @@ gcc_native_windows_duplicate_binutils_tools() {
     printf '%s\n' as ld ld.bfd ar ranlib strip dlltool dllwrap windres windmc nm objdump objcopy readelf size strings addr2line c++filt elfedit gprof
 }
 
+
+native_windows_gcc_package() {
+    [ "$HOST_PLATFORM" = "windows-x64" ] && [ "$TARGET_PLATFORM" = "windows-x64" ]
+}
+
+gcc_build_tools_prefix() {
+    printf '%s\n' "$CUP_BUILD_DIR/gcc-build-tools-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
+}
+
+gcc_build_tools_bin() {
+    printf '%s/bin\n' "$(gcc_build_tools_prefix)"
+}
+
+gcc_binutils_install_prefix() {
+    if native_windows_gcc_package; then
+        gcc_build_tools_prefix
+    else
+        printf '%s\n' "$PREFIX"
+    fi
+}
+
+gcc_tool_search_path() {
+    if native_windows_gcc_package; then
+        printf '%s:%s:%s\n' "$(gcc_build_tools_bin)" "$PREFIX/bin" "$PATH"
+    else
+        printf '%s:%s\n' "$PREFIX/bin" "$PATH"
+    fi
+}
+
 ensure_prefixed_binutils_tools() {
     local tool
     local src
@@ -163,6 +192,11 @@ ensure_prefixed_binutils_tools() {
     local exe_suffix
 
     exe_suffix="$(tool_exe_suffix)"
+
+    if native_windows_gcc_package; then
+        log "using build-only prefixed Binutils for native Windows package"
+        return 0
+    fi
 
     log "ensuring prefixed Binutils target tool names"
 
@@ -234,7 +268,7 @@ create_native_windows_aliases() {
 
     log "ensuring native Windows tool aliases"
 
-    for tool in $(gcc_driver_tools; gcc_binutils_tools); do
+    for tool in $(gcc_driver_tools); do
         prefixed="$PREFIX/bin/$TARGET_TRIPLE-$tool$exe_suffix"
         plain="$PREFIX/bin/$tool$exe_suffix"
 
@@ -450,7 +484,19 @@ target_tool_path() {
     local exe_suffix
 
     exe_suffix="$(tool_exe_suffix)"
-    printf '%s\n' "$PREFIX/bin/$TARGET_TRIPLE-$tool$exe_suffix"
+
+    if native_windows_gcc_package; then
+        case "$tool" in
+            gcc|g++|c++|cpp|gcov|gcov-dump|gcov-tool|lto-dump)
+                printf '%s\n' "$PREFIX/bin/$TARGET_TRIPLE-$tool$exe_suffix"
+                ;;
+            *)
+                printf '%s\n' "$(gcc_build_tools_bin)/$TARGET_TRIPLE-$tool$exe_suffix"
+                ;;
+        esac
+    else
+        printf '%s\n' "$PREFIX/bin/$TARGET_TRIPLE-$tool$exe_suffix"
+    fi
 }
 
 resolve_target_tool() {
@@ -480,21 +526,18 @@ require_bundled_target_tool() {
 require_bundled_binutils_tools() {
     local tool
     local tool_path
-    local exe_suffix
-
-    exe_suffix="$(tool_exe_suffix)"
 
     log "checking bundled Binutils target tools"
 
     for tool in as ld ar ranlib strip nm objdump objcopy readelf; do
-        if is_cross_build "$HOST_PLATFORM" "$TARGET_PLATFORM"; then
-            tool_path="$PREFIX/bin/$TARGET_TRIPLE-$tool$exe_suffix"
+        if native_windows_gcc_package || is_cross_build "$HOST_PLATFORM" "$TARGET_PLATFORM"; then
+            tool_path="$(resolve_target_tool "$tool")"
         else
-            tool_path="$PREFIX/bin/$tool$exe_suffix"
+            tool_path="$PREFIX/bin/$tool$(tool_exe_suffix)"
         fi
 
-        if [ ! -x "$tool_path" ]; then
-            die "target tool not found: $tool_path"
+        if [ -z "$tool_path" ] || [ ! -x "$tool_path" ]; then
+            die "target tool not found: $tool"
         fi
 
         log "  $tool -> $tool_path"
@@ -676,7 +719,7 @@ build_native_gcc() {
 
     (
         cd "$build_dir"
-        export PATH="$PREFIX/bin:$PATH"
+        export PATH="$(gcc_tool_search_path)"
 
         "$(configure_script_for_build "$gcc_src" "$build_dir")" \
             --prefix="$PREFIX" \
@@ -702,7 +745,7 @@ build_cross_binutils() {
     log "building bundled Binutils $BINUTILS_VERSION for $TARGET_TRIPLE"
 
     configure_and_build "$binutils_src" "$build_dir" \
-        --prefix="$PREFIX" \
+        --prefix="$(gcc_binutils_install_prefix)" \
         --target="$TARGET_TRIPLE" \
         --disable-werror \
         --disable-nls \
@@ -755,7 +798,7 @@ build_gcc_stage1() {
 
     (
         cd "$build_dir"
-        export PATH="$PREFIX/bin:$PATH"
+        export PATH="$(gcc_tool_search_path)"
 
         "$configure_script" \
             --prefix="$PREFIX" \
@@ -794,13 +837,13 @@ build_mingw_crt() {
 
     (
         cd "$build_dir"
-        export PATH="$PREFIX/bin:$PATH"
+        export PATH="$(gcc_tool_search_path)"
 
-        CC="$TARGET_TRIPLE-gcc" \
-        AR="$TARGET_TRIPLE-ar" \
-        RANLIB="$TARGET_TRIPLE-ranlib" \
-        STRIP="$TARGET_TRIPLE-strip" \
-        DLLTOOL="$TARGET_TRIPLE-dlltool" \
+        CC="$(resolve_target_tool gcc)" \
+        AR="$(resolve_target_tool ar)" \
+        RANLIB="$(resolve_target_tool ranlib)" \
+        STRIP="$(resolve_target_tool strip)" \
+        DLLTOOL="$(resolve_target_tool dlltool)" \
         "$configure_script" \
             --host="$TARGET_TRIPLE" \
             --prefix="$PREFIX/$TARGET_TRIPLE" \
@@ -833,19 +876,55 @@ build_winpthreads() {
 
     (
         cd "$build_dir"
-        export PATH="$PREFIX/bin:$PATH"
+        export PATH="$(gcc_tool_search_path)"
 
-        CC="$TARGET_TRIPLE-gcc" \
-        AR="$TARGET_TRIPLE-ar" \
-        RANLIB="$TARGET_TRIPLE-ranlib" \
-        STRIP="$TARGET_TRIPLE-strip" \
-        DLLTOOL="$TARGET_TRIPLE-dlltool" \
+        CC="$(resolve_target_tool gcc)" \
+        AR="$(resolve_target_tool ar)" \
+        RANLIB="$(resolve_target_tool ranlib)" \
+        STRIP="$(resolve_target_tool strip)" \
+        DLLTOOL="$(resolve_target_tool dlltool)" \
         "$configure_script" \
             --host="$TARGET_TRIPLE" \
             --prefix="$PREFIX/$TARGET_TRIPLE"
         make -j"$CUP_JOBS"
         make install
     )
+}
+
+
+install_native_windows_binutils_layout() {
+    local tool
+    local exe_suffix
+    local source
+    local plain
+    local target_layout
+
+    if ! native_windows_gcc_package; then
+        return 0
+    fi
+
+    exe_suffix="$(tool_exe_suffix)"
+    log "installing native Windows Binutils package layout from build-only tools"
+
+    mkdir -p "$PREFIX/bin" "$PREFIX/$TARGET_TRIPLE/bin"
+
+    for tool in $(gcc_binutils_tools); do
+        source="$(gcc_build_tools_bin)/$TARGET_TRIPLE-$tool$exe_suffix"
+        [ -x "$source" ] || continue
+
+        plain="$PREFIX/bin/$tool$exe_suffix"
+        target_layout="$PREFIX/$TARGET_TRIPLE/bin/$tool$exe_suffix"
+
+        if [ ! -x "$plain" ]; then
+            cp -f "$source" "$plain"
+            chmod +x "$plain"
+            log "  installed public Binutils tool: $plain"
+        fi
+
+        cp -f "$source" "$target_layout"
+        chmod +x "$target_layout"
+        log "  installed target-layout Binutils tool: $target_layout"
+    done
 }
 
 build_gcc_final() {
@@ -890,7 +969,7 @@ build_gcc_final() {
     (
         cd "$build_dir"
 
-        export PATH="$PREFIX/bin:$PATH"
+        export PATH="$(gcc_tool_search_path)"
 
         export CC="$host_cc"
         export CXX="$host_cxx"
@@ -898,14 +977,14 @@ build_gcc_final() {
         unset CC_FOR_TARGET
         unset CXX_FOR_TARGET
 
-        export AR_FOR_TARGET="$PREFIX/bin/$TARGET_TRIPLE-ar$exe_suffix"
-        export AS_FOR_TARGET="$PREFIX/bin/$TARGET_TRIPLE-as$exe_suffix"
-        export LD_FOR_TARGET="$PREFIX/bin/$TARGET_TRIPLE-ld$exe_suffix"
-        export NM_FOR_TARGET="$PREFIX/bin/$TARGET_TRIPLE-nm$exe_suffix"
-        export RANLIB_FOR_TARGET="$PREFIX/bin/$TARGET_TRIPLE-ranlib$exe_suffix"
-        export STRIP_FOR_TARGET="$PREFIX/bin/$TARGET_TRIPLE-strip$exe_suffix"
-        export DLLTOOL_FOR_TARGET="$PREFIX/bin/$TARGET_TRIPLE-dlltool$exe_suffix"
-        export WINDRES_FOR_TARGET="$PREFIX/bin/$TARGET_TRIPLE-windres$exe_suffix"
+        export AR_FOR_TARGET="$(resolve_target_tool ar)"
+        export AS_FOR_TARGET="$(resolve_target_tool as)"
+        export LD_FOR_TARGET="$(resolve_target_tool ld)"
+        export NM_FOR_TARGET="$(resolve_target_tool nm)"
+        export RANLIB_FOR_TARGET="$(resolve_target_tool ranlib)"
+        export STRIP_FOR_TARGET="$(resolve_target_tool strip)"
+        export DLLTOOL_FOR_TARGET="$(resolve_target_tool dlltool)"
+        export WINDRES_FOR_TARGET="$(resolve_target_tool windres)"
 
         log_final_gcc_tools
 
@@ -928,6 +1007,7 @@ build_gcc_final() {
         make install
     )
 
+    install_native_windows_binutils_layout
     create_native_windows_aliases
     ensure_prefixed_gcc_tools
     prune_native_windows_prefixed_binutils_from_bin
@@ -1007,7 +1087,8 @@ write_gcc_info() {
     local has_plugin
     local has_pthread
     local has_sysroot
-    local has_target_prefix
+    local has_target_prefixed_compiler_drivers
+    local has_target_prefixed_binutils
 
     includes_libstdcxx="$(metadata_bool_for_files "$PREFIX" 'libstdc++*')"
     includes_lto="$(metadata_bool_for_files "$PREFIX" 'liblto_plugin*' 'lto1*')"
@@ -1022,7 +1103,8 @@ write_gcc_info() {
     has_gcov="$(gcc_metadata_bool_for_tool gcov)"
     has_plugin="$(metadata_bool_for_files "$PREFIX" 'liblto_plugin*')"
     has_sysroot="$(metadata_bool_for_dirs "$PREFIX" "$TARGET_TRIPLE")"
-    has_target_prefix="$(metadata_bool_for_executable "$PREFIX" "$TARGET_TRIPLE-gcc")"
+    has_target_prefixed_compiler_drivers="$(metadata_bool_for_executable "$PREFIX" "$TARGET_TRIPLE-gcc")"
+    has_target_prefixed_binutils="$(metadata_bool_for_executable "$PREFIX" "$TARGET_TRIPLE-ar")"
 
     if is_linux_platform "$TARGET_PLATFORM"; then
         has_pthread="true"
@@ -1099,7 +1181,8 @@ write_gcc_info() {
         "features.ubsan=$includes_ubsan"
         "features.plugin=$has_plugin"
         "features.binutils=$includes_binutils"
-        "features.target_prefixed_tools=$has_target_prefix"
+        "features.target_prefixed_compiler_drivers=$has_target_prefixed_compiler_drivers"
+        "features.target_prefixed_binutils=$has_target_prefixed_binutils"
         "features.sysroot=$has_sysroot"
     )
 

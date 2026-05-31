@@ -96,7 +96,9 @@ show_info_contract() {
     if [ -n "$duplicate_keys" ]; then
         echo ""
         echo "[duplicate metadata keys]"
-        printf '%s\n' "$duplicate_keys" | sed 's/^/  WARNING: /'
+        printf '%s\n' "$duplicate_keys" | sed 's/^/  ERROR: /'
+        echo "info.txt contains duplicate metadata keys" >&2
+        return 1
     fi
 
     echo ""

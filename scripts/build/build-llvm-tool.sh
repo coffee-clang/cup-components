@@ -691,10 +691,18 @@ build_llvm_runtimes() {
     log "clang runtime resource dir: $resource_dir"
     log "compiler-rt builtins staged for runtime build: $builtins_library"
 
-    wrapper_dir="$runtime_build_dir/compiler-wrappers"
-    mapfile -t runtime_wrappers < <(create_clang_runtime_compiler_wrappers "$wrapper_dir" "$clang_c" "$clang_cxx" "$resource_dir")
-    runtime_cc="${runtime_wrappers[0]}"
-    runtime_cxx="${runtime_wrappers[1]}"
+    if is_windows_platform "$HOST_PLATFORM"; then
+        # Windows Ninja invokes compilers via CreateProcess and cannot execute
+        # POSIX shell wrapper scripts directly. Use the just-built clang.exe
+        # and pass the resource-dir/runtime flags through CMake cache flags.
+        runtime_cc="$clang_c"
+        runtime_cxx="$clang_cxx"
+    else
+        wrapper_dir="$runtime_build_dir/compiler-wrappers"
+        mapfile -t runtime_wrappers < <(create_clang_runtime_compiler_wrappers "$wrapper_dir" "$clang_c" "$clang_cxx" "$resource_dir")
+        runtime_cc="${runtime_wrappers[0]}"
+        runtime_cxx="${runtime_wrappers[1]}"
+    fi
 
     compiler_rt_test_cflags="-resource-dir $resource_dir"
     if ! is_macos_platform "$HOST_PLATFORM"; then
@@ -709,7 +717,15 @@ build_llvm_runtimes() {
         "-DCOMPILER_RT_TEST_TARGET_TRIPLE=$HOST_TRIPLE"
     )
 
-    if ! is_macos_platform "$HOST_PLATFORM"; then
+    if is_windows_platform "$HOST_PLATFORM"; then
+        cmake_runtime_args+=(
+            "-DCMAKE_C_FLAGS_INIT=-resource-dir $resource_dir --rtlib=compiler-rt"
+            "-DCMAKE_CXX_FLAGS_INIT=-resource-dir $resource_dir --rtlib=compiler-rt"
+            "-DCMAKE_ASM_FLAGS_INIT=-resource-dir $resource_dir --rtlib=compiler-rt"
+            "-DCMAKE_EXE_LINKER_FLAGS_INIT=-resource-dir $resource_dir --rtlib=compiler-rt -fuse-ld=lld"
+            "-DCMAKE_SHARED_LINKER_FLAGS_INIT=-resource-dir $resource_dir --rtlib=compiler-rt -fuse-ld=lld"
+        )
+    elif ! is_macos_platform "$HOST_PLATFORM"; then
         cmake_runtime_args+=(
             "-DCMAKE_EXE_LINKER_FLAGS_INIT=-resource-dir $resource_dir --rtlib=compiler-rt -fuse-ld=lld"
             "-DCMAKE_SHARED_LINKER_FLAGS_INIT=-resource-dir $resource_dir --rtlib=compiler-rt -fuse-ld=lld"

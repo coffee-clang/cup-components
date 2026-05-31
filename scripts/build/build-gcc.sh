@@ -502,11 +502,33 @@ target_tool_path() {
 resolve_target_tool() {
     local tool="$1"
     local path
+    local exe_suffix
 
     path="$(target_tool_path "$tool")"
 
     if [ -x "$path" ]; then
         printf '%s\n' "$path"
+        return 0
+    fi
+
+    # When host and target are both Windows, Binutils may install native tools
+    # in the build-only prefix without the target triple (as.exe, ld.exe, ...),
+    # even though later MinGW/GCC stages ask for target tools. Treat those
+    # build-only tools as valid only during the build; they are still copied
+    # into the final package under the deliberate public/target-layout names.
+    if native_windows_gcc_package; then
+        exe_suffix="$(tool_exe_suffix)"
+        case "$tool" in
+            gcc|g++|c++|cpp|gcov|gcov-dump|gcov-tool|lto-dump)
+                ;;
+            *)
+                path="$(gcc_build_tools_bin)/$tool$exe_suffix"
+                if [ -x "$path" ]; then
+                    printf '%s\n' "$path"
+                    return 0
+                fi
+                ;;
+        esac
     fi
 }
 
@@ -910,6 +932,9 @@ install_native_windows_binutils_layout() {
 
     for tool in $(gcc_binutils_tools); do
         source="$(gcc_build_tools_bin)/$TARGET_TRIPLE-$tool$exe_suffix"
+        if [ ! -x "$source" ]; then
+            source="$(gcc_build_tools_bin)/$tool$exe_suffix"
+        fi
         [ -x "$source" ] || continue
 
         plain="$PREFIX/bin/$tool$exe_suffix"

@@ -307,7 +307,7 @@ info_key_is_valid() {
     local key="$1"
 
     case "$key" in
-        ""|*[!A-Za-z0-9_.-]*) return 1 ;;
+        ""|*[!A-Za-z0-9_.+-]*) return 1 ;;
         *) return 0 ;;
     esac
 }

@@ -143,13 +143,16 @@ tool_exe_suffix() {
     fi
 }
 
-
 gcc_driver_tools() {
     printf '%s\n' gcc g++ c++ cpp gcov gcov-dump gcov-tool lto-dump
 }
 
 gcc_binutils_tools() {
     printf '%s\n' as ld ar ranlib strip dlltool dllwrap windres windmc nm objdump objcopy readelf size strings addr2line c++filt elfedit gprof
+}
+
+gcc_native_windows_duplicate_binutils_tools() {
+    printf '%s\n' as ld ld.bfd ar ranlib strip dlltool dllwrap windres windmc nm objdump objcopy readelf size strings addr2line c++filt elfedit gprof
 }
 
 ensure_prefixed_binutils_tools() {
@@ -285,7 +288,6 @@ ensure_prefixed_gcc_tools() {
     done
 }
 
-
 prune_native_windows_prefixed_binutils_from_bin() {
     local tool
     local exe_suffix
@@ -301,7 +303,7 @@ prune_native_windows_prefixed_binutils_from_bin() {
 
     log "pruning duplicate target-prefixed Binutils from native Windows bin directory"
 
-    for tool in $(gcc_binutils_tools); do
+    for tool in $(gcc_native_windows_duplicate_binutils_tools); do
         prefixed="$PREFIX/bin/$TARGET_TRIPLE-$tool$exe_suffix"
         plain="$PREFIX/bin/$tool$exe_suffix"
         target_layout_tool="$PREFIX/$TARGET_TRIPLE/bin/$tool$exe_suffix"
@@ -310,15 +312,21 @@ prune_native_windows_prefixed_binutils_from_bin() {
             continue
         fi
 
-        if [ ! -e "$plain" ] || [ ! -e "$target_layout_tool" ]; then
-            log "  keeping: $prefixed"
+        if [ ! -e "$plain" ] && [ ! -L "$plain" ]; then
+            log "  keeping target-prefixed tool without plain equivalent: $prefixed"
             continue
         fi
 
+        if [ -e "$target_layout_tool" ] || [ -L "$target_layout_tool" ]; then
+            log "  removing duplicate: $prefixed (plain and target-layout copies exist)"
+        else
+            log "  removing public duplicate: $prefixed (plain copy exists)"
+        fi
+
         rm -f "$prefixed"
-        log "  removed duplicate: $prefixed"
     done
 }
+
 
 strip_gcc_package_binaries() {
     local strip_tool

@@ -100,6 +100,50 @@ function Test-FeatureEnabled {
     return (Read-InfoValue -Root $Root -Key $Key) -eq 'true'
 }
 
+function Assert-NoNativeWindowsPrefixedBinutilsDuplicates {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Root
+    )
+
+    $targetTriple = Read-InfoValue -Root $Root -Key 'platform.target_triple'
+    $hostPlatform = Read-InfoValue -Root $Root -Key 'platform.host'
+    $targetPlatform = Read-InfoValue -Root $Root -Key 'platform.target'
+
+    if ($hostPlatform -ne 'windows-x64' -or $targetPlatform -ne 'windows-x64') {
+        return
+    }
+
+    if (-not $targetTriple) {
+        throw 'platform.target_triple is missing from info.txt'
+    }
+
+    $binDir = Join-Path $Root 'bin'
+    $targetBinDir = Join-Path $Root (Join-Path $targetTriple 'bin')
+    $duplicateTools = @(
+        'as', 'ld', 'ld.bfd', 'ar', 'ranlib', 'strip', 'dlltool', 'dllwrap',
+        'windres', 'windmc', 'nm', 'objdump', 'objcopy', 'readelf', 'size',
+        'strings', 'addr2line', 'c++filt', 'elfedit', 'gprof'
+    )
+
+    $duplicates = @()
+
+    foreach ($tool in $duplicateTools) {
+        $prefixed = Join-Path $binDir "$targetTriple-$tool.exe"
+        $plain = Join-Path $binDir "$tool.exe"
+        $targetLayout = Join-Path $targetBinDir "$tool.exe"
+
+        if ((Test-Path $prefixed) -and ((Test-Path $plain) -or (Test-Path $targetLayout))) {
+            $duplicates += $prefixed
+        }
+    }
+
+    if ($duplicates.Count -gt 0) {
+        $message = "Native Windows GCC package contains duplicate target-prefixed Binutils in bin/:`n" + ($duplicates -join "`n")
+        throw $message
+    }
+}
+
 $releaseEnv = Get-Content dist/release.env
 $packageBase = ($releaseEnv | Where-Object { $_ -like 'package_base=*' }) -replace '^package_base=', ''
 if (-not $packageBase) { throw 'package_base not found in dist/release.env' }
@@ -112,6 +156,7 @@ $root = Join-Path (Resolve-Path dist/package-test) $packageBase
 Get-Content "$root\info.txt"
 
 pwsh scripts/test/package-capabilities-windows.ps1 -Root $root -Tool 'gcc'
+Assert-NoNativeWindowsPrefixedBinutilsDuplicates -Root $root
 
 $env:Path = "$root\bin;$env:SystemRoot\System32;$env:SystemRoot"
 

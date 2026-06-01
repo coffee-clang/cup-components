@@ -91,7 +91,11 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.release.outputs.tag }}
-          path: dist/*
+          path: |
+            dist/*.tar.xz
+            dist/*.tar.gz
+            dist/*.zip
+            dist/release.env
           if-no-files-found: error
 
       - name: Publish GitHub Release

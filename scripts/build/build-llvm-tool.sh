@@ -131,6 +131,7 @@ llvm_runtimes_for_tool() {
 
 LLVM_RUNTIMES="$(llvm_runtimes_for_tool)"
 LLVM_RUNTIME_BUILD_DIR=""
+LLVM_BUILD_DIR=""
 
 llvm_runtimes_enabled() {
     [ "$TOOL" = "clang" ] && [ -n "$LLVM_RUNTIMES" ]
@@ -149,6 +150,16 @@ llvm_common_cmake_args() {
 macos_sdk_path() {
     if is_macos_platform "$HOST_PLATFORM" && command -v xcrun >/dev/null 2>&1; then
         xcrun --sdk macosx --show-sdk-path
+    fi
+}
+
+cmake_native_path() {
+    local path="$1"
+
+    if is_windows_platform "$HOST_PLATFORM" && command -v cygpath >/dev/null 2>&1; then
+        cygpath -m "$path"
+    else
+        printf '%s\n' "$path"
     fi
 }
 
@@ -615,7 +626,9 @@ build_llvm_runtimes() {
     local llvm_linker
     local cmake_runtime_args=()
     local resource_dir
+    local resource_dir_cmake
     local builtins_library
+    local builtins_library_cmake
     local wrapper_dir
     local runtime_cc
     local runtime_cxx
@@ -688,13 +701,14 @@ build_llvm_runtimes() {
     fi
 
     builtins_library="$(require_compiler_rt_builtins_library)"
+    resource_dir_cmake="$(cmake_native_path "$resource_dir")"
+    builtins_library_cmake="$(cmake_native_path "$builtins_library")"
     log "clang runtime resource dir: $resource_dir"
+    log "clang runtime resource dir for CMake/compiler invocations: $resource_dir_cmake"
     log "compiler-rt builtins staged for runtime build: $builtins_library"
+    log "compiler-rt builtins path for CMake/compiler invocations: $builtins_library_cmake"
 
     if is_windows_platform "$HOST_PLATFORM"; then
-        # Windows Ninja invokes compilers via CreateProcess and cannot execute
-        # POSIX shell wrapper scripts directly. Use the just-built clang.exe
-        # and pass the resource-dir/runtime flags through CMake cache flags.
         runtime_cc="$clang_c"
         runtime_cxx="$clang_cxx"
     else
@@ -704,7 +718,7 @@ build_llvm_runtimes() {
         runtime_cxx="${runtime_wrappers[1]}"
     fi
 
-    compiler_rt_test_cflags="-resource-dir $resource_dir"
+    compiler_rt_test_cflags="-resource-dir $resource_dir_cmake"
     if ! is_macos_platform "$HOST_PLATFORM"; then
         compiler_rt_test_cflags="$compiler_rt_test_cflags --rtlib=compiler-rt"
     fi
@@ -712,23 +726,23 @@ build_llvm_runtimes() {
     cmake_runtime_args+=(
         "-DCMAKE_C_COMPILER=$runtime_cc"
         "-DCMAKE_CXX_COMPILER=$runtime_cxx"
-        "-DCOMPILER_RT_BUILTINS_LIBRARY=$builtins_library"
+        "-DCOMPILER_RT_BUILTINS_LIBRARY:FILEPATH=$builtins_library_cmake"
         "-DCOMPILER_RT_TEST_COMPILER_CFLAGS=$compiler_rt_test_cflags"
         "-DCOMPILER_RT_TEST_TARGET_TRIPLE=$HOST_TRIPLE"
     )
 
     if is_windows_platform "$HOST_PLATFORM"; then
         cmake_runtime_args+=(
-            "-DCMAKE_C_FLAGS_INIT=-resource-dir $resource_dir --rtlib=compiler-rt"
-            "-DCMAKE_CXX_FLAGS_INIT=-resource-dir $resource_dir --rtlib=compiler-rt"
-            "-DCMAKE_ASM_FLAGS_INIT=-resource-dir $resource_dir --rtlib=compiler-rt"
-            "-DCMAKE_EXE_LINKER_FLAGS_INIT=-resource-dir $resource_dir --rtlib=compiler-rt -fuse-ld=lld"
-            "-DCMAKE_SHARED_LINKER_FLAGS_INIT=-resource-dir $resource_dir --rtlib=compiler-rt -fuse-ld=lld"
+            "-DCMAKE_C_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt"
+            "-DCMAKE_CXX_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt"
+            "-DCMAKE_ASM_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt"
+            "-DCMAKE_EXE_LINKER_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt -fuse-ld=lld"
+            "-DCMAKE_SHARED_LINKER_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt -fuse-ld=lld"
         )
     elif ! is_macos_platform "$HOST_PLATFORM"; then
         cmake_runtime_args+=(
-            "-DCMAKE_EXE_LINKER_FLAGS_INIT=-resource-dir $resource_dir --rtlib=compiler-rt -fuse-ld=lld"
-            "-DCMAKE_SHARED_LINKER_FLAGS_INIT=-resource-dir $resource_dir --rtlib=compiler-rt -fuse-ld=lld"
+            "-DCMAKE_EXE_LINKER_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt -fuse-ld=lld"
+            "-DCMAKE_SHARED_LINKER_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt -fuse-ld=lld"
         )
     fi
 
@@ -966,6 +980,10 @@ write_llvm_info() {
     has_clang_apply_replacements="$(metadata_bool_for_executable "$PREFIX" clang-apply-replacements)"
     has_run_clang_tidy="$(metadata_bool_for_executable "$PREFIX" run-clang-tidy)"
     has_clang_tidy_diff="$(metadata_bool_for_executable "$PREFIX" clang-tidy-diff)"
+
+    if [ -z "${LLVM_BUILD_DIR:-}" ]; then
+        die "LLVM_BUILD_DIR is not set; write_llvm_info must be called after build_llvm_tool"
+    fi
 
     cmake_python="$(cmake_cache_bool "${LLVM_BUILD_DIR:-}" LLDB_ENABLE_PYTHON)"
     cmake_libxml2="$(cmake_cache_bool "${LLVM_BUILD_DIR:-}" LLDB_ENABLE_LIBXML2)"

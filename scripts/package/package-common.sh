@@ -722,6 +722,8 @@ copy_windows_runtime_dlls() {
     queue_file="$(mktemp)"
     seen_file="$(mktemp)"
 
+    trap 'rm -f "$queue_file" "$queue_file.next" "$seen_file"' RETURN
+
     collect_windows_package_pe_files "$bin_dir" | sort -u > "$queue_file"
     : > "$seen_file"
 
@@ -790,8 +792,6 @@ copy_windows_runtime_dlls() {
             printf '%s\n' "$bin_dir/$dll_name" >> "$queue_file"
         done < <(windows_pe_import_dll_names "$current")
     done
-
-    rm -f "$queue_file" "$seen_file"
 }
 
 copy_windows_python_runtime() {
@@ -1127,7 +1127,7 @@ create_packages() {
 
     package_base="$(package_base_name "$tool" "$version" "$host_platform" "$target_platform" "$revision")"
     release_tag="$(release_tag_for_package "$tool" "$version" "$host_platform" "$target_platform" "$revision")"
-    package_root="$CUP_OUT_DIR/package-root/$package_base"
+    package_root="$CUP_WORK_DIR/package-root/$package_base"
 
     rm -rf "$package_root"
     mkdir -p "$(dirname "$package_root")"

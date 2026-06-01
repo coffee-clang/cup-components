@@ -190,19 +190,21 @@ ensure_prefixed_binutils_tools() {
     local dst
     local tmp
     local exe_suffix
+    local bin_dir
 
     exe_suffix="$(tool_exe_suffix)"
 
     if native_windows_gcc_package; then
-        log "using build-only prefixed Binutils for native Windows package"
-        return 0
+        bin_dir="$(gcc_build_tools_bin)"
+        log "ensuring build-only target-prefixed Binutils aliases for native Windows package"
+    else
+        bin_dir="$PREFIX/bin"
+        log "ensuring prefixed Binutils target tool names"
     fi
 
-    log "ensuring prefixed Binutils target tool names"
-
     for tool in $(gcc_binutils_tools); do
-        src="$PREFIX/bin/$tool$exe_suffix"
-        dst="$PREFIX/bin/$TARGET_TRIPLE-$tool$exe_suffix"
+        src="$bin_dir/$tool$exe_suffix"
+        dst="$bin_dir/$TARGET_TRIPLE-$tool$exe_suffix"
         tmp="$dst.tmp"
 
         if [ -x "$dst" ]; then
@@ -511,11 +513,6 @@ resolve_target_tool() {
         return 0
     fi
 
-    # When host and target are both Windows, Binutils may install native tools
-    # in the build-only prefix without the target triple (as.exe, ld.exe, ...),
-    # even though later MinGW/GCC stages ask for target tools. Treat those
-    # build-only tools as valid only during the build; they are still copied
-    # into the final package under the deliberate public/target-layout names.
     if native_windows_gcc_package; then
         exe_suffix="$(tool_exe_suffix)"
         case "$tool" in
@@ -530,16 +527,20 @@ resolve_target_tool() {
                 ;;
         esac
     fi
+
+    return 1
 }
 
 require_bundled_target_tool() {
     local tool="$1"
     local path
+    local expected
 
-    path="$(target_tool_path "$tool")"
+    expected="$(target_tool_path "$tool")"
+    path="$(resolve_target_tool "$tool")"
 
-    if [ ! -x "$path" ]; then
-        die "target tool not found: $path"
+    if [ -z "$path" ] || [ ! -x "$path" ]; then
+        die "target tool not found: $expected"
     fi
 
     log "  $TARGET_TRIPLE-$tool -> $path"
@@ -628,12 +629,25 @@ build_native_binutils() {
         --enable-plugins
 }
 
-gcc_native_target_names() {
-    printf '%s\n' "$TARGET_TRIPLE"
-
-    if [ "$HOST_PLATFORM" = "linux-x64" ] && [ "$TARGET_PLATFORM" = "linux-x64" ]; then
-        printf '%s\n' "x86_64-pc-linux-gnu"
+gcc_effective_target_triple() {
+    if [ "$HOST_PLATFORM" = "$TARGET_PLATFORM" ]; then
+        case "$TARGET_PLATFORM" in
+            linux-x64)
+                printf '%s\n' "x86_64-pc-linux-gnu"
+                return 0
+                ;;
+            linux-arm64)
+                printf '%s\n' "aarch64-unknown-linux-gnu"
+                return 0
+                ;;
+        esac
     fi
+
+    printf '%s\n' "$TARGET_TRIPLE"
+}
+
+gcc_native_target_names() {
+    gcc_effective_target_triple
 }
 
 install_native_binutils_for_gcc() {
@@ -727,11 +741,13 @@ build_native_gcc() {
     local build_dir="$CUP_BUILD_DIR/gcc-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
     local gcc_dep_args=()
     local gcc_feature_args=()
+    local gcc_bootstrap_args=()
 
     log "building native GCC $VERSION for $HOST_PLATFORM"
 
     mapfile -t gcc_dep_args < <(gcc_dependency_configure_args)
     mapfile -t gcc_feature_args < <(gcc_feature_configure_args)
+    mapfile -t gcc_bootstrap_args < <(gcc_bootstrap_configure_args)
 
     prepare_gcc_prerequisites "$gcc_src"
     require_bundled_native_binutils_tools
@@ -750,7 +766,7 @@ build_native_gcc() {
             --disable-multilib \
             --enable-checking=release \
             --with-system-zlib \
-            --enable-bootstrap \
+            "${gcc_bootstrap_args[@]}" \
             "${gcc_feature_args[@]}" \
             --with-gnu-as \
             --with-gnu-ld \
@@ -1114,6 +1130,7 @@ write_gcc_info() {
     local has_sysroot
     local has_target_prefixed_compiler_drivers
     local has_target_prefixed_binutils
+    local gcc_effective_target
 
     includes_libstdcxx="$(metadata_bool_for_files "$PREFIX" 'libstdc++*')"
     includes_lto="$(metadata_bool_for_files "$PREFIX" 'liblto_plugin*' 'lto1*')"
@@ -1127,9 +1144,10 @@ write_gcc_info() {
     has_lto_dump="$(gcc_metadata_bool_for_tool lto-dump)"
     has_gcov="$(gcc_metadata_bool_for_tool gcov)"
     has_plugin="$(metadata_bool_for_files "$PREFIX" 'liblto_plugin*')"
-    has_sysroot="$(metadata_bool_for_dirs "$PREFIX" "$TARGET_TRIPLE")"
-    has_target_prefixed_compiler_drivers="$(metadata_bool_for_executable "$PREFIX" "$TARGET_TRIPLE-gcc")"
-    has_target_prefixed_binutils="$(metadata_bool_for_executable "$PREFIX" "$TARGET_TRIPLE-ar")"
+    gcc_effective_target="$(gcc_effective_target_triple)"
+    has_sysroot="$(metadata_bool_for_dirs "$PREFIX" "$gcc_effective_target")"
+    has_target_prefixed_compiler_drivers="$(metadata_bool_for_executable "$PREFIX" "$gcc_effective_target-gcc")"
+    has_target_prefixed_binutils="$(metadata_bool_for_executable "$PREFIX" "$gcc_effective_target-ar")"
 
     if is_linux_platform "$TARGET_PLATFORM"; then
         has_pthread="true"
@@ -1179,6 +1197,7 @@ write_gcc_info() {
         "config.zlib=system"
         "config.bootstrap=$bootstrap"
         "config.tool_naming=$tool_naming"
+        "config.gcc_target_triple=$gcc_effective_target"
         "config.openmp=attempted"
         "config.sanitizers=attempted"
         "$(info_entry_if_present entry.gcc "$PREFIX" gcc)"

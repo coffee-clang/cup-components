@@ -139,7 +139,7 @@ jobs:
       - name: Install build dependencies (Windows CLANG64)
         if: ${{ startsWith(needs.select.outputs.host_platform, 'windows-') }}
         shell: msys2 {0}
-        run: scripts/setup/setup-windows-msys2.sh clang64
+        run: bash scripts/setup/setup-windows-msys2.sh clang64
 
       - name: Build package (Windows)
         if: ${{ startsWith(needs.select.outputs.host_platform, 'windows-') }}
@@ -161,7 +161,7 @@ jobs:
       - name: Install build dependencies (macOS)
         if: ${{ startsWith(needs.select.outputs.host_platform, 'macos-') }}
         shell: bash
-        run: scripts/setup/setup-macos-builder.sh
+        run: bash scripts/setup/setup-macos-builder.sh
 
       - name: Build package (macOS)
         if: ${{ startsWith(needs.select.outputs.host_platform, 'macos-') }}
@@ -195,7 +195,11 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.release.outputs.tag }}
-          path: dist/*
+          path: |
+            dist/*.tar.xz
+            dist/*.tar.gz
+            dist/*.zip
+            dist/release.env
           if-no-files-found: error
 
       - name: Publish GitHub Release

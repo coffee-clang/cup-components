@@ -119,7 +119,7 @@ jobs:
       - name: Install build dependencies (Windows UCRT64)
         if: ${{ startsWith(needs.select.outputs.host_platform, 'windows-') }}
         shell: msys2 {0}
-        run: scripts/setup/setup-windows-msys2.sh ucrt64
+        run: bash scripts/setup/setup-windows-msys2.sh ucrt64
 
       - name: Build package (Windows)
         if: ${{ startsWith(needs.select.outputs.host_platform, 'windows-') }}
@@ -149,7 +149,11 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.release.outputs.tag }}
-          path: dist/*
+          path: |
+            dist/*.tar.xz
+            dist/*.tar.gz
+            dist/*.zip
+            dist/release.env
           if-no-files-found: error
 
       - name: Publish GitHub Release

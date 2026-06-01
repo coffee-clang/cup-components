@@ -63,6 +63,33 @@ feature_enabled() {
     [ "$(info_value "$key")" = "true" ]
 }
 
+require_no_redundant_native_linux_target_layouts() {
+    case "$TARGET_PLATFORM" in
+        linux-x64)
+            primary="x86_64-pc-linux-gnu"
+            redundant="x86_64-linux-gnu"
+            ;;
+        linux-arm64)
+            primary="aarch64-unknown-linux-gnu"
+            redundant="aarch64-linux-gnu"
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+
+    if [ -d "$root/$redundant" ]; then
+        echo "redundant GCC target-layout directory present: $redundant" >&2
+        echo "expected GCC canonical target-layout directory: $primary" >&2
+        exit 1
+    fi
+
+    if [ ! -d "$root/$primary" ]; then
+        echo "missing GCC canonical target-layout directory: $primary" >&2
+        exit 1
+    fi
+}
+
 log_optional_feature() {
     local name="$1"
     local key="$2"
@@ -80,6 +107,8 @@ bash scripts/test/package-capabilities.sh "$root" gcc
 
 if [ "$HOST_PLATFORM" = "$TARGET_PLATFORM" ] && [ "${HOST_PLATFORM#linux-}" != "$HOST_PLATFORM" ]; then
     export PATH="$root/bin:$PATH"
+
+    require_no_redundant_native_linux_target_layouts
 
     require_executable "$root/bin/gcc"
     require_executable "$root/bin/g++"

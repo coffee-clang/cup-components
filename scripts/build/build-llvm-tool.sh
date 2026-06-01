@@ -270,7 +270,6 @@ llvm_compiler_rt_sanitizer_cmake_args() {
         -DCOMPILER_RT_BUILD_MEMPROF=OFF
         -DCOMPILER_RT_BUILD_ORC=OFF
         -DCOMPILER_RT_BUILD_GWP_ASAN=OFF
-        -DCOMPILER_RT_BUILD_STATS=OFF
     )
 
     printf '%s\n' "${args[@]}"
@@ -478,7 +477,11 @@ copy_clang_runtimes_to_resource_dir() {
     destination="$resource_dir/lib/$platform_dir"
     mkdir -p "$destination"
 
-    for source_dir_candidate in         "$PREFIX/lib/$platform_dir"         "$PREFIX/lib/clang_rt/$platform_dir"         "$PREFIX/lib/$HOST_TRIPLE"         "$PREFIX/lib/$TARGET_TRIPLE"
+    for source_dir_candidate in \
+        "$PREFIX/lib/$platform_dir" \
+        "$PREFIX/lib/clang_rt/$platform_dir" \
+        "$PREFIX/lib/$HOST_TRIPLE" \
+        "$PREFIX/lib/$TARGET_TRIPLE"
     do
         if [ -d "$source_dir_candidate" ]; then
             log "copying clang runtimes from $source_dir_candidate to $destination"
@@ -542,7 +545,8 @@ copy_compiler_rt_builtins_to_resource_dir() {
 
         log "  copied compiler-rt builtin: $(basename "$builtin")"
         copied=true
-    done < <(find "$builtins_build_dir" -type f         \( -name 'libclang_rt.builtins*.a' -o -name 'clang_rt.builtins*.lib' \) | sort -u)
+    done < <(find "$builtins_build_dir" -type f \
+        \( -name 'libclang_rt.builtins*.a' -o -name 'clang_rt.builtins*.lib' \) | sort -u)
 
     if [ "$copied" = false ]; then
         log "warning: no compiler-rt builtins were found under $builtins_build_dir"
@@ -555,7 +559,9 @@ find_compiler_rt_builtins_library() {
     resource_dir="$(clang_resource_dir || true)"
     [ -n "$resource_dir" ] || return 1
 
-    find "$resource_dir/lib" -type f         \( -name 'libclang_rt.builtins*.a' -o -name 'clang_rt.builtins*.lib' \)         | sort | head -n 1
+    find "$resource_dir/lib" -type f \
+        \( -name 'libclang_rt.builtins*.a' -o -name 'clang_rt.builtins*.lib' \) \
+        | sort | head -n 1
 }
 
 
@@ -567,10 +573,6 @@ create_clang_runtime_compiler_wrappers() {
     local cc_wrapper="$wrapper_dir/clang-runtime-cc"
     local cxx_wrapper="$wrapper_dir/clang-runtime-cxx"
     local common_flags="-resource-dir $resource_dir"
-
-    if ! is_macos_platform "$HOST_PLATFORM"; then
-        common_flags="$common_flags --rtlib=compiler-rt"
-    fi
 
     mkdir -p "$wrapper_dir"
 
@@ -704,7 +706,6 @@ build_clang_builtins_runtime() {
         -DCOMPILER_RT_BUILD_MEMPROF=OFF
         -DCOMPILER_RT_BUILD_ORC=OFF
         -DCOMPILER_RT_BUILD_GWP_ASAN=OFF
-        -DCOMPILER_RT_BUILD_STATS=OFF
         -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON
     )
 
@@ -717,7 +718,7 @@ build_clang_builtins_runtime() {
 
     log "selected compiler-rt builtins CMake cache entries:"
     if [ -f "$builtins_build_dir/CMakeCache.txt" ]; then
-        llvm_dump_cmake_cache_entries "$builtins_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|LLVM_DEFAULT_TARGET_TRIPLE|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_C_COMPILER_TARGET|CMAKE_CXX_COMPILER_TARGET|CMAKE_SYSTEM_NAME|CMAKE_SYSTEM_PROCESSOR|CMAKE_SYSROOT|CMAKE_OSX_SYSROOT|CMAKE_TRY_COMPILE_TARGET_TYPE|MINGW|COMPILER_RT_BUILD_BUILTINS|COMPILER_RT_BUILD_SANITIZERS|COMPILER_RT_BUILD_PROFILE|COMPILER_RT_BUILD_LIBFUZZER|COMPILER_RT_BUILD_XRAY|COMPILER_RT_BUILD_MEMPROF|COMPILER_RT_BUILD_ORC|COMPILER_RT_BUILD_GWP_ASAN|COMPILER_RT_BUILD_STATS|COMPILER_RT_HAS_VERSION_SCRIPT|COMPILER_RT_HAS_GNU_VERSION_SCRIPT_COMPAT|COMPILER_RT_HAS_Z_TEXT|COMPILER_RT_HAS_LIBC|COMPILER_RT_HAS_LIBCXX|COMPILER_RT_HAS_LIBSTDCXX|COMPILER_RT_HAS_LIBDL|COMPILER_RT_HAS_LIBRT|COMPILER_RT_HAS_LIBM|COMPILER_RT_HAS_LIBPTHREAD|COMPILER_RT_CXX_LIBRARY|COMPILER_RT_STATIC_CXX_LIBRARY|COMPILER_RT_USE_LLVM_UNWINDER|COMPILER_RT_ENABLE_STATIC_UNWINDER|SANITIZER_CXX_ABI|SANITIZER_CXX_ABI_LIBNAME|SANITIZER_CXX_ABI_INTREE|SANITIZER_TEST_CXX|SANITIZER_TEST_CXX_LIBNAME|SANITIZER_TEST_CXX_INTREE|SANITIZER_USE_STATIC_CXX_ABI|SANITIZER_USE_STATIC_TEST_CXX|SANITIZER_USE_STATIC_LLVM_UNWINDER|COMPILER_RT_DEFAULT_TARGET_ONLY):'
+        llvm_dump_cmake_cache_entries "$builtins_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|LLVM_DEFAULT_TARGET_TRIPLE|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_C_COMPILER_TARGET|CMAKE_CXX_COMPILER_TARGET|CMAKE_SYSTEM_NAME|CMAKE_SYSTEM_PROCESSOR|CMAKE_SYSROOT|CMAKE_OSX_SYSROOT|CMAKE_TRY_COMPILE_TARGET_TYPE|MINGW|COMPILER_RT_BUILD_BUILTINS|COMPILER_RT_BUILD_SANITIZERS|COMPILER_RT_BUILD_PROFILE|COMPILER_RT_BUILD_LIBFUZZER|COMPILER_RT_BUILD_XRAY|COMPILER_RT_BUILD_MEMPROF|COMPILER_RT_BUILD_ORC|COMPILER_RT_BUILD_GWP_ASAN|COMPILER_RT_HAS_VERSION_SCRIPT|COMPILER_RT_HAS_GNU_VERSION_SCRIPT_COMPAT|COMPILER_RT_HAS_Z_TEXT|COMPILER_RT_HAS_LIBC|COMPILER_RT_HAS_LIBCXX|COMPILER_RT_HAS_LIBSTDCXX|COMPILER_RT_HAS_LIBDL|COMPILER_RT_HAS_LIBRT|COMPILER_RT_HAS_LIBM|COMPILER_RT_HAS_LIBPTHREAD|COMPILER_RT_CXX_LIBRARY|COMPILER_RT_STATIC_CXX_LIBRARY|COMPILER_RT_USE_LLVM_UNWINDER|COMPILER_RT_ENABLE_STATIC_UNWINDER|SANITIZER_CXX_ABI|SANITIZER_CXX_ABI_LIBNAME|SANITIZER_CXX_ABI_INTREE|SANITIZER_TEST_CXX|SANITIZER_TEST_CXX_LIBNAME|SANITIZER_TEST_CXX_INTREE|SANITIZER_USE_STATIC_CXX_ABI|SANITIZER_USE_STATIC_TEST_CXX|SANITIZER_USE_STATIC_LLVM_UNWINDER|COMPILER_RT_DEFAULT_TARGET_ONLY):'
     fi
 
     if ! cmake --build "$builtins_build_dir" --target builtins --parallel "$CUP_JOBS"; then
@@ -817,9 +818,9 @@ build_clang_cxx_runtimes() {
 
     if is_windows_platform "$HOST_PLATFORM"; then
         cmake_cxx_args+=(
-            "-DCMAKE_C_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt"
-            "-DCMAKE_CXX_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt"
-            "-DCMAKE_ASM_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt"
+            "-DCMAKE_C_FLAGS_INIT=-resource-dir $resource_dir_cmake"
+            "-DCMAKE_CXX_FLAGS_INIT=-resource-dir $resource_dir_cmake"
+            "-DCMAKE_ASM_FLAGS_INIT=-resource-dir $resource_dir_cmake"
             "-DCMAKE_EXE_LINKER_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt -fuse-ld=lld"
             "-DCMAKE_SHARED_LINKER_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt -fuse-ld=lld"
         )
@@ -950,9 +951,6 @@ build_clang_sanitizer_runtimes() {
     done < <(llvm_compiler_rt_installed_cxx_abi_args)
 
     compiler_rt_test_cflags="-resource-dir $resource_dir_cmake"
-    if ! is_macos_platform "$HOST_PLATFORM"; then
-        compiler_rt_test_cflags="$compiler_rt_test_cflags --rtlib=compiler-rt"
-    fi
 
     cmake_sanitizer_args+=(
         "-DCOMPILER_RT_TEST_COMPILER_CFLAGS=$compiler_rt_test_cflags"
@@ -960,9 +958,9 @@ build_clang_sanitizer_runtimes() {
 
     if is_windows_platform "$HOST_PLATFORM"; then
         cmake_sanitizer_args+=(
-            "-DCMAKE_C_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt"
-            "-DCMAKE_CXX_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt"
-            "-DCMAKE_ASM_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt"
+            "-DCMAKE_C_FLAGS_INIT=-resource-dir $resource_dir_cmake"
+            "-DCMAKE_CXX_FLAGS_INIT=-resource-dir $resource_dir_cmake"
+            "-DCMAKE_ASM_FLAGS_INIT=-resource-dir $resource_dir_cmake"
             "-DCMAKE_EXE_LINKER_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt -fuse-ld=lld"
             "-DCMAKE_SHARED_LINKER_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt -fuse-ld=lld"
         )
@@ -982,7 +980,7 @@ build_clang_sanitizer_runtimes() {
 
     log "selected LLVM sanitizer runtimes CMake cache entries:"
     if [ -f "$sanitizer_build_dir/CMakeCache.txt" ]; then
-        llvm_dump_cmake_cache_entries "$sanitizer_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|LLVM_DEFAULT_TARGET_TRIPLE|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_C_COMPILER_TARGET|CMAKE_CXX_COMPILER_TARGET|CMAKE_SYSTEM_NAME|CMAKE_SYSTEM_PROCESSOR|CMAKE_SYSROOT|CMAKE_PREFIX_PATH|CMAKE_FIND_ROOT_PATH|CMAKE_TRY_COMPILE_TARGET_TYPE|CMAKE_C_FLAGS|CMAKE_CXX_FLAGS|CMAKE_EXE_LINKER_FLAGS|CMAKE_SHARED_LINKER_FLAGS|CMAKE_LINKER|MINGW|LLVM_ENABLE_LLD|COMPILER_RT_BUILD_BUILTINS|COMPILER_RT_BUILD_SANITIZERS|COMPILER_RT_BUILD_PROFILE|COMPILER_RT_BUILD_LIBFUZZER|COMPILER_RT_BUILD_XRAY|COMPILER_RT_BUILD_MEMPROF|COMPILER_RT_BUILD_ORC|COMPILER_RT_BUILD_GWP_ASAN|COMPILER_RT_BUILD_STATS|COMPILER_RT_HAS_VERSION_SCRIPT|COMPILER_RT_HAS_GNU_VERSION_SCRIPT_COMPAT|COMPILER_RT_HAS_Z_TEXT|COMPILER_RT_HAS_LIBC|COMPILER_RT_HAS_LIBCXX|COMPILER_RT_HAS_LIBSTDCXX|COMPILER_RT_HAS_LIBDL|COMPILER_RT_HAS_LIBRT|COMPILER_RT_HAS_LIBM|COMPILER_RT_HAS_LIBPTHREAD|COMPILER_RT_CXX_LIBRARY|COMPILER_RT_STATIC_CXX_LIBRARY|COMPILER_RT_USE_BUILTINS_LIBRARY|COMPILER_RT_USE_LIBCXX|COMPILER_RT_USE_LLVM_UNWINDER|COMPILER_RT_ENABLE_STATIC_UNWINDER|COMPILER_RT_DEFAULT_TARGET_ONLY|COMPILER_RT_TEST_COMPILER_CFLAGS|COMPILER_RT_TEST_TARGET_TRIPLE|COMPILER_RT_BUILTINS_LIBRARY|SANITIZER_CXX_ABI|SANITIZER_CXX_ABI_LIBNAME|SANITIZER_CXX_ABI_INTREE|SANITIZER_TEST_CXX|SANITIZER_TEST_CXX_LIBNAME|SANITIZER_TEST_CXX_INTREE|SANITIZER_USE_STATIC_CXX_ABI|SANITIZER_USE_STATIC_TEST_CXX|SANITIZER_USE_STATIC_LLVM_UNWINDER):'
+        llvm_dump_cmake_cache_entries "$sanitizer_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|LLVM_DEFAULT_TARGET_TRIPLE|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_C_COMPILER_TARGET|CMAKE_CXX_COMPILER_TARGET|CMAKE_SYSTEM_NAME|CMAKE_SYSTEM_PROCESSOR|CMAKE_SYSROOT|CMAKE_PREFIX_PATH|CMAKE_FIND_ROOT_PATH|CMAKE_TRY_COMPILE_TARGET_TYPE|CMAKE_C_FLAGS|CMAKE_CXX_FLAGS|CMAKE_EXE_LINKER_FLAGS|CMAKE_SHARED_LINKER_FLAGS|CMAKE_LINKER|MINGW|LLVM_ENABLE_LLD|COMPILER_RT_BUILD_BUILTINS|COMPILER_RT_BUILD_SANITIZERS|COMPILER_RT_BUILD_PROFILE|COMPILER_RT_BUILD_LIBFUZZER|COMPILER_RT_BUILD_XRAY|COMPILER_RT_BUILD_MEMPROF|COMPILER_RT_BUILD_ORC|COMPILER_RT_BUILD_GWP_ASAN|COMPILER_RT_HAS_VERSION_SCRIPT|COMPILER_RT_HAS_GNU_VERSION_SCRIPT_COMPAT|COMPILER_RT_HAS_Z_TEXT|COMPILER_RT_HAS_LIBC|COMPILER_RT_HAS_LIBCXX|COMPILER_RT_HAS_LIBSTDCXX|COMPILER_RT_HAS_LIBDL|COMPILER_RT_HAS_LIBRT|COMPILER_RT_HAS_LIBM|COMPILER_RT_HAS_LIBPTHREAD|COMPILER_RT_CXX_LIBRARY|COMPILER_RT_STATIC_CXX_LIBRARY|COMPILER_RT_USE_BUILTINS_LIBRARY|COMPILER_RT_USE_LIBCXX|COMPILER_RT_USE_LLVM_UNWINDER|COMPILER_RT_ENABLE_STATIC_UNWINDER|COMPILER_RT_DEFAULT_TARGET_ONLY|COMPILER_RT_TEST_COMPILER_CFLAGS|COMPILER_RT_TEST_TARGET_TRIPLE|COMPILER_RT_BUILTINS_LIBRARY|SANITIZER_CXX_ABI|SANITIZER_CXX_ABI_LIBNAME|SANITIZER_CXX_ABI_INTREE|SANITIZER_TEST_CXX|SANITIZER_TEST_CXX_LIBNAME|SANITIZER_TEST_CXX_INTREE|SANITIZER_USE_STATIC_CXX_ABI|SANITIZER_USE_STATIC_TEST_CXX|SANITIZER_USE_STATIC_LLVM_UNWINDER):'
     fi
 
     if ! cmake --build "$sanitizer_build_dir" --parallel "$CUP_JOBS"; then
@@ -1026,6 +1024,7 @@ build_llvm_tool() {
 
     if [ "$TOOL" = "lldb" ]; then
         cmake_extra_args+=(
+            -DLLDB_INCLUDE_TESTS=OFF
             -DLLDB_ENABLE_PYTHON=ON
             -DLLDB_ENABLE_SWIG=ON
             -DLLDB_EMBED_PYTHON_HOME=OFF
@@ -1092,7 +1091,6 @@ build_llvm_tool() {
         -DCMAKE_INSTALL_PREFIX="$PREFIX" \
         -DLLVM_ENABLE_PROJECTS="$LLVM_PROJECTS" \
         -DLLVM_TARGETS_TO_BUILD="$LLVM_TARGETS" \
-        -DLLDB_INCLUDE_TESTS=OFF \
         "${cmake_common_args[@]}" \
         "${cmake_extra_args[@]}"
 

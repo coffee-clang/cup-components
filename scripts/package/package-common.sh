@@ -269,17 +269,47 @@ fetch() {
     fi
 }
 
+llvm_windows_source_excludes() {
+    local archive="$1"
+
+    if ! is_windows_platform "${HOST_PLATFORM:-}"; then
+        return 0
+    fi
+
+    case "$(basename "$archive")" in
+        llvm-project-*.src.tar.*)
+            printf '%s\n' \
+                '--exclude=*/clang/test/*' \
+                '--exclude=*/clang-tools-extra/test/*' \
+                '--exclude=*/compiler-rt/test/*' \
+                '--exclude=*/libcxx/test/*' \
+                '--exclude=*/libcxxabi/test/*' \
+                '--exclude=*/libunwind/test/*' \
+                '--exclude=*/lld/test/*' \
+                '--exclude=*/lldb/test/*' \
+                '--exclude=*/llvm/test/*' \
+                '--exclude=*/llvm/utils/mlgo-utils/*'
+            ;;
+    esac
+}
+
 extract_archive() {
     local archive="$1"
     local destination="$2"
+    local tar_excludes=()
+    local exclude_arg
 
     rm -rf "$destination"
     mkdir -p "$destination"
 
+    while IFS= read -r exclude_arg; do
+        [ -n "$exclude_arg" ] && tar_excludes+=("$exclude_arg")
+    done < <(llvm_windows_source_excludes "$archive")
+
     case "$archive" in
-        *.tar.xz) tar -xJf "$archive" -C "$destination" --strip-components=1 ;;
-        *.tar.gz|*.tgz) tar -xzf "$archive" -C "$destination" --strip-components=1 ;;
-        *.tar.bz2|*.tbz2) tar -xjf "$archive" -C "$destination" --strip-components=1 ;;
+        *.tar.xz) tar -xJf "$archive" -C "$destination" --strip-components=1 "${tar_excludes[@]}" ;;
+        *.tar.gz|*.tgz) tar -xzf "$archive" -C "$destination" --strip-components=1 "${tar_excludes[@]}" ;;
+        *.tar.bz2|*.tbz2) tar -xjf "$archive" -C "$destination" --strip-components=1 "${tar_excludes[@]}" ;;
         *.zip) unzip -q "$archive" -d "$destination" ;;
         *) die "unsupported archive format: $archive" ;;
     esac
@@ -644,28 +674,22 @@ collect_windows_package_pe_files() {
     fi
 }
 
-windows_runtime_dll_extract_paths() {
-    local file="$1"
-
-    ldd "$file" 2>/dev/null | while IFS= read -r line; do
-        printf '%s\n' "$line" | sed -n 's/.*=>[[:space:]]*\([^[:space:]]*\.dll\).*/\1/p'
-        printf '%s\n' "$line" | sed -n 's/^[[:space:]]*\([^[:space:]]*\.dll\).*/\1/p'
-    done | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed '/^$/d' | sort -u
+windows_pe_import_tool() {
+    if command -v llvm-objdump >/dev/null 2>&1; then
+        printf '%s\n' llvm-objdump
+    elif command -v objdump >/dev/null 2>&1; then
+        printf '%s\n' objdump
+    fi
 }
 
 windows_pe_import_dll_names() {
     local file="$1"
-    local objdump_cmd=""
+    local objdump_cmd
 
-    if command -v llvm-objdump >/dev/null 2>&1; then
-        objdump_cmd="llvm-objdump"
-    elif command -v objdump >/dev/null 2>&1; then
-        objdump_cmd="objdump"
-    else
-        return 0
-    fi
+    objdump_cmd="$(windows_pe_import_tool)"
+    [ -n "$objdump_cmd" ] || return 0
 
-    "$objdump_cmd" -p "$file" 2>/dev/null | \
+    LC_ALL=C "$objdump_cmd" -p "$file" 2>/dev/null | \
         sed -n 's/^[[:space:]]*DLL Name:[[:space:]]*//p' | \
         sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
         sed '/^$/d' | sort -u
@@ -704,17 +728,19 @@ copy_windows_runtime_dlls() {
     local current
     local dll_path
     local dll_name
+    local processed=0
+    local max_processed=10000
 
     if ! is_windows_platform "$HOST_PLATFORM"; then
         return 0
     fi
 
-    if ! command -v ldd >/dev/null 2>&1; then
-        die "ldd is required to collect Windows runtime DLLs"
-    fi
-
     if [ ! -d "$bin_dir" ]; then
         return 0
+    fi
+
+    if [ -z "$(windows_pe_import_tool)" ]; then
+        die "llvm-objdump or objdump is required to collect Windows runtime DLLs"
     fi
 
     log "copying Windows runtime DLL closure for binaries in $bin_dir"
@@ -726,6 +752,12 @@ copy_windows_runtime_dlls() {
     : > "$seen_file"
 
     while [ -s "$queue_file" ]; do
+        processed=$((processed + 1))
+        if [ "$processed" -gt "$max_processed" ]; then
+            rm -f "$queue_file" "$queue_file.next" "$seen_file"
+            die "Windows runtime DLL dependency traversal exceeded $max_processed files"
+        fi
+
         current="$(head -n 1 "$queue_file")"
         tail -n +2 "$queue_file" > "$queue_file.next"
         mv "$queue_file.next" "$queue_file"
@@ -734,30 +766,6 @@ copy_windows_runtime_dlls() {
             continue
         fi
         printf '%s\n' "$current" >> "$seen_file"
-
-        while IFS= read -r dll_path; do
-            [ -n "$dll_path" ] || continue
-            [ -f "$dll_path" ] || continue
-
-            if windows_runtime_dll_is_system_path "$dll_path"; then
-                continue
-            fi
-
-            if ! windows_runtime_dll_allowed_path "$dll_path"; then
-                log "  skipping non-package DLL dependency: $dll_path"
-                continue
-            fi
-
-            dll_name="$(basename "$dll_path")"
-
-            if [ -f "$bin_dir/$dll_name" ]; then
-                continue
-            fi
-
-            cp -f "$dll_path" "$bin_dir/$dll_name"
-            log "  copied: $dll_name"
-            printf '%s\n' "$bin_dir/$dll_name" >> "$queue_file"
-        done < <(windows_runtime_dll_extract_paths "$current")
 
         while IFS= read -r dll_name; do
             [ -n "$dll_name" ] || continue
@@ -785,6 +793,7 @@ copy_windows_runtime_dlls() {
                 continue
             fi
 
+            dll_name="$(basename "$dll_path")"
             cp -f "$dll_path" "$bin_dir/$dll_name"
             log "  copied PE import: $dll_name"
             printf '%s\n' "$bin_dir/$dll_name" >> "$queue_file"
@@ -1015,7 +1024,6 @@ create_windows_python_dll_aliases() {
 verify_windows_runtime_dlls() {
     local bin_dir="$1"
     local current
-    local dll_path
     local dll_name
     local missing=0
 
@@ -1023,39 +1031,18 @@ verify_windows_runtime_dlls() {
         return 0
     fi
 
-    if ! command -v ldd >/dev/null 2>&1; then
-        die "ldd is required to verify Windows runtime DLLs"
-    fi
-
     if [ ! -d "$bin_dir" ]; then
         return 0
     fi
 
-    log "verifying Windows runtime DLL closure for $bin_dir"
+    if [ -z "$(windows_pe_import_tool)" ]; then
+        die "llvm-objdump or objdump is required to verify Windows runtime DLLs"
+    fi
+
+    log "verifying Windows runtime DLL imports in $bin_dir"
 
     while IFS= read -r current; do
         [ -n "$current" ] || continue
-
-        while IFS= read -r dll_path; do
-            [ -n "$dll_path" ] || continue
-
-            dll_name="$(basename "$dll_path")"
-
-            if [ -f "$bin_dir/$dll_name" ]; then
-                continue
-            fi
-
-            if windows_runtime_dll_is_system_path "$dll_path"; then
-                continue
-            fi
-
-            if windows_runtime_dll_allowed_path "$dll_path"; then
-                log "  missing packaged DLL dependency for $(basename "$current"): $dll_name from $dll_path"
-                missing=1
-            else
-                log "  external DLL dependency not packaged for $(basename "$current"): $dll_path"
-            fi
-        done < <(windows_runtime_dll_extract_paths "$current")
 
         while IFS= read -r dll_name; do
             [ -n "$dll_name" ] || continue
@@ -1068,18 +1055,13 @@ verify_windows_runtime_dlls() {
                 continue
             fi
 
-            dll_path="$(find_windows_runtime_dll_by_name "$dll_name" "$bin_dir")"
-            if [ -n "$dll_path" ] && [ -f "$dll_path" ]; then
-                log "  PE import not copied for $(basename "$current"): $dll_name from $dll_path"
-            else
-                log "  unresolved PE import for $(basename "$current"): $dll_name"
-            fi
+            log "  missing packaged Windows runtime DLL import for $(basename "$current"): $dll_name"
             missing=1
         done < <(windows_pe_import_dll_names "$current")
     done < <(collect_windows_package_pe_files "$bin_dir" | sort -u)
 
     if [ "$missing" -ne 0 ]; then
-        die "Windows runtime DLL verification failed"
+        die "Windows package has unresolved non-system DLL imports"
     fi
 }
 

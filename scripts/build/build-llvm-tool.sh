@@ -163,6 +163,49 @@ cmake_native_path() {
     fi
 }
 
+llvm_windows_runtime_cmake_args() {
+    local args=()
+
+    if ! is_windows_platform "$HOST_PLATFORM"; then
+        return 0
+    fi
+
+    [ -n "${MINGW_PREFIX:-}" ] || die "MINGW_PREFIX is not set; run this build inside an MSYS2 CLANG64 environment"
+
+    args+=(
+        -DCMAKE_SYSTEM_NAME=Windows
+        -DCMAKE_SYSTEM_PROCESSOR=x86_64
+        -DCMAKE_SYSROOT="$MINGW_PREFIX"
+        -DCMAKE_PREFIX_PATH="$PREFIX;$MINGW_PREFIX"
+        -DCMAKE_FIND_ROOT_PATH="$PREFIX;$MINGW_PREFIX"
+        -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER
+        -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY
+        -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY
+        -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY
+        -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib
+        -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
+        -DMINGW:BOOL=ON
+    )
+
+    printf '%s\n' "${args[@]}"
+}
+
+llvm_windows_cxx_runtime_cmake_args() {
+    local args=()
+
+    if ! is_windows_platform "$HOST_PLATFORM"; then
+        return 0
+    fi
+
+    args+=(
+        -DLIBUNWIND_HAS_C_LIB:BOOL=OFF
+        -DLIBUNWIND_HAS_DL_LIB:BOOL=OFF
+        -DLIBUNWIND_HAS_PTHREAD_LIB:BOOL=OFF
+    )
+
+    printf '%s\n' "${args[@]}"
+}
+
 llvm_compiler_rt_windows_cmake_args() {
     local args=()
 
@@ -171,9 +214,6 @@ llvm_compiler_rt_windows_cmake_args() {
     fi
 
     args+=(
-        -DCMAKE_SYSTEM_NAME=Windows
-        -DCMAKE_SYSTEM_PROCESSOR=x86_64
-        -DMINGW:BOOL=ON
         -DCOMPILER_RT_HAS_VERSION_SCRIPT:BOOL=OFF
         -DCOMPILER_RT_HAS_GNU_VERSION_SCRIPT_COMPAT:BOOL=OFF
         -DCOMPILER_RT_HAS_Z_TEXT:BOOL=OFF
@@ -184,13 +224,35 @@ llvm_compiler_rt_windows_cmake_args() {
         -DCOMPILER_RT_HAS_LIBPTHREAD:BOOL=OFF
         -DCOMPILER_RT_HAS_LIBSTDCXX:BOOL=OFF
         -DCOMPILER_RT_CXX_LIBRARY:STRING=libcxx
-        -DCOMPILER_RT_STATIC_CXX_LIBRARY:BOOL=ON
-        -DCOMPILER_RT_USE_LLVM_UNWINDER:BOOL=ON
-        -DCOMPILER_RT_ENABLE_STATIC_UNWINDER:BOOL=ON
+        -DCOMPILER_RT_STATIC_CXX_LIBRARY:BOOL=OFF
+        -DCOMPILER_RT_USE_LLVM_UNWINDER:BOOL=OFF
+        -DCOMPILER_RT_ENABLE_STATIC_UNWINDER:BOOL=OFF
         -DSANITIZER_CXX_ABI:STRING=libc++
-        -DSANITIZER_CXX_ABI_INTREE:BOOL=ON
+        -DSANITIZER_CXX_ABI_INTREE:BOOL=OFF
         -DSANITIZER_TEST_CXX:STRING=libc++
-        -DSANITIZER_TEST_CXX_INTREE:BOOL=ON
+        -DSANITIZER_TEST_CXX_INTREE:BOOL=OFF
+        -DSANITIZER_USE_STATIC_CXX_ABI:BOOL=OFF
+        -DSANITIZER_USE_STATIC_TEST_CXX:BOOL=OFF
+        -DSANITIZER_USE_STATIC_LLVM_UNWINDER:BOOL=OFF
+    )
+
+    printf '%s\n' "${args[@]}"
+}
+
+llvm_compiler_rt_installed_cxx_abi_args() {
+    local args=()
+
+    if is_windows_platform "$HOST_PLATFORM"; then
+        return 0
+    fi
+
+    args+=(
+        -DCOMPILER_RT_CXX_LIBRARY:STRING=libcxx
+        -DCOMPILER_RT_STATIC_CXX_LIBRARY:BOOL=ON
+        -DSANITIZER_CXX_ABI:STRING=libc++
+        -DSANITIZER_CXX_ABI_INTREE:BOOL=OFF
+        -DSANITIZER_TEST_CXX:STRING=libc++
+        -DSANITIZER_TEST_CXX_INTREE:BOOL=OFF
         -DSANITIZER_USE_STATIC_CXX_ABI:BOOL=ON
         -DSANITIZER_USE_STATIC_TEST_CXX:BOOL=ON
         -DSANITIZER_USE_STATIC_LLVM_UNWINDER:BOOL=ON
@@ -551,6 +613,7 @@ llvm_runtime_common_args() {
     args+=(
         -DCMAKE_BUILD_TYPE=Release
         -DCMAKE_INSTALL_PREFIX="$PREFIX"
+        -DCMAKE_PREFIX_PATH="$PREFIX"
         -DCMAKE_C_COMPILER="$clang_c"
         -DCMAKE_CXX_COMPILER="$clang_cxx"
         -DCMAKE_C_COMPILER_TARGET="$HOST_TRIPLE"
@@ -574,16 +637,9 @@ llvm_runtime_common_args() {
     fi
 
     if is_windows_platform "$HOST_PLATFORM"; then
-        [ -n "${MINGW_PREFIX:-}" ] || die "MINGW_PREFIX is not set; run this build inside an MSYS2 CLANG64 environment"
-        args+=(
-            -DCMAKE_SYSROOT="$MINGW_PREFIX"
-            -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib
-            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
-        )
-
         while IFS= read -r arg; do
             [ -n "$arg" ] && args+=("$arg")
-        done < <(llvm_compiler_rt_windows_cmake_args)
+        done < <(llvm_windows_runtime_cmake_args)
     elif is_macos_platform "$HOST_PLATFORM"; then
         sdk_path="$(macos_sdk_path)"
         if [ -n "$sdk_path" ]; then
@@ -652,6 +708,10 @@ build_clang_builtins_runtime() {
         -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON
     )
 
+    while IFS= read -r arg; do
+        [ -n "$arg" ] && cmake_builtins_args+=("$arg")
+    done < <(llvm_compiler_rt_windows_cmake_args)
+
     cmake -S "$source_dir/runtimes" -B "$builtins_build_dir" -G Ninja \
         "${cmake_builtins_args[@]}"
 
@@ -669,10 +729,10 @@ build_clang_builtins_runtime() {
     copy_compiler_rt_builtins_to_resource_dir "$builtins_build_dir"
 }
 
-build_llvm_runtimes() {
+build_clang_cxx_runtimes() {
     local source_dir="$1"
     local tool_build_dir="$2"
-    local runtime_build_dir="$CUP_BUILD_DIR/llvm-$TOOL-runtimes-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
+    local cxx_build_dir="$CUP_BUILD_DIR/llvm-$TOOL-cxx-runtimes-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
     local exe_suffix
     local clang_c
     local clang_cxx
@@ -680,7 +740,129 @@ build_llvm_runtimes() {
     local llvm_ranlib
     local llvm_nm
     local llvm_linker
-    local cmake_runtime_args=()
+    local cmake_cxx_args=()
+    local resource_dir
+    local resource_dir_cmake
+    local wrapper_dir
+    local runtime_cc
+    local runtime_cxx
+    local runtime_wrappers=()
+
+    if ! llvm_runtimes_enabled; then
+        return 0
+    fi
+
+    if is_windows_platform "$HOST_PLATFORM"; then
+        exe_suffix=".exe"
+    else
+        exe_suffix=""
+    fi
+
+    clang_c="$tool_build_dir/bin/clang$exe_suffix"
+    clang_cxx="$tool_build_dir/bin/clang++$exe_suffix"
+    llvm_ar="$tool_build_dir/bin/llvm-ar$exe_suffix"
+    llvm_ranlib="$tool_build_dir/bin/llvm-ranlib$exe_suffix"
+    llvm_nm="$tool_build_dir/bin/llvm-nm$exe_suffix"
+    llvm_linker="$tool_build_dir/bin/ld.lld$exe_suffix"
+
+    [ -x "$clang_c" ] || die "just-built clang not found: $clang_c"
+    [ -x "$clang_cxx" ] || die "just-built clang++ not found: $clang_cxx"
+
+    resource_dir="$(clang_resource_dir || true)"
+    if [ -z "$resource_dir" ]; then
+        die "clang resource dir not found before C++ runtime build"
+    fi
+
+    resource_dir_cmake="$(cmake_native_path "$resource_dir")"
+    log "building LLVM C++ runtimes for $TOOL $VERSION: libunwind;libcxxabi;libcxx"
+    log "clang runtime resource dir: $resource_dir"
+
+    rm -rf "$cxx_build_dir"
+    mkdir -p "$cxx_build_dir"
+
+    while IFS= read -r arg; do
+        [ -n "$arg" ] && cmake_cxx_args+=("$arg")
+    done < <(llvm_runtime_common_args "$clang_c" "$clang_cxx" "$llvm_ar" "$llvm_ranlib" "$llvm_nm" "$llvm_linker")
+
+    if is_windows_platform "$HOST_PLATFORM"; then
+        runtime_cc="$clang_c"
+        runtime_cxx="$clang_cxx"
+    else
+        wrapper_dir="$cxx_build_dir/compiler-wrappers"
+        mapfile -t runtime_wrappers < <(create_clang_runtime_compiler_wrappers "$wrapper_dir" "$clang_c" "$clang_cxx" "$resource_dir")
+        runtime_cc="${runtime_wrappers[0]}"
+        runtime_cxx="${runtime_wrappers[1]}"
+    fi
+
+    cmake_cxx_args+=(
+        -DLLVM_ENABLE_RUNTIMES="libunwind;libcxxabi;libcxx"
+        -DLIBUNWIND_ENABLE_SHARED=OFF
+        -DLIBUNWIND_ENABLE_STATIC=ON
+        -DLIBUNWIND_USE_COMPILER_RT=ON
+        -DLIBCXXABI_ENABLE_SHARED=OFF
+        -DLIBCXXABI_ENABLE_STATIC=ON
+        -DLIBCXXABI_USE_LLVM_UNWINDER=ON
+        -DLIBCXXABI_USE_COMPILER_RT=ON
+        -DLIBCXX_ENABLE_SHARED=OFF
+        -DLIBCXX_ENABLE_STATIC=ON
+        -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON
+        -DLIBCXX_USE_COMPILER_RT=ON
+        "-DCMAKE_C_COMPILER=$runtime_cc"
+        "-DCMAKE_CXX_COMPILER=$runtime_cxx"
+    )
+
+    while IFS= read -r arg; do
+        [ -n "$arg" ] && cmake_cxx_args+=("$arg")
+    done < <(llvm_windows_cxx_runtime_cmake_args)
+
+    if is_windows_platform "$HOST_PLATFORM"; then
+        cmake_cxx_args+=(
+            "-DCMAKE_C_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt"
+            "-DCMAKE_CXX_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt"
+            "-DCMAKE_ASM_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt"
+            "-DCMAKE_EXE_LINKER_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt -fuse-ld=lld"
+            "-DCMAKE_SHARED_LINKER_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt -fuse-ld=lld"
+        )
+    elif ! is_macos_platform "$HOST_PLATFORM"; then
+        cmake_cxx_args+=(
+            "-DCMAKE_EXE_LINKER_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt -fuse-ld=lld"
+            "-DCMAKE_SHARED_LINKER_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt -fuse-ld=lld"
+        )
+    fi
+
+    if ! cmake -S "$source_dir/runtimes" -B "$cxx_build_dir" -G Ninja \
+        "${cmake_cxx_args[@]}"; then
+        log "LLVM C++ runtime configure failed; selected CMake cache entries:"
+        llvm_dump_cmake_cache_entries "$cxx_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_SYSTEM_NAME|CMAKE_SYSTEM_PROCESSOR|CMAKE_SYSROOT|CMAKE_PREFIX_PATH|CMAKE_FIND_ROOT_PATH|CMAKE_TRY_COMPILE_TARGET_TYPE|CMAKE_C_FLAGS|CMAKE_CXX_FLAGS|CMAKE_EXE_LINKER_FLAGS|CMAKE_SHARED_LINKER_FLAGS|MINGW|LIBUNWIND_|LIBCXXABI_|LIBCXX_):'
+        return 1
+    fi
+
+    log "selected LLVM C++ runtimes CMake cache entries:"
+    if [ -f "$cxx_build_dir/CMakeCache.txt" ]; then
+        llvm_dump_cmake_cache_entries "$cxx_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|LLVM_DEFAULT_TARGET_TRIPLE|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_C_COMPILER_TARGET|CMAKE_CXX_COMPILER_TARGET|CMAKE_SYSTEM_NAME|CMAKE_SYSTEM_PROCESSOR|CMAKE_SYSROOT|CMAKE_PREFIX_PATH|CMAKE_FIND_ROOT_PATH|CMAKE_TRY_COMPILE_TARGET_TYPE|CMAKE_C_FLAGS|CMAKE_CXX_FLAGS|CMAKE_EXE_LINKER_FLAGS|CMAKE_SHARED_LINKER_FLAGS|CMAKE_LINKER|MINGW|LLVM_ENABLE_LLD|LIBUNWIND_ENABLE_SHARED|LIBUNWIND_ENABLE_STATIC|LIBUNWIND_USE_COMPILER_RT|LIBUNWIND_HAS_C_LIB|LIBUNWIND_HAS_DL_LIB|LIBUNWIND_HAS_PTHREAD_LIB|LIBCXXABI_ENABLE_SHARED|LIBCXXABI_ENABLE_STATIC|LIBCXXABI_USE_LLVM_UNWINDER|LIBCXXABI_USE_COMPILER_RT|LIBCXX_ENABLE_SHARED|LIBCXX_ENABLE_STATIC|LIBCXX_ENABLE_STATIC_ABI_LIBRARY|LIBCXX_USE_COMPILER_RT):'
+    fi
+
+    if ! cmake --build "$cxx_build_dir" --parallel "$CUP_JOBS"; then
+        log "LLVM C++ runtime build failed; selected CMake cache entries:"
+        llvm_dump_cmake_cache_entries "$cxx_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_SYSTEM_NAME|CMAKE_SYSTEM_PROCESSOR|CMAKE_SYSROOT|CMAKE_PREFIX_PATH|CMAKE_FIND_ROOT_PATH|CMAKE_TRY_COMPILE_TARGET_TYPE|CMAKE_C_FLAGS|CMAKE_CXX_FLAGS|CMAKE_EXE_LINKER_FLAGS|CMAKE_SHARED_LINKER_FLAGS|MINGW|LIBUNWIND_|LIBCXXABI_|LIBCXX_):'
+        return 1
+    fi
+
+    cmake --install "$cxx_build_dir"
+}
+
+build_clang_sanitizer_runtimes() {
+    local source_dir="$1"
+    local tool_build_dir="$2"
+    local sanitizer_build_dir="$CUP_BUILD_DIR/llvm-$TOOL-sanitizer-runtimes-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
+    local exe_suffix
+    local clang_c
+    local clang_cxx
+    local llvm_ar
+    local llvm_ranlib
+    local llvm_nm
+    local llvm_linker
+    local cmake_sanitizer_args=()
     local resource_dir
     local resource_dir_cmake
     local builtins_library
@@ -711,80 +893,73 @@ build_llvm_runtimes() {
     [ -x "$clang_c" ] || die "just-built clang not found: $clang_c"
     [ -x "$clang_cxx" ] || die "just-built clang++ not found: $clang_cxx"
 
-    LLVM_RUNTIME_BUILD_DIR="$runtime_build_dir"
-    log "building LLVM runtimes for $TOOL $VERSION: $LLVM_RUNTIMES"
-
-    build_clang_builtins_runtime "$source_dir" "$tool_build_dir"
-
-    rm -rf "$runtime_build_dir"
-    mkdir -p "$runtime_build_dir"
-
-    while IFS= read -r arg; do
-        [ -n "$arg" ] && cmake_runtime_args+=("$arg")
-    done < <(llvm_runtime_common_args "$clang_c" "$clang_cxx" "$llvm_ar" "$llvm_ranlib" "$llvm_nm" "$llvm_linker")
-
-    cmake_runtime_args+=(
-        -DLLVM_ENABLE_RUNTIMES="$LLVM_RUNTIMES"
-        -DCOMPILER_RT_BUILD_BUILTINS=OFF
-        -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON
-        -DCOMPILER_RT_USE_BUILTINS_LIBRARY=ON
-        -DCOMPILER_RT_USE_LIBCXX=ON
-        -DCOMPILER_RT_EXCLUDE_ATOMIC_BUILTIN=OFF
-        -DLIBUNWIND_ENABLE_SHARED=OFF
-        -DLIBUNWIND_ENABLE_STATIC=ON
-        -DLIBUNWIND_USE_COMPILER_RT=ON
-        -DLIBCXXABI_ENABLE_SHARED=OFF
-        -DLIBCXXABI_ENABLE_STATIC=ON
-        -DLIBCXXABI_USE_LLVM_UNWINDER=ON
-        -DLIBCXXABI_USE_COMPILER_RT=ON
-        -DLIBCXX_ENABLE_SHARED=OFF
-        -DLIBCXX_ENABLE_STATIC=ON
-        -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON
-        -DLIBCXX_USE_COMPILER_RT=ON
-    )
-
-    while IFS= read -r arg; do
-        [ -n "$arg" ] && cmake_runtime_args+=("$arg")
-    done < <(llvm_compiler_rt_sanitizer_cmake_args)
-
     resource_dir="$(clang_resource_dir || true)"
     if [ -z "$resource_dir" ]; then
-        die "clang resource dir not found before full runtime build"
+        die "clang resource dir not found before sanitizer runtime build"
     fi
 
     builtins_library="$(require_compiler_rt_builtins_library)"
     resource_dir_cmake="$(cmake_native_path "$resource_dir")"
     builtins_library_cmake="$(cmake_native_path "$builtins_library")"
+    log "building LLVM sanitizer runtimes for $TOOL $VERSION: compiler-rt sanitizers/profile"
     log "clang runtime resource dir: $resource_dir"
     log "clang runtime resource dir for CMake/compiler invocations: $resource_dir_cmake"
-    log "compiler-rt builtins staged for runtime build: $builtins_library"
+    log "compiler-rt builtins staged for sanitizer build: $builtins_library"
     log "compiler-rt builtins path for CMake/compiler invocations: $builtins_library_cmake"
+
+    rm -rf "$sanitizer_build_dir"
+    mkdir -p "$sanitizer_build_dir"
+
+    while IFS= read -r arg; do
+        [ -n "$arg" ] && cmake_sanitizer_args+=("$arg")
+    done < <(llvm_runtime_common_args "$clang_c" "$clang_cxx" "$llvm_ar" "$llvm_ranlib" "$llvm_nm" "$llvm_linker")
 
     if is_windows_platform "$HOST_PLATFORM"; then
         runtime_cc="$clang_c"
         runtime_cxx="$clang_cxx"
     else
-        wrapper_dir="$runtime_build_dir/compiler-wrappers"
+        wrapper_dir="$sanitizer_build_dir/compiler-wrappers"
         mapfile -t runtime_wrappers < <(create_clang_runtime_compiler_wrappers "$wrapper_dir" "$clang_c" "$clang_cxx" "$resource_dir")
         runtime_cc="${runtime_wrappers[0]}"
         runtime_cxx="${runtime_wrappers[1]}"
     fi
+
+    cmake_sanitizer_args+=(
+        -DLLVM_ENABLE_RUNTIMES=compiler-rt
+        -DCOMPILER_RT_BUILD_BUILTINS=OFF
+        -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON
+        -DCOMPILER_RT_USE_BUILTINS_LIBRARY=ON
+        -DCOMPILER_RT_USE_LIBCXX=ON
+        -DCOMPILER_RT_EXCLUDE_ATOMIC_BUILTIN=OFF
+        "-DCMAKE_C_COMPILER=$runtime_cc"
+        "-DCMAKE_CXX_COMPILER=$runtime_cxx"
+        "-DCOMPILER_RT_BUILTINS_LIBRARY:FILEPATH=$builtins_library_cmake"
+        "-DCOMPILER_RT_TEST_TARGET_TRIPLE=$HOST_TRIPLE"
+    )
+
+    while IFS= read -r arg; do
+        [ -n "$arg" ] && cmake_sanitizer_args+=("$arg")
+    done < <(llvm_compiler_rt_sanitizer_cmake_args)
+
+    while IFS= read -r arg; do
+        [ -n "$arg" ] && cmake_sanitizer_args+=("$arg")
+    done < <(llvm_compiler_rt_windows_cmake_args)
+
+    while IFS= read -r arg; do
+        [ -n "$arg" ] && cmake_sanitizer_args+=("$arg")
+    done < <(llvm_compiler_rt_installed_cxx_abi_args)
 
     compiler_rt_test_cflags="-resource-dir $resource_dir_cmake"
     if ! is_macos_platform "$HOST_PLATFORM"; then
         compiler_rt_test_cflags="$compiler_rt_test_cflags --rtlib=compiler-rt"
     fi
 
-    cmake_runtime_args+=(
-        "-DCMAKE_C_COMPILER=$runtime_cc"
-        "-DCMAKE_CXX_COMPILER=$runtime_cxx"
-        "-DCOMPILER_RT_BUILTINS_LIBRARY:FILEPATH=$builtins_library_cmake"
+    cmake_sanitizer_args+=(
         "-DCOMPILER_RT_TEST_COMPILER_CFLAGS=$compiler_rt_test_cflags"
-        "-DCOMPILER_RT_TEST_TARGET_TRIPLE=$HOST_TRIPLE"
     )
 
     if is_windows_platform "$HOST_PLATFORM"; then
-        cmake_runtime_args+=(
+        cmake_sanitizer_args+=(
             "-DCMAKE_C_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt"
             "-DCMAKE_CXX_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt"
             "-DCMAKE_ASM_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt"
@@ -792,32 +967,49 @@ build_llvm_runtimes() {
             "-DCMAKE_SHARED_LINKER_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt -fuse-ld=lld"
         )
     elif ! is_macos_platform "$HOST_PLATFORM"; then
-        cmake_runtime_args+=(
+        cmake_sanitizer_args+=(
             "-DCMAKE_EXE_LINKER_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt -fuse-ld=lld"
             "-DCMAKE_SHARED_LINKER_FLAGS_INIT=-resource-dir $resource_dir_cmake --rtlib=compiler-rt -fuse-ld=lld"
         )
     fi
 
-    if ! cmake -S "$source_dir/runtimes" -B "$runtime_build_dir" -G Ninja \
-        "${cmake_runtime_args[@]}"; then
-        log "LLVM runtime configure failed; selected runtime CMake cache entries:"
-        llvm_dump_cmake_cache_entries "$runtime_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_SYSTEM_NAME|CMAKE_SYSTEM_PROCESSOR|CMAKE_SYSROOT|CMAKE_OSX_SYSROOT|CMAKE_TRY_COMPILE_TARGET_TYPE|CMAKE_C_FLAGS|CMAKE_CXX_FLAGS|CMAKE_EXE_LINKER_FLAGS|CMAKE_SHARED_LINKER_FLAGS|MINGW|COMPILER_RT_|SANITIZER_CXX_ABI|SANITIZER_TEST_CXX|SANITIZER_USE_STATIC_|LIBUNWIND_|LIBCXXABI_|LIBCXX_):'
+    if ! cmake -S "$source_dir/runtimes" -B "$sanitizer_build_dir" -G Ninja \
+        "${cmake_sanitizer_args[@]}"; then
+        log "LLVM sanitizer runtime configure failed; selected CMake cache entries:"
+        llvm_dump_cmake_cache_entries "$sanitizer_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_SYSTEM_NAME|CMAKE_SYSTEM_PROCESSOR|CMAKE_SYSROOT|CMAKE_PREFIX_PATH|CMAKE_FIND_ROOT_PATH|CMAKE_TRY_COMPILE_TARGET_TYPE|CMAKE_C_FLAGS|CMAKE_CXX_FLAGS|CMAKE_EXE_LINKER_FLAGS|CMAKE_SHARED_LINKER_FLAGS|MINGW|COMPILER_RT_|SANITIZER_CXX_ABI|SANITIZER_TEST_CXX|SANITIZER_USE_STATIC_):'
         return 1
     fi
 
-    log "selected LLVM runtimes CMake cache entries:"
-    if [ -f "$runtime_build_dir/CMakeCache.txt" ]; then
-        llvm_dump_cmake_cache_entries "$runtime_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|LLVM_DEFAULT_TARGET_TRIPLE|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_C_COMPILER_TARGET|CMAKE_CXX_COMPILER_TARGET|CMAKE_SYSTEM_NAME|CMAKE_SYSTEM_PROCESSOR|CMAKE_SYSROOT|CMAKE_OSX_SYSROOT|CMAKE_TRY_COMPILE_TARGET_TYPE|CMAKE_C_FLAGS|CMAKE_CXX_FLAGS|CMAKE_EXE_LINKER_FLAGS|CMAKE_SHARED_LINKER_FLAGS|CMAKE_LINKER|MINGW|LLVM_ENABLE_LLD|LLVM_INCLUDE_TESTS|LLVM_INCLUDE_BENCHMARKS|LLVM_INCLUDE_DOCS|LLVM_ENABLE_BINDINGS|LLVM_ENABLE_ASSERTIONS|COMPILER_RT_BUILD_BUILTINS|COMPILER_RT_BUILD_SANITIZERS|COMPILER_RT_BUILD_PROFILE|COMPILER_RT_BUILD_LIBFUZZER|COMPILER_RT_BUILD_XRAY|COMPILER_RT_BUILD_MEMPROF|COMPILER_RT_BUILD_ORC|COMPILER_RT_BUILD_GWP_ASAN|COMPILER_RT_BUILD_STATS|COMPILER_RT_HAS_VERSION_SCRIPT|COMPILER_RT_HAS_GNU_VERSION_SCRIPT_COMPAT|COMPILER_RT_HAS_Z_TEXT|COMPILER_RT_HAS_LIBC|COMPILER_RT_HAS_LIBCXX|COMPILER_RT_HAS_LIBSTDCXX|COMPILER_RT_HAS_LIBDL|COMPILER_RT_HAS_LIBRT|COMPILER_RT_HAS_LIBM|COMPILER_RT_HAS_LIBPTHREAD|COMPILER_RT_CXX_LIBRARY|COMPILER_RT_STATIC_CXX_LIBRARY|COMPILER_RT_USE_BUILTINS_LIBRARY|COMPILER_RT_USE_LIBCXX|COMPILER_RT_USE_LLVM_UNWINDER|COMPILER_RT_ENABLE_STATIC_UNWINDER|COMPILER_RT_DEFAULT_TARGET_ONLY|COMPILER_RT_TEST_COMPILER_CFLAGS|COMPILER_RT_TEST_TARGET_TRIPLE|COMPILER_RT_BUILTINS_LIBRARY|SANITIZER_CXX_ABI|SANITIZER_CXX_ABI_LIBNAME|SANITIZER_CXX_ABI_INTREE|SANITIZER_TEST_CXX|SANITIZER_TEST_CXX_LIBNAME|SANITIZER_TEST_CXX_INTREE|SANITIZER_USE_STATIC_CXX_ABI|SANITIZER_USE_STATIC_TEST_CXX|SANITIZER_USE_STATIC_LLVM_UNWINDER|LIBUNWIND_ENABLE_SHARED|LIBUNWIND_ENABLE_STATIC|LIBUNWIND_USE_COMPILER_RT|LIBCXXABI_ENABLE_SHARED|LIBCXXABI_ENABLE_STATIC|LIBCXXABI_USE_LLVM_UNWINDER|LIBCXXABI_USE_COMPILER_RT|LIBCXX_ENABLE_SHARED|LIBCXX_ENABLE_STATIC|LIBCXX_ENABLE_STATIC_ABI_LIBRARY|LIBCXX_USE_COMPILER_RT):'
+    log "selected LLVM sanitizer runtimes CMake cache entries:"
+    if [ -f "$sanitizer_build_dir/CMakeCache.txt" ]; then
+        llvm_dump_cmake_cache_entries "$sanitizer_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|LLVM_DEFAULT_TARGET_TRIPLE|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_C_COMPILER_TARGET|CMAKE_CXX_COMPILER_TARGET|CMAKE_SYSTEM_NAME|CMAKE_SYSTEM_PROCESSOR|CMAKE_SYSROOT|CMAKE_PREFIX_PATH|CMAKE_FIND_ROOT_PATH|CMAKE_TRY_COMPILE_TARGET_TYPE|CMAKE_C_FLAGS|CMAKE_CXX_FLAGS|CMAKE_EXE_LINKER_FLAGS|CMAKE_SHARED_LINKER_FLAGS|CMAKE_LINKER|MINGW|LLVM_ENABLE_LLD|COMPILER_RT_BUILD_BUILTINS|COMPILER_RT_BUILD_SANITIZERS|COMPILER_RT_BUILD_PROFILE|COMPILER_RT_BUILD_LIBFUZZER|COMPILER_RT_BUILD_XRAY|COMPILER_RT_BUILD_MEMPROF|COMPILER_RT_BUILD_ORC|COMPILER_RT_BUILD_GWP_ASAN|COMPILER_RT_BUILD_STATS|COMPILER_RT_HAS_VERSION_SCRIPT|COMPILER_RT_HAS_GNU_VERSION_SCRIPT_COMPAT|COMPILER_RT_HAS_Z_TEXT|COMPILER_RT_HAS_LIBC|COMPILER_RT_HAS_LIBCXX|COMPILER_RT_HAS_LIBSTDCXX|COMPILER_RT_HAS_LIBDL|COMPILER_RT_HAS_LIBRT|COMPILER_RT_HAS_LIBM|COMPILER_RT_HAS_LIBPTHREAD|COMPILER_RT_CXX_LIBRARY|COMPILER_RT_STATIC_CXX_LIBRARY|COMPILER_RT_USE_BUILTINS_LIBRARY|COMPILER_RT_USE_LIBCXX|COMPILER_RT_USE_LLVM_UNWINDER|COMPILER_RT_ENABLE_STATIC_UNWINDER|COMPILER_RT_DEFAULT_TARGET_ONLY|COMPILER_RT_TEST_COMPILER_CFLAGS|COMPILER_RT_TEST_TARGET_TRIPLE|COMPILER_RT_BUILTINS_LIBRARY|SANITIZER_CXX_ABI|SANITIZER_CXX_ABI_LIBNAME|SANITIZER_CXX_ABI_INTREE|SANITIZER_TEST_CXX|SANITIZER_TEST_CXX_LIBNAME|SANITIZER_TEST_CXX_INTREE|SANITIZER_USE_STATIC_CXX_ABI|SANITIZER_USE_STATIC_TEST_CXX|SANITIZER_USE_STATIC_LLVM_UNWINDER):'
     fi
 
-    if ! cmake --build "$runtime_build_dir" --parallel "$CUP_JOBS"; then
-        log "LLVM runtime build failed; selected runtime CMake cache entries:"
-        llvm_dump_cmake_cache_entries "$runtime_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_SYSTEM_NAME|CMAKE_SYSTEM_PROCESSOR|CMAKE_SYSROOT|CMAKE_OSX_SYSROOT|CMAKE_TRY_COMPILE_TARGET_TYPE|CMAKE_C_FLAGS|CMAKE_CXX_FLAGS|CMAKE_EXE_LINKER_FLAGS|CMAKE_SHARED_LINKER_FLAGS|MINGW|COMPILER_RT_|SANITIZER_CXX_ABI|SANITIZER_TEST_CXX|SANITIZER_USE_STATIC_|LIBUNWIND_|LIBCXXABI_|LIBCXX_):'
+    if ! cmake --build "$sanitizer_build_dir" --parallel "$CUP_JOBS"; then
+        log "LLVM sanitizer runtime build failed; selected CMake cache entries:"
+        llvm_dump_cmake_cache_entries "$sanitizer_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_SYSTEM_NAME|CMAKE_SYSTEM_PROCESSOR|CMAKE_SYSROOT|CMAKE_PREFIX_PATH|CMAKE_FIND_ROOT_PATH|CMAKE_TRY_COMPILE_TARGET_TYPE|CMAKE_C_FLAGS|CMAKE_CXX_FLAGS|CMAKE_EXE_LINKER_FLAGS|CMAKE_SHARED_LINKER_FLAGS|MINGW|COMPILER_RT_|SANITIZER_CXX_ABI|SANITIZER_TEST_CXX|SANITIZER_USE_STATIC_):'
         return 1
     fi
 
-    cmake --install "$runtime_build_dir"
+    cmake --install "$sanitizer_build_dir"
     copy_clang_runtimes_to_resource_dir
+}
+
+build_llvm_runtimes() {
+    local source_dir="$1"
+    local tool_build_dir="$2"
+    local runtime_build_dir="$CUP_BUILD_DIR/llvm-$TOOL-runtimes-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
+
+    if ! llvm_runtimes_enabled; then
+        return 0
+    fi
+
+    LLVM_RUNTIME_BUILD_DIR="$runtime_build_dir"
+    log "building LLVM runtimes for $TOOL $VERSION using split runtime stages: builtins -> C++ runtimes -> sanitizers/profile"
+
+    build_clang_builtins_runtime "$source_dir" "$tool_build_dir"
+    build_clang_cxx_runtimes "$source_dir" "$tool_build_dir"
+    build_clang_sanitizer_runtimes "$source_dir" "$tool_build_dir"
 }
 
 build_llvm_tool() {

@@ -1130,6 +1130,7 @@ write_gcc_info() {
     local has_sysroot
     local has_target_prefixed_compiler_drivers
     local has_target_prefixed_binutils
+    local has_target_layout_binutils
     local gcc_effective_target
 
     includes_libstdcxx="$(metadata_bool_for_files "$PREFIX" 'libstdc++*')"
@@ -1145,9 +1146,18 @@ write_gcc_info() {
     has_gcov="$(gcc_metadata_bool_for_tool gcov)"
     has_plugin="$(metadata_bool_for_files "$PREFIX" 'liblto_plugin*')"
     gcc_effective_target="$(gcc_effective_target_triple)"
-    has_sysroot="$(metadata_bool_for_dirs "$PREFIX" "$gcc_effective_target")"
+    if is_windows_platform "$TARGET_PLATFORM"; then
+        has_sysroot="$(metadata_bool_for_dirs "$PREFIX" "$TARGET_TRIPLE")"
+    else
+        has_sysroot="false"
+    fi
     has_target_prefixed_compiler_drivers="$(metadata_bool_for_executable "$PREFIX" "$gcc_effective_target-gcc")"
     has_target_prefixed_binutils="$(metadata_bool_for_executable "$PREFIX" "$gcc_effective_target-ar")"
+    if [ -x "$PREFIX/$gcc_effective_target/bin/as$(tool_exe_suffix)" ]; then
+        has_target_layout_binutils="true"
+    else
+        has_target_layout_binutils="false"
+    fi
 
     if is_linux_platform "$TARGET_PLATFORM"; then
         has_pthread="true"
@@ -1227,6 +1237,7 @@ write_gcc_info() {
         "features.binutils=$includes_binutils"
         "features.target_prefixed_compiler_drivers=$has_target_prefixed_compiler_drivers"
         "features.target_prefixed_binutils=$has_target_prefixed_binutils"
+        "features.target_layout_binutils=$has_target_layout_binutils"
         "features.sysroot=$has_sysroot"
     )
 

@@ -547,9 +547,9 @@ package_formats_for_host() {
     local host_platform="$1"
 
     if is_windows_platform "$host_platform"; then
-        printf '%s\n' "zip tar.xz tar.gz"
+        printf '%s\n' zip tar.xz tar.gz
     else
-        printf '%s\n' "tar.xz tar.gz zip"
+        printf '%s\n' tar.xz tar.gz zip
     fi
 }
 
@@ -588,7 +588,7 @@ windows_runtime_dll_name_is_system() {
         api-ms-win-*.dll|ext-ms-win-*.dll)
             return 0
             ;;
-        advapi32.dll|bcrypt.dll|bcryptprimitives.dll|combase.dll|comctl32.dll|comdlg32.dll|crypt32.dll|dbghelp.dll|dnsapi.dll|gdi32.dll|gdi32full.dll|imm32.dll|iphlpapi.dll|kernel32.dll|kernelbase.dll|msvcp_win.dll|msvcrt.dll|netapi32.dll|ntdll.dll|ole32.dll|oleaut32.dll|propsys.dll|psapi.dll|rpcrt4.dll|sechost.dll|shell32.dll|shcore.dll|shlwapi.dll|ucrtbase.dll|user32.dll|userenv.dll|uuid.dll|version.dll|win32u.dll|winhttp.dll|winmm.dll|wintypes.dll|ws2_32.dll)
+        advapi32.dll|bcrypt.dll|bcryptprimitives.dll|combase.dll|comctl32.dll|comdlg32.dll|crypt32.dll|cryptbase.dll|cryptsp.dll|dbghelp.dll|dnsapi.dll|gdi32.dll|gdi32full.dll|imm32.dll|iphlpapi.dll|kernel32.dll|kernelbase.dll|msvcp_win.dll|msvcrt.dll|netapi32.dll|ntdll.dll|ole32.dll|oleaut32.dll|propsys.dll|psapi.dll|rpcrt4.dll|rsaenh.dll|sechost.dll|shell32.dll|shcore.dll|shlwapi.dll|ucrtbase.dll|user32.dll|userenv.dll|uuid.dll|version.dll|win32u.dll|winhttp.dll|winmm.dll|wintypes.dll|ws2_32.dll)
             return 0
             ;;
         vcruntime*.dll|msvcp*.dll|concrt*.dll)
@@ -722,8 +722,6 @@ copy_windows_runtime_dlls() {
     queue_file="$(mktemp)"
     seen_file="$(mktemp)"
 
-    trap 'rm -f "$queue_file" "$queue_file.next" "$seen_file"' RETURN
-
     collect_windows_package_pe_files "$bin_dir" | sort -u > "$queue_file"
     : > "$seen_file"
 
@@ -792,6 +790,8 @@ copy_windows_runtime_dlls() {
             printf '%s\n' "$bin_dir/$dll_name" >> "$queue_file"
         done < <(windows_pe_import_dll_names "$current")
     done
+
+    rm -f "$queue_file" "$queue_file.next" "$seen_file"
 }
 
 copy_windows_python_runtime() {

@@ -287,8 +287,7 @@ llvm_windows_source_excludes() {
                 '--exclude=*/libunwind/test/*' \
                 '--exclude=*/lld/test/*' \
                 '--exclude=*/lldb/test/*' \
-                '--exclude=*/llvm/test/*' \
-                '--exclude=*/llvm/utils/mlgo-utils/*'
+                '--exclude=*/llvm/test/*'
             ;;
     esac
 }

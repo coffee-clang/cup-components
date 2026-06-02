@@ -286,11 +286,133 @@ windows_clang_sysroot_target_aliases() {
     printf '%s\n' "x86_64-w64-windows-gnu"
 }
 
-copy_windows_clang_mingw_sysroot() {
+windows_clang_msys2_package_prefix() {
+    case "$HOST_PLATFORM" in
+        windows-x64)
+            printf '%s\n' "mingw-w64-clang-x86_64"
+            ;;
+        *)
+            die "unsupported Windows Clang host platform for MSYS2 package lookup: $HOST_PLATFORM"
+            ;;
+    esac
+}
+
+copy_msys2_package_files_to_clang_sysroot() {
+    local package="$1"
+    local dest_root="$2"
+    local mingw_prefix
+    local copied=false
+    local path
+    local relative
+    local dest_path
+    local dest_dir
+
+    command -v pacman >/dev/null 2>&1 || return 1
+    pacman -Q "$package" >/dev/null 2>&1 || return 1
+
+    mingw_prefix="${MINGW_PREFIX%/}"
+
+    log "  copying MSYS2 package payload: $package"
+
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        path="${path%/}"
+
+        case "$path" in
+            "$mingw_prefix"/include/*|"$mingw_prefix"/lib/*)
+                ;;
+            *)
+                continue
+                ;;
+        esac
+
+        [ -f "$path" ] || [ -L "$path" ] || continue
+
+        relative="${path#"$mingw_prefix"/}"
+        dest_path="$dest_root/$relative"
+        dest_dir="$(dirname "$dest_path")"
+
+        mkdir -p "$dest_dir"
+        cp -a "$path" "$dest_path"
+        copied=true
+    done < <(pacman -Qlq "$package")
+
+    [ "$copied" = true ]
+}
+
+copy_windows_clang_mingw_sysroot_from_packages() {
+    local canonical_target_dir="$1"
+    local package_prefix
+    local package
+    local copied_required=false
+    local optional_packages
+
+    command -v pacman >/dev/null 2>&1 || return 1
+
+    package_prefix="$(windows_clang_msys2_package_prefix)"
+
+    for package in \
+        "$package_prefix-headers" \
+        "$package_prefix-crt"; do
+        if ! copy_msys2_package_files_to_clang_sysroot "$package" "$canonical_target_dir"; then
+            die "required MSYS2 package payload not available for Clang sysroot: $package"
+        fi
+        copied_required=true
+    done
+
+    optional_packages=(
+        "$package_prefix-winpthreads"
+        "$package_prefix-libwinpthread"
+    )
+
+    for package in "${optional_packages[@]}"; do
+        if ! copy_msys2_package_files_to_clang_sysroot "$package" "$canonical_target_dir"; then
+            log "  optional MSYS2 package payload not copied: $package"
+        fi
+    done
+
+    [ "$copied_required" = true ]
+}
+
+copy_windows_clang_mingw_sysroot_from_layout() {
+    local canonical_target_dir="$1"
     local source_sysroot
+
+    source_sysroot="$MINGW_PREFIX/$HOST_TRIPLE"
+
+    if [ -d "$source_sysroot/include" ] && [ -d "$source_sysroot/lib" ]; then
+        log "copying MinGW target sysroot for Clang from $source_sysroot"
+        cp -a "$source_sysroot/include" "$canonical_target_dir/"
+        cp -a "$source_sysroot/lib" "$canonical_target_dir/"
+        return 0
+    fi
+
+    if [ -f "$MINGW_PREFIX/include/stdlib.h" ] && [ -d "$MINGW_PREFIX/lib" ]; then
+        log "copying MinGW flat sysroot for Clang from $MINGW_PREFIX"
+        cp -a "$MINGW_PREFIX/include" "$canonical_target_dir/"
+        cp -a "$MINGW_PREFIX/lib" "$canonical_target_dir/"
+        return 0
+    fi
+
+    return 1
+}
+
+copy_windows_clang_runtime_dll_if_present() {
+    local dll_name="$1"
+    local source_path="$MINGW_PREFIX/bin/$dll_name"
+    local dest_path="$PREFIX/bin/$dll_name"
+
+    [ -f "$source_path" ] || return 0
+    mkdir -p "$PREFIX/bin"
+    if [ ! -f "$dest_path" ]; then
+        cp -a "$source_path" "$dest_path"
+        log "  copied runtime DLL: $dll_name"
+    fi
+}
+
+copy_windows_clang_mingw_sysroot() {
     local canonical_target_dir
     local alias
-    local alias_path
 
     if ! is_windows_platform "$HOST_PLATFORM" || [ "$TOOL" != "clang" ]; then
         return 0
@@ -298,18 +420,25 @@ copy_windows_clang_mingw_sysroot() {
 
     [ -n "${MINGW_PREFIX:-}" ] || die "MINGW_PREFIX is not set; cannot package the MinGW sysroot for Clang"
 
-    source_sysroot="$MINGW_PREFIX/$HOST_TRIPLE"
     canonical_target_dir="$PREFIX/$HOST_TRIPLE"
 
-    [ -d "$source_sysroot/include" ] || die "MinGW headers not found: $source_sysroot/include"
-    [ -d "$source_sysroot/lib" ] || die "MinGW CRT/import libraries not found: $source_sysroot/lib"
-
-    log "copying MinGW sysroot for Clang from $source_sysroot"
+    log "copying MinGW sysroot for Clang"
 
     rm -rf "$canonical_target_dir"
     mkdir -p "$canonical_target_dir"
-    cp -a "$source_sysroot/include" "$canonical_target_dir/"
-    cp -a "$source_sysroot/lib" "$canonical_target_dir/"
+
+    if ! copy_windows_clang_mingw_sysroot_from_packages "$canonical_target_dir"; then
+        if ! copy_windows_clang_mingw_sysroot_from_layout "$canonical_target_dir"; then
+            die "could not locate a MinGW sysroot under MINGW_PREFIX=$MINGW_PREFIX"
+        fi
+    fi
+
+    [ -f "$canonical_target_dir/include/stdlib.h" ] || die "MinGW headers not found in packaged sysroot: $canonical_target_dir/include"
+    if [ ! -f "$canonical_target_dir/lib/crt2.o" ] && [ ! -f "$canonical_target_dir/lib/libmsvcrt.a" ] && [ ! -f "$canonical_target_dir/lib/libucrt.a" ]; then
+        die "MinGW CRT/import libraries not found in packaged sysroot: $canonical_target_dir/lib"
+    fi
+
+    copy_windows_clang_runtime_dll_if_present libwinpthread-1.dll
 
     while IFS= read -r alias; do
         [ -n "$alias" ] || continue

@@ -641,8 +641,11 @@ copy_clang_sanitizer_runtime_dlls() {
         fi
     done < <(find "$PREFIX" -type f \
         \( -name 'clang_rt.asan*.dll' -o \
+           -name 'libclang_rt.asan*.dll' -o \
            -name 'clang_rt.ubsan*.dll' -o \
-           -name 'clang_rt.profile*.dll' \) | sort)
+           -name 'libclang_rt.ubsan*.dll' -o \
+           -name 'clang_rt.profile*.dll' -o \
+           -name 'libclang_rt.profile*.dll' \) | sort)
 }
 
 prune_llvm_package_bins() {

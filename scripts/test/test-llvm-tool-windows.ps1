@@ -51,10 +51,11 @@ function Invoke-NativeCaptureAllowFailure {
     )
 
     Write-Host "==> $FilePath $($ArgumentList -join ' ')"
-    $output = & $FilePath @ArgumentList 2>&1
+    $output = @(& $FilePath @ArgumentList 2>&1)
     $exitCode = $LASTEXITCODE
 
     $output | ForEach-Object { Write-Host $_ }
+    Write-Host "exit code: $exitCode"
 
     return @{ Output = $output; ExitCode = $exitCode }
 }
@@ -116,14 +117,20 @@ function Assert-FileExists {
 
 function Assert-OutputContains {
     param(
-        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
         [object[]] $Output,
 
         [Parameter(Mandatory = $true)]
         [string] $Pattern
     )
 
-    $text = ($Output | Out-String)
+    if ($null -eq $Output) {
+        $text = ''
+    } else {
+        $text = ($Output | Out-String)
+    }
+
     if ($text -notmatch $Pattern) {
         throw "Expected output to match pattern: $Pattern"
     }
@@ -132,6 +139,26 @@ function Assert-OutputContains {
 function To-ForwardSlashPath {
     param([Parameter(Mandatory = $true)][string] $Path)
     return $Path.Replace('\', '/')
+}
+
+function Read-ASanLogOutput {
+    param([Parameter(Mandatory = $true)][string] $LogPrefix)
+
+    $logEntries = @()
+    $parent = Split-Path -Parent $LogPrefix
+    $leaf = Split-Path -Leaf $LogPrefix
+
+    if (Test-Path $parent) {
+        $logFiles = Get-ChildItem -Path $parent -Filter "$leaf*" -File -ErrorAction SilentlyContinue
+        foreach ($logFile in $logFiles) {
+            Write-Host "==> ASan log: $($logFile.FullName)"
+            $content = @(Get-Content $logFile.FullName -ErrorAction SilentlyContinue)
+            $content | ForEach-Object { Write-Host $_ }
+            $logEntries += $content
+        }
+    }
+
+    return $logEntries
 }
 
 $releaseEnv = Get-Content dist/release.env
@@ -219,18 +246,34 @@ int main(void) {
             Assert-FileExists $asanExe
 
             $oldPath = $env:Path
+            $oldAsanOptions = $env:ASAN_OPTIONS
+            $asanLogPrefix = Join-Path $testDir 'asan-report'
+            $asanLogPrefixNative = To-ForwardSlashPath $asanLogPrefix
             $env:Path = "$root\bin;$oldPath"
+            $env:ASAN_OPTIONS = "log_path=$asanLogPrefixNative;halt_on_error=1;abort_on_error=0"
             try {
                 $result = Invoke-NativeCaptureAllowFailure -FilePath $asanExe
             } finally {
                 $env:Path = $oldPath
+                if ($null -eq $oldAsanOptions) {
+                    Remove-Item Env:ASAN_OPTIONS -ErrorAction SilentlyContinue
+                } else {
+                    $env:ASAN_OPTIONS = $oldAsanOptions
+                }
             }
 
             if ($result.ExitCode -eq 0) {
                 throw 'ASan test unexpectedly succeeded'
             }
 
-            Assert-OutputContains -Output $result.Output -Pattern 'AddressSanitizer|heap-use-after-free'
+            $asanOutput = @($result.Output) + @(Read-ASanLogOutput -LogPrefix $asanLogPrefix)
+            if ($asanOutput.Count -eq 0) {
+                Show-PEImports $asanExe
+                Show-PEImports "$root\bin\libclang_rt.asan_dynamic-x86_64.dll"
+                throw "ASan test failed with exit code $($result.ExitCode), but produced no console output or ASAN_OPTIONS log"
+            }
+
+            Assert-OutputContains -Output $asanOutput -Pattern 'AddressSanitizer|heap-use-after-free|heap-use-after-free'
         } else {
             Write-Host 'warning: clang sanitizer runtime not enabled; skipping ASan test'
         }

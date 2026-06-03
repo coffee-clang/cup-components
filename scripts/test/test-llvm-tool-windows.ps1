@@ -51,8 +51,11 @@ function Invoke-NativeCaptureAllowFailure {
     )
 
     Write-Host "==> $FilePath $($ArgumentList -join ' ')"
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     $output = @(& $FilePath @ArgumentList 2>&1)
     $exitCode = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
 
     $output | ForEach-Object { Write-Host $_ }
     Write-Host "exit code: $exitCode"

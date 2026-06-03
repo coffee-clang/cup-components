@@ -53,7 +53,13 @@ function Invoke-NativeCaptureAllowFailure {
     Write-Host "==> $FilePath $($ArgumentList -join ' ')"
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    $output = @(& $FilePath @ArgumentList 2>&1)
+    $output = @(& $FilePath @ArgumentList 2>&1 | ForEach-Object {
+        if ($_ -is [System.Management.Automation.ErrorRecord]) {
+            $_.Exception.Message
+        } else {
+            "$_"
+        }
+    })
     $exitCode = $LASTEXITCODE
     $ErrorActionPreference = $prevEap
 

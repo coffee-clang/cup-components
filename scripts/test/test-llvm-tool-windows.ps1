@@ -248,7 +248,7 @@ int main(void) {
             $oldPath = $env:Path
             $oldAsanOptions = $env:ASAN_OPTIONS
             $env:Path = "$root\bin;$oldPath"
-            $env:ASAN_OPTIONS = "halt_on_error=1;abort_on_error=1"
+            $env:ASAN_OPTIONS = "halt_on_error=1:abort_on_error=1"
             try {
                 $result = Invoke-NativeCaptureAllowFailure -FilePath $asanExe
             } finally {

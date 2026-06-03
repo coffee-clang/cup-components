@@ -1545,8 +1545,6 @@ write_llvm_info() {
         "source.primary.url=$SOURCE_URL"
         "config.llvm_projects=$LLVM_PROJECTS"
         "config.llvm_targets=$LLVM_TARGETS"
-        "config.llvm_runtimes=$LLVM_RUNTIMES"
-        "config.llvm_runtimes_enabled=$(llvm_runtimes_enabled && printf true || printf false)"
         "config.zlib=$cmake_zlib"
         "config.zstd=$cmake_zstd"
         "contents.self_contained=true"
@@ -1559,6 +1557,8 @@ write_llvm_info() {
     case "$TOOL" in
         clang)
             info+=(
+                "config.llvm_runtimes=$LLVM_RUNTIMES"
+                "config.llvm_runtimes_enabled=$(llvm_runtimes_enabled && printf true || printf false)"
                 "$(info_required_entry entry.clang "$PREFIX" clang)"
                 "$(info_required_entry entry.clang++ "$PREFIX" clang++)"
                 "$(info_entry_if_present entry.lld "$PREFIX" ld.lld)"

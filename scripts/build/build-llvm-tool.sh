@@ -246,10 +246,6 @@ llvm_compiler_rt_darwin_cmake_args() {
         return 0
     fi
 
-    # cup-components publishes macOS toolchains, not iOS/watchOS/tvOS
-    # runtime slices. Keep compiler-rt focused on the requested macOS host
-    # to avoid building unrelated Darwin runtimes when extra SDKs are present
-    # on GitHub-hosted runners.
     args+=(
         -DCOMPILER_RT_ENABLE_IOS:BOOL=OFF
         -DCOMPILER_RT_ENABLE_WATCHOS:BOOL=OFF
@@ -282,11 +278,6 @@ llvm_compiler_rt_installed_cxx_abi_args() {
 }
 
 llvm_compiler_rt_sanitizers_to_build() {
-    # Build the sanitizer set that cup exposes and tests.
-    # Leaving compiler-rt at its upstream default (all) also enables newer
-    # experimental/specialized runtimes such as RealtimeSanitizer on Linux and
-    # Darwin. Those are not part of the cup toolchain contract and can require
-    # different C++ runtime assumptions.
     printf '%s\n' 'asan;ubsan_minimal'
 }
 

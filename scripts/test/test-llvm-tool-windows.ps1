@@ -247,10 +247,8 @@ int main(void) {
 
             $oldPath = $env:Path
             $oldAsanOptions = $env:ASAN_OPTIONS
-            $asanLogPrefix = Join-Path $testDir 'asan-report'
-            $asanLogPrefixNative = To-ForwardSlashPath $asanLogPrefix
             $env:Path = "$root\bin;$oldPath"
-            $env:ASAN_OPTIONS = "log_path=$asanLogPrefixNative;halt_on_error=1;abort_on_error=0"
+            $env:ASAN_OPTIONS = "halt_on_error=1;abort_on_error=1"
             try {
                 $result = Invoke-NativeCaptureAllowFailure -FilePath $asanExe
             } finally {
@@ -266,14 +264,14 @@ int main(void) {
                 throw 'ASan test unexpectedly succeeded'
             }
 
-            $asanOutput = @($result.Output) + @(Read-ASanLogOutput -LogPrefix $asanLogPrefix)
+            $asanOutput = @($result.Output)
             if ($asanOutput.Count -eq 0) {
                 Show-PEImports $asanExe
                 Show-PEImports "$root\bin\libclang_rt.asan_dynamic-x86_64.dll"
-                throw "ASan test failed with exit code $($result.ExitCode), but produced no console output or ASAN_OPTIONS log"
+                throw "ASan test failed with exit code $($result.ExitCode), but produced no console output"
             }
 
-            Assert-OutputContains -Output $asanOutput -Pattern 'AddressSanitizer|heap-use-after-free|heap-use-after-free'
+            Assert-OutputContains -Output $asanOutput -Pattern 'AddressSanitizer|heap-use-after-free'
         } else {
             Write-Host 'warning: clang sanitizer runtime not enabled; skipping ASan test'
         }

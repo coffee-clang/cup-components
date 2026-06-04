@@ -52,7 +52,9 @@ function Invoke-NativeCaptureAllowFailure {
 
     Write-Host "==> $FilePath $($ArgumentList -join ' ')"
     $prevEap = $ErrorActionPreference
+    $prevNativeEap = if (Test-Path Variable:PSNativeCommandUseErrorActionPreference) { $PSNativeCommandUseErrorActionPreference } else { $null }
     $ErrorActionPreference = 'Continue'
+    $PSNativeCommandUseErrorActionPreference = $false
     $output = @(& $FilePath @ArgumentList 2>&1 | ForEach-Object {
         if ($_ -is [System.Management.Automation.ErrorRecord]) {
             $_.Exception.Message
@@ -61,7 +63,9 @@ function Invoke-NativeCaptureAllowFailure {
         }
     })
     $exitCode = $LASTEXITCODE
+    $global:LASTEXITCODE = 0
     $ErrorActionPreference = $prevEap
+    if ($null -ne $prevNativeEap) { $PSNativeCommandUseErrorActionPreference = $prevNativeEap }
 
     $output | ForEach-Object { Write-Host $_ }
     Write-Host "exit code: $exitCode"

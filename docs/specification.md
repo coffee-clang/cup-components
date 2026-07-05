@@ -69,9 +69,10 @@ The workflow also writes:
 
 ```text
 dist/release.env
+dist/SHA256SUMS
 ```
 
-which records the release tag and archive paths for later workflow steps.
+`release.env` records the release tag and archive paths for later workflow steps. `SHA256SUMS` is generated deterministically after all three archive formats exist and contains exactly one digest for each archive.
 
 ## 3. Platform model
 
@@ -492,6 +493,7 @@ The tests verify:
 required executables exist
 version commands work
 info.txt metadata is readable
+SHA256SUMS accepts the original archives and rejects a tampered archive
 feature metadata matches expected files
 runtime DLL closure on Windows
 basic compile/link behavior for compilers
@@ -507,15 +509,15 @@ The generic package capability scripts can print a summary of entries, contents,
 
 Each workflow has a `publish` input.
 
-When `publish` is false, the final archives are uploaded as workflow artifacts.
+When `publish` is false, the final archives and `SHA256SUMS` are uploaded as workflow artifacts.
 
-When `publish` is true, the workflow creates or updates the GitHub Release named after the package base:
+When `publish` is true, the workflow regenerates and verifies `SHA256SUMS`, then creates or updates the GitHub Release named after the package base:
 
 ```text
 <tool>-<version>[-revN]-<host_platform>-<target_platform>
 ```
 
-Existing release assets are overwritten with `--clobber` so a recipe revision can be republished under the intended release tag when appropriate.
+Existing release assets are overwritten with `--clobber` so a recipe revision can be republished under the intended release tag when appropriate. The release upload always includes the three archives and their matching `SHA256SUMS` asset.
 
 ## 17. Relation to cup
 
@@ -528,10 +530,12 @@ cup-components
   builds and publishes archives
   defines package metadata
   ensures package self-containment
+  publishes SHA256SUMS for every archive set
 
 cup
   reads the manifest
-  downloads archives
+  downloads archives and SHA256SUMS
+  verifies downloaded and cached archives
   validates info.txt
   installs packages into ~/.cup
   records local state

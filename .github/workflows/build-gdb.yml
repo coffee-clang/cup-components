@@ -144,6 +144,13 @@ jobs:
           source dist/release.env
           echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
 
+      - name: Verify package checksums before upload
+        shell: bash
+        run: |
+          source dist/release.env
+          source scripts/package/package-common.sh
+          verify_package_checksums "$package_base" "$GITHUB_WORKSPACE/dist"
+
       - name: Upload workflow artifact
         if: ${{ !inputs.publish }}
         uses: actions/upload-artifact@v6
@@ -153,6 +160,7 @@ jobs:
             dist/*.tar.xz
             dist/*.tar.gz
             dist/*.zip
+            dist/SHA256SUMS
             dist/release.env
           if-no-files-found: error
 
@@ -166,11 +174,11 @@ jobs:
           repo="${GITHUB_REPOSITORY}"
 
           if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
-            gh release upload "$tag" dist/*.tar.xz dist/*.tar.gz dist/*.zip \
+            gh release upload "$tag" dist/*.tar.xz dist/*.tar.gz dist/*.zip dist/SHA256SUMS \
               --repo "$repo" \
               --clobber
           else
-            gh release create "$tag" dist/*.tar.xz dist/*.tar.gz dist/*.zip \
+            gh release create "$tag" dist/*.tar.xz dist/*.tar.gz dist/*.zip dist/SHA256SUMS \
               --repo "$repo" \
               --title "$tag" \
               --notes "Automated cup component build for $tag"

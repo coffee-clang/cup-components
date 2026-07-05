@@ -1093,6 +1093,68 @@ create_archive() {
     log "created package: $output"
 }
 
+generate_package_checksums() {
+    local package_base="$1"
+    local output_dir="$2"
+    local checksum_file="$output_dir/SHA256SUMS"
+    local temporary="$checksum_file.tmp.$$"
+    local digest
+    local file
+    local format
+
+    : > "$temporary"
+    for format in tar.xz tar.gz zip; do
+        file="$output_dir/$package_base.$format"
+        [ -f "$file" ] || die "missing package archive for checksum: $file"
+        if command -v sha256sum >/dev/null 2>&1; then
+            (cd "$output_dir" && sha256sum "$package_base.$format") >> "$temporary"
+        elif command -v shasum >/dev/null 2>&1; then
+            digest="$(shasum -a 256 "$file" | awk '{print $1}')"
+            printf '%s  %s\n' "$digest" "$package_base.$format" >> "$temporary"
+        else
+            rm -f "$temporary"
+            die "sha256sum or shasum is required to package checksums"
+        fi
+    done
+    LC_ALL=C sort -k2,2 "$temporary" > "$checksum_file"
+    rm -f "$temporary"
+    verify_package_checksums "$package_base" "$output_dir"
+    log "created checksums: $checksum_file"
+}
+
+verify_package_checksums() {
+    local package_base="$1"
+    local output_dir="$2"
+    local checksum_file="$output_dir/SHA256SUMS"
+    local expected_count=3
+    local actual
+    local actual_count
+    local digest
+    local format
+    local name
+
+    [ -f "$checksum_file" ] || die "missing checksum file: $checksum_file"
+    actual_count="$(wc -l < "$checksum_file" | tr -d '[:space:]')"
+    [ "$actual_count" -eq "$expected_count" ] ||
+        die "SHA256SUMS must contain exactly $expected_count records"
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        (cd "$output_dir" && sha256sum -c SHA256SUMS) ||
+            die "package checksum verification failed"
+    else
+        while read -r digest name; do
+            name="${name#\*}"
+            actual="$(shasum -a 256 "$output_dir/$name" | awk '{print $1}')"
+            [ "$actual" = "$digest" ] || die "checksum mismatch: $name"
+        done < "$checksum_file"
+    fi
+
+    for format in tar.xz tar.gz zip; do
+        grep -Eq "^[0-9a-f]{64} [ *]${package_base//./\\.}\\.${format//./\\.}$" \
+            "$checksum_file" || die "missing checksum entry for $package_base.$format"
+    done
+}
+
 create_packages() {
     local tool="$1"
     local version="$2"
@@ -1117,6 +1179,7 @@ create_packages() {
     for format in $(package_formats_for_host "$host_platform"); do
         create_archive "$format" "$package_base" "$package_root" "$CUP_OUT_DIR"
     done
+    generate_package_checksums "$package_base" "$CUP_OUT_DIR"
 
     cat > "$CUP_OUT_DIR/release.env" <<EOF_ENV
 release_tag=$release_tag

@@ -38,7 +38,7 @@ analyzer/valgrind
 
 Builds are started manually through GitHub Actions workflows. Each workflow accepts a version, host platform, target platform, package revision and a `publish` flag.
 
-The build scripts download upstream source releases, build the selected tool, stage the install tree, write package metadata, create archives and run package capability tests.
+The build scripts download upstream source releases, build the selected tool, stage the install tree, write package metadata, create archives, generate a deterministic `SHA256SUMS` file and run package capability tests.
 
 The produced archives are named like:
 
@@ -53,6 +53,14 @@ Release tags use the same base name without the archive extension:
 ```text
 <tool>-<version>[-revN]-<host_platform>-<target_platform>
 ```
+
+Every workflow artifact and published GitHub Release also contains:
+
+```text
+SHA256SUMS
+```
+
+It records exactly one SHA-256 digest for each `.tar.xz`, `.tar.gz` and `.zip` archive. The file is regenerated and verified immediately before upload so `cup` can reject corrupted downloads and cache entries.
 
 ## Supported platform families
 
@@ -104,7 +112,7 @@ info.txt
 
 The metadata records package identity, host/target platforms, entry points, contents, feature flags and build configuration.
 
-A package is expected to be self-contained for the selected host and target. Windows packages include the non-system runtime DLLs needed by packaged executables. GCC Windows packages include the MinGW-w64 target layout. Clang packages include the LLVM runtime files required by the selected tool package.
+A package is expected to be self-contained for the selected host and target. Windows packages include the non-system runtime DLLs needed by packaged executables. GCC Windows packages include the MinGW-w64 target layout. Clang packages include the LLVM runtime files required by the selected tool package. Package checksums cover the finished archives; they do not alter any compiler, debugger or runtime build sequence.
 
 ## Documentation
 

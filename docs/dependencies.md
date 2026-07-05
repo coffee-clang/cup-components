@@ -472,7 +472,7 @@ GDB/LLDB startup behavior
 Valgrind tool execution
 ```
 
-The package capability scripts read `info.txt` and compare metadata against the files found in the package root.
+The package capability scripts read `info.txt` and compare metadata against the files found in the package root. `scripts/test/test-package-checksums.sh` separately verifies both the valid archive set and a deliberate tampering failure.
 
 ## 13. Publishing dependencies
 
@@ -495,7 +495,7 @@ gh release upload --clobber
 gh release create
 ```
 
-Only final archives and `release.env` are uploaded.
+Final archives, `release.env` and the verified `SHA256SUMS` file are uploaded. The checksum file is produced with the platform SHA-256 utility and sorted by archive filename for deterministic output.
 
 ## 14. Relation to cup dependencies
 

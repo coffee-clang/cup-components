@@ -11,6 +11,7 @@ RUN apt-get update \
         file \
         ninja-build \
         patch \
+        patchelf \
         pkg-config \
         python3 \
         python3-dev \

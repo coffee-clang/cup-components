@@ -37,10 +37,6 @@ info_value() {
     fi
 }
 
-info_true() {
-    [ "$(info_value "$1")" = "true" ]
-}
-
 has_exe() {
     local exe="$1"
     [ -x "$root/bin/$exe" ] || [ -x "$root/bin/$exe.exe" ]
@@ -127,11 +123,17 @@ show_info_contract() {
 }
 
 show_bin_summary() {
+    local entry
+
     echo ""
     echo "[bin summary]"
     if [ -d "$root/bin" ]; then
-        find "$root/bin" -maxdepth 1 -type f -perm -111 -printf '%f\n' 2>/dev/null | sort | sed 's/^/  /' || true
-        find "$root/bin" -maxdepth 1 -type f -name '*.exe' -printf '%f\n' 2>/dev/null | sort | sed 's/^/  /' || true
+        for entry in "$root/bin"/*; do
+            [ -e "$entry" ] || [ -L "$entry" ] || continue
+            if [ -x "$entry" ]; then
+                basename "$entry"
+            fi
+        done | sort -u | sed 's/^/  /'
     else
         echo "  missing bin directory"
     fi
@@ -240,9 +242,13 @@ show_valgrind() {
 
     valgrind_dir="$(find "$root" \( -type d -path '*/libexec/valgrind' -o -type d -path '*/lib/valgrind' \) -print -quit 2>/dev/null || true)"
     if [ -n "$valgrind_dir" ]; then
+        local entry
         echo ""
         echo "[valgrind internal tool files]"
-        find "$valgrind_dir" -maxdepth 1 -type f -printf '%f\n' | sort | grep -E '^(memcheck|cachegrind|callgrind|massif|helgrind|drd|dhat|lackey|exp-)' | sed 's/^/  /' || true
+        for entry in "$valgrind_dir"/*; do
+            [ -f "$entry" ] || continue
+            basename "$entry"
+        done | sort | grep -E '^(memcheck|cachegrind|callgrind|massif|helgrind|drd|dhat|lackey|exp-)' | sed 's/^/  /' || true
     fi
 }
 

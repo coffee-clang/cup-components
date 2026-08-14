@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: GDB version, or stable/latest
+        description: GDB version, or stable
         required: true
         default: stable
       host_platform:
@@ -25,10 +25,6 @@ on:
           - linux-arm64
           - windows-x64
         default: linux-x64
-      revision:
-        description: Package revision metadata
-        required: true
-        default: '1'
       publish:
         description: Publish packages as GitHub Release assets
         required: true
@@ -74,6 +70,13 @@ jobs:
           echo "host_platform=$host_platform" >> "$GITHUB_OUTPUT"
           echo "target_platform=$target_platform" >> "$GITHUB_OUTPUT"
 
+      - name: Checkout for package-contract verification
+        uses: actions/checkout@v5
+
+      - name: Verify common package contract
+        shell: bash
+        run: bash scripts/test/test-package-contract.sh
+
   build:
     needs: select
     runs-on: ${{ needs.select.outputs.runner }}
@@ -97,8 +100,7 @@ jobs:
             bash scripts/build/build-gdb.sh \
               "${{ inputs.version }}" \
               "${{ needs.select.outputs.host_platform }}" \
-              "${{ needs.select.outputs.target_platform }}" \
-              "${{ inputs.revision }}"
+              "${{ needs.select.outputs.target_platform }}"
 
       - name: Test packaged GDB (Linux)
         if: ${{ startsWith(needs.select.outputs.host_platform, 'linux-') }}
@@ -129,8 +131,7 @@ jobs:
           bash scripts/build/build-gdb.sh \
             "${{ inputs.version }}" \
             "${{ needs.select.outputs.host_platform }}" \
-            "${{ needs.select.outputs.target_platform }}" \
-            "${{ inputs.revision }}"
+            "${{ needs.select.outputs.target_platform }}"
 
       - name: Test packaged GDB (Windows)
         if: ${{ startsWith(needs.select.outputs.host_platform, 'windows-') }}
@@ -173,13 +174,33 @@ jobs:
           tag="${{ steps.release.outputs.tag }}"
           repo="${GITHUB_REPOSITORY}"
 
-          if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
-            gh release upload "$tag" dist/*.tar.xz dist/*.tar.gz dist/*.zip dist/SHA256SUMS \
-              --repo "$repo" \
-              --clobber
+          release_lookup="$(mktemp)"
+          release_status=0
+          gh api --include "repos/$repo/releases/tags/$tag" >"$release_lookup" 2>&1 || release_status=$?
+
+          if [ "$release_status" -eq 0 ]; then
+            rm -f "$release_lookup"
+            gh release delete "$tag" --repo "$repo" --cleanup-tag --yes
           else
-            gh release create "$tag" dist/*.tar.xz dist/*.tar.gz dist/*.zip dist/SHA256SUMS \
-              --repo "$repo" \
-              --title "$tag" \
-              --notes "Automated cup component build for $tag"
+            http_status="$(sed -n 's#^HTTP/[^ ]* \([0-9][0-9][0-9]\).*#\1#p' "$release_lookup")"
+            if [ "$http_status" != 404 ]; then
+              cat "$release_lookup" >&2
+              rm -f "$release_lookup"
+              exit "$release_status"
+            fi
+            rm -f "$release_lookup"
+
+            tag_status=0
+            git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 || tag_status=$?
+            case "$tag_status" in
+              0) git push origin ":refs/tags/$tag" ;;
+              2) ;;
+              *) echo "failed to determine remote tag state for '$tag'" >&2; exit "$tag_status" ;;
+            esac
           fi
+
+          gh release create "$tag" dist/*.tar.xz dist/*.tar.gz dist/*.zip dist/SHA256SUMS \
+            --repo "$repo" \
+            --target "$GITHUB_SHA" \
+            --title "$tag" \
+            --notes "Automated cup component build for $tag"

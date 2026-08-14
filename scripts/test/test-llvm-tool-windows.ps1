@@ -86,6 +86,43 @@ function Test-InfoBool {
     return (Get-InfoValue $Key) -eq 'true'
 }
 
+function Assert-NoLlvmDevelopmentPayload {
+    $forbiddenDirectories = @(
+        'include\llvm', 'include\llvm-c', 'include\clang', 'include\clang-c',
+        'include\lld', 'include\lldb', 'include\mach-o', 'lib\cmake', 'lib64\cmake'
+    )
+
+    foreach ($relative in $forbiddenDirectories) {
+        if (Test-Path (Join-Path $root $relative)) {
+            throw "LLVM development payload leaked into package: $relative"
+        }
+    }
+
+    foreach ($libRelative in @('lib', 'lib64')) {
+        $libDir = Join-Path $root $libRelative
+        if (-not (Test-Path $libDir)) { continue }
+
+        foreach ($pattern in @(
+            'libLTO.*', 'libRemarks.*', 'libclang.*', 'libclang-cpp.*'
+        )) {
+            $leak = Get-ChildItem -Path $libDir -File -Filter $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($leak) {
+                throw "LLVM shared development API leaked into package: $($leak.FullName)"
+            }
+        }
+
+        foreach ($archive in Get-ChildItem -Path $libDir -File -ErrorAction SilentlyContinue | Where-Object {
+            $_.Name -like '*.a' -or $_.Name -like '*.lib'
+        }) {
+            if ($archive.Name -match '^(libc\+\+|libc\+\+abi|libc\+\+experimental|libunwind)(\.a|\.lib)$' -or
+                $archive.Name -like 'libclang_rt.*') {
+                continue
+            }
+            throw "LLVM static development archive leaked into package: $($archive.FullName)"
+        }
+    }
+}
+
 function Show-PEImports {
     param([Parameter(Mandatory = $true)][string] $FilePath)
 
@@ -154,26 +191,6 @@ function To-ForwardSlashPath {
     return $Path.Replace('\', '/')
 }
 
-function Read-ASanLogOutput {
-    param([Parameter(Mandatory = $true)][string] $LogPrefix)
-
-    $logEntries = @()
-    $parent = Split-Path -Parent $LogPrefix
-    $leaf = Split-Path -Leaf $LogPrefix
-
-    if (Test-Path $parent) {
-        $logFiles = Get-ChildItem -Path $parent -Filter "$leaf*" -File -ErrorAction SilentlyContinue
-        foreach ($logFile in $logFiles) {
-            Write-Host "==> ASan log: $($logFile.FullName)"
-            $content = @(Get-Content $logFile.FullName -ErrorAction SilentlyContinue)
-            $content | ForEach-Object { Write-Host $_ }
-            $logEntries += $content
-        }
-    }
-
-    return $logEntries
-}
-
 $releaseEnv = Get-Content dist/release.env
 $packageBase = ($releaseEnv | Where-Object { $_ -like 'package_base=*' }) -replace '^package_base=', ''
 if (-not $packageBase) { throw 'package_base not found in dist/release.env' }
@@ -186,24 +203,17 @@ $root = Join-Path (Resolve-Path dist/package-test) $packageBase
 Get-Content "$root\info.txt"
 
 pwsh scripts/test/package-capabilities-windows.ps1 -Root $root -Tool $Tool
+Assert-NoLlvmDevelopmentPayload
 
+# Capture build-runner compilers before isolating PATH. They are used only to
+# create independent test inputs; packaged tools must resolve their own runtime.
+$runnerClang = Get-Command clang.exe -ErrorAction SilentlyContinue
+$runnerGcc = Get-Command gcc.exe -ErrorAction SilentlyContinue
+
+# Do not let a developer/runner Python environment make LLDB appear relocatable.
+Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
+Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
 $env:Path = "$root\bin;$env:SystemRoot\System32;$env:SystemRoot"
-
-$pythonDirs = Get-ChildItem -Directory -Path (Join-Path $root 'lib') -Filter 'python*' -ErrorAction SilentlyContinue
-if ($pythonDirs) {
-    $pythonDir = ($pythonDirs | Select-Object -First 1).FullName
-    $pythonDynloadDir = Join-Path $pythonDir 'lib-dynload'
-    $pythonSitePackagesDir = Join-Path $pythonDir 'site-packages'
-
-    $env:PYTHONHOME = $root
-    $pythonPathEntries = @($pythonDir)
-    if (Test-Path $pythonDynloadDir) { $pythonPathEntries += $pythonDynloadDir }
-    if (Test-Path $pythonSitePackagesDir) { $pythonPathEntries += $pythonSitePackagesDir }
-    $env:PYTHONPATH = ($pythonPathEntries -join ';')
-
-    Write-Host "PYTHONHOME=$env:PYTHONHOME"
-    Write-Host "PYTHONPATH=$env:PYTHONPATH"
-}
 
 $testDir = Join-Path $env:TEMP "cup-llvm-$Tool-test"
 Remove-Item -Recurse -Force $testDir -ErrorAction SilentlyContinue
@@ -223,17 +233,47 @@ switch ($Tool) {
 
         $cSource = Join-Path $testDir 'clang-test.c'
         $cObject = Join-Path $testDir 'clang-test.o'
+        $cExe = Join-Path $testDir 'clang-test.exe'
         'int add(int a, int b) { return a + b; } int main(void) { return add(20, 22) == 42 ? 0 : 1; }' | Set-Content $cSource
         Invoke-Native -FilePath "$root\bin\clang.exe" -ArgumentList @('-fsyntax-only', $cSource)
         Invoke-Native -FilePath "$root\bin\clang.exe" -ArgumentList @('-c', $cSource, '-o', $cObject)
         Assert-FileExists $cObject
+        Invoke-Native -FilePath "$root\bin\clang.exe" -ArgumentList @('-fuse-ld=lld', $cSource, '-o', $cExe)
+        Assert-FileExists $cExe
+        Invoke-Native -FilePath $cExe
 
         $cppSource = Join-Path $testDir 'clang-cpp-test.cpp'
         $cppObject = Join-Path $testDir 'clang-cpp-test.o'
+        $cppExe = Join-Path $testDir 'clang-cpp-test.exe'
         'int add(int a, int b) { return a + b; } int main() { return add(20, 22) == 42 ? 0 : 1; }' | Set-Content $cppSource
         Invoke-Native -FilePath "$root\bin\clang++.exe" -ArgumentList @('-fsyntax-only', $cppSource)
         Invoke-Native -FilePath "$root\bin\clang++.exe" -ArgumentList @('-c', $cppSource, '-o', $cppObject)
         Assert-FileExists $cppObject
+        Invoke-Native -FilePath "$root\bin\clang++.exe" -ArgumentList @('-fuse-ld=lld', $cppSource, '-o', $cppExe)
+        Assert-FileExists $cppExe
+        Invoke-Native -FilePath $cppExe
+
+        if (Test-InfoBool 'features.cxx_runtime') {
+            $libcxxExe = Join-Path $testDir 'clang-libcxx-test.exe'
+            Invoke-Native -FilePath "$root\bin\clang++.exe" -ArgumentList @(
+                '-stdlib=libc++', '-fuse-ld=lld', $cppSource, '-o', $libcxxExe
+            )
+            Assert-FileExists $libcxxExe
+            Invoke-Native -FilePath $libcxxExe
+        } else {
+            throw 'required packaged Clang C++ runtime is not declared; libc++ test cannot run'
+        }
+
+        if (Test-InfoBool 'features.lto') {
+            $ltoExe = Join-Path $testDir 'clang-lto-test.exe'
+            Invoke-Native -FilePath "$root\bin\clang.exe" -ArgumentList @(
+                '-flto', '-fuse-ld=lld', $cSource, '-o', $ltoExe
+            )
+            Assert-FileExists $ltoExe
+            Invoke-Native -FilePath $ltoExe
+        } else {
+            throw 'required Clang LTO/LLD integration is not declared; LTO test cannot run'
+        }
 
         if ((Test-InfoBool 'features.asan') -or (Test-InfoBool 'features.sanitizers')) {
             $asanSource = Join-Path $testDir 'asan-test.c'
@@ -286,7 +326,7 @@ int main(void) {
 
             Assert-OutputContains -Output $asanOutput -Pattern 'AddressSanitizer|heap-use-after-free'
         } else {
-            Write-Host 'warning: clang sanitizer runtime not enabled; skipping ASan test'
+            throw 'required Clang ASan runtime is not declared; ASan test cannot run'
         }
     }
 
@@ -295,6 +335,22 @@ int main(void) {
         Invoke-Native -FilePath "$root\bin\lld-link.exe" -ArgumentList @('--version')
         Invoke-OptionalNative -FilePath "$root\bin\wasm-ld.exe" -ArgumentList @('--version')
         Invoke-OptionalNative -FilePath "$root\bin\ld64.lld.exe" -ArgumentList @('--version')
+
+        if (-not $runnerClang) {
+            throw 'runner clang.exe is required to produce an independent COFF object for lld-link qualification'
+        }
+        $lldSource = Join-Path $testDir 'lld-link-test.c'
+        $lldObject = Join-Path $testDir 'lld-link-test.obj'
+        $lldExe = Join-Path $testDir 'lld-link-test.exe'
+        'int main(void) { return 0; }' | Set-Content $lldSource
+        Invoke-Native -FilePath $runnerClang.Source -ArgumentList @(
+            '-target', 'x86_64-pc-windows-msvc', '-c', $lldSource, '-o', $lldObject
+        )
+        Assert-FileExists $lldObject
+        Invoke-Native -FilePath "$root\bin\lld-link.exe" -ArgumentList @(
+            '/entry:main', '/subsystem:console', '/nodefaultlib', "/out:$lldExe", $lldObject
+        )
+        Assert-FileExists $lldExe
     }
 
     'lldb' {
@@ -311,10 +367,16 @@ int main(void) {
             'quit'
         )
 
-        $gcc = Get-Command gcc.exe -ErrorAction SilentlyContinue
-        if ($gcc) {
-            $source = Join-Path $testDir 'lldb-test.c'
-            $exe = Join-Path $testDir 'lldb-test.exe'
+        if ($runnerGcc) {
+            $lldbFixtureCompiler = $runnerGcc.Source
+        } elseif ($runnerClang) {
+            $lldbFixtureCompiler = $runnerClang.Source
+        } else {
+            throw 'runner C compiler is required for LLDB functional qualification'
+        }
+
+        $source = Join-Path $testDir 'lldb-test.c'
+        $exe = Join-Path $testDir 'lldb-test.exe'
 @'
 #include <stdio.h>
 
@@ -328,26 +390,25 @@ int main(void) {
     return 0;
 }
 '@ | Set-Content $source
-            Invoke-Native -FilePath $gcc.Source -ArgumentList @('-g', '-O0', '-static', $source, '-o', $exe)
-            Assert-FileExists $exe
-            $exeForLldb = To-ForwardSlashPath $exe
-            $output = Invoke-NativeCapture -FilePath "$root\bin\lldb.exe" -ArgumentList @(
-                '-b',
-                '-o',
-                "target create $exeForLldb",
-                '-o',
-                'breakpoint set --name add',
-                '-o',
-                'image lookup -n add',
-                '-o',
-                'quit'
-            )
-            Assert-OutputContains -Output $output -Pattern 'Breakpoint|breakpoint'
-            Assert-OutputContains -Output $output -Pattern 'add'
-        } else {
-            Write-Host 'warning: gcc.exe not available; skipping LLDB target creation test'
-            Invoke-Native -FilePath "$root\bin\lldb.exe" -ArgumentList @('-b', '-o', 'help', '-o', 'quit')
-        }
+        Invoke-Native -FilePath $lldbFixtureCompiler -ArgumentList @('-g', '-O0', '-static', $source, '-o', $exe)
+        Assert-FileExists $exe
+        $exeForLldb = To-ForwardSlashPath $exe
+        $output = Invoke-NativeCapture -FilePath "$root\bin\lldb.exe" -ArgumentList @(
+            '-b',
+            '-o',
+            "target create $exeForLldb",
+            '-o',
+            'breakpoint set --name add',
+            '-o',
+            'run',
+            '-o',
+            'backtrace',
+            '-o',
+            'quit'
+        )
+        Assert-OutputContains -Output $output -Pattern 'Breakpoint|breakpoint'
+        Assert-OutputContains -Output $output -Pattern 'add'
+        Assert-OutputContains -Output $output -Pattern 'frame #0|#0'
     }
 
     'clangd' {
@@ -445,5 +506,78 @@ return 0;
 
     default {
         throw "unsupported LLVM tool: $Tool"
+    }
+}
+
+# Re-run a real operation from a copied package root. This is intentionally more
+# than a path rename assertion: resource/Python/helper discovery must follow the
+# relocated package without PYTHONHOME/PYTHONPATH or the original package on PATH.
+$relocationParent = Join-Path $testDir 'relocated'
+Remove-Item -Recurse -Force $relocationParent -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force $relocationParent | Out-Null
+Copy-Item -Recurse -Force $root $relocationParent
+$relocatedRoot = Join-Path $relocationParent $packageBase
+if (-not (Test-Path $relocatedRoot)) {
+    throw "relocated package root was not created: $relocatedRoot"
+}
+Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
+Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+$env:Path = "$relocatedRoot\bin;$env:SystemRoot\System32;$env:SystemRoot"
+
+switch ($Tool) {
+    'clang' {
+        Invoke-Native -FilePath "$relocatedRoot\bin\clang.exe" -ArgumentList @('--version')
+        $resourceOutput = Invoke-NativeCapture -FilePath "$relocatedRoot\bin\clang.exe" -ArgumentList @('-print-resource-dir')
+        $resourceDir = ($resourceOutput | Select-Object -Last 1).ToString().Trim()
+        if (-not (Test-Path $resourceDir)) {
+            throw "relocated clang resource directory does not exist: $resourceDir"
+        }
+        $resourceFull = [IO.Path]::GetFullPath($resourceDir)
+        $relocatedFull = [IO.Path]::GetFullPath($relocatedRoot).TrimEnd('\') + '\'
+        if (-not $resourceFull.StartsWith($relocatedFull, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "relocated clang still resolves resources outside its package: $resourceDir"
+        }
+        $relocatedExe = Join-Path $testDir 'relocated-clang-test.exe'
+        Invoke-Native -FilePath "$relocatedRoot\bin\clang.exe" -ArgumentList @(
+            '-fuse-ld=lld', $cSource, '-o', $relocatedExe
+        )
+        Assert-FileExists $relocatedExe
+        Invoke-Native -FilePath $relocatedExe
+    }
+    'lld' {
+        $relocatedExe = Join-Path $testDir 'relocated-lld-link-test.exe'
+        Invoke-Native -FilePath "$relocatedRoot\bin\lld-link.exe" -ArgumentList @(
+            '/entry:main', '/subsystem:console', '/nodefaultlib', "/out:$relocatedExe", $lldObject
+        )
+        Assert-FileExists $relocatedExe
+    }
+    'lldb' {
+        $output = Invoke-NativeCapture -FilePath "$relocatedRoot\bin\lldb.exe" -ArgumentList @(
+            '-b',
+            '-o',
+            "script import sys; import lldb; print('python-reloc-ok', sys.version_info[0], sys.version_info[1]); print('prefix', sys.prefix)",
+            '-o',
+            'quit'
+        )
+        Assert-OutputContains -Output $output -Pattern 'python-reloc-ok'
+        $output = Invoke-NativeCapture -FilePath "$relocatedRoot\bin\lldb.exe" -ArgumentList @(
+            '-b', '-o', "target create $exeForLldb", '-o', 'breakpoint set --name add',
+            '-o', 'run', '-o', 'backtrace', '-o', 'quit'
+        )
+        Assert-OutputContains -Output $output -Pattern 'add'
+        Assert-OutputContains -Output $output -Pattern 'frame #0|#0'
+    }
+    'clangd' {
+        $output = Invoke-NativeCapture -FilePath "$relocatedRoot\bin\clangd.exe" -ArgumentList @("--check=$sourcePathForJson")
+        Assert-OutputContains -Output $output -Pattern 'All checks completed|Testing on source file'
+    }
+    'clang-format' {
+        $output = Invoke-NativeCapture -FilePath "$relocatedRoot\bin\clang-format.exe" -ArgumentList @($source)
+        Assert-OutputContains -Output $output -Pattern 'int main\(void\)'
+    }
+    'clang-tidy' {
+        Invoke-Native -FilePath "$relocatedRoot\bin\clang-tidy.exe" -ArgumentList @(
+            '--checks=clang-analyzer-*', $source, '--', '-std=c11'
+        )
     }
 }

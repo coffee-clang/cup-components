@@ -40,16 +40,40 @@ require_executable() {
 }
 
 require_executable "$root/bin/valgrind"
+require_executable "$root/bin/vgdb"
 "$root/bin/valgrind" --version
+"$root/bin/vgdb" --help >"$tmpdir/vgdb-help.txt" 2>&1
+if grep -F '/.cup-build/' "$tmpdir/vgdb-help.txt" >/dev/null; then
+    echo "vgdb help retains an absolute build/staging prefix" >&2
+    cat "$tmpdir/vgdb-help.txt" >&2
+    exit 1
+fi
 "$root/bin/valgrind" --tool=memcheck --help >"$tmpdir/valgrind-help.txt"
 grep -A3 "available tools are:" "$tmpdir/valgrind-help.txt"
 
 if feature_enabled "features.mpiwrap"; then
-    echo "required feature present: MPI wrapper"
-    find "$root" -type f -name "libmpiwrap-*" | grep .
-else
-    echo "required Valgrind MPI wrapper is missing" >&2
+    echo "core Valgrind package unexpectedly declares MPI wrapper support" >&2
     exit 1
+fi
+if find "$root" -type f -name "libmpiwrap-*" -print -quit | grep -q .; then
+    echo "core Valgrind package unexpectedly contains an MPI wrapper" >&2
+    exit 1
+fi
+
+if feature_enabled "features.gdb_python_frontend"; then
+    echo "relocatable core Valgrind package unexpectedly enables the absolute-path GDB Python front end" >&2
+    exit 1
+fi
+if find "$root" -type f -name 'valgrind-monitor.py' -print -quit | grep -q .; then
+    echo "relocatable core Valgrind package unexpectedly contains valgrind-monitor.py" >&2
+    exit 1
+fi
+if [ -f "$root/lib/pkgconfig/valgrind.pc" ]; then
+    grep -F 'prefix=${pcfiledir}/../..' "$root/lib/pkgconfig/valgrind.pc" >/dev/null
+    if grep -F "$root" "$root/lib/pkgconfig/valgrind.pc" >/dev/null; then
+        echo "Valgrind pkg-config metadata contains an extracted absolute prefix" >&2
+        exit 1
+    fi
 fi
 
 cat > "$tmpdir/valgrind-leak.c" <<'C_EOF'
@@ -69,6 +93,6 @@ grep "definitely lost: 4 bytes in 1 blocks" "$tmpdir/valgrind-output.txt"
 # The Valgrind package uses a relocatable wrapper, so moving the extracted tree is
 # part of the package contract and should be tested explicitly.
 reloc_root="$tmpdir/valgrind-reloc"
-cp -a "$root" "$reloc_root"
+cp -RPp "$root" "$reloc_root"
 "$reloc_root/bin/valgrind" --leak-check=full "$tmpdir/valgrind-leak" 2>&1 | tee "$tmpdir/valgrind-reloc-output.txt"
 grep "definitely lost: 4 bytes in 1 blocks" "$tmpdir/valgrind-reloc-output.txt"

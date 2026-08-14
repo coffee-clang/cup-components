@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 environment="${1:-}"
 
 case "$environment" in
     ucrt64)
-        package_file="scripts/setup/msys2-ucrt64-packages.txt"
+        package_file="$SCRIPT_DIR/msys2-ucrt64-packages.txt"
         ;;
     clang64)
-        package_file="scripts/setup/msys2-clang64-packages.txt"
+        package_file="$SCRIPT_DIR/msys2-clang64-packages.txt"
         ;;
     *)
         echo "usage: $0 <ucrt64|clang64>" >&2

@@ -1,124 +1,35 @@
 # cup-components
 
-`cup-components` builds the prebuilt C development tool packages installed by `cup`.
+`cup-components` builds the prebuilt C development tool packages consumed by [`cup`](https://github.com/coffee-clang/cup).
 
-This repository does not implement the `cup` command-line installer. Its job is to build, test and publish self-contained component archives with a stable package layout and an `info.txt` metadata file that `cup` can validate during installation.
+It keeps the expensive compiler, debugger and tooling builds separate from the `cup` installer. The repository builds upstream tools, packages the files they need at runtime, validates the result and can publish the finished archives.
 
-## Built tools
+## Tools
 
-The current build workflows cover:
+- GCC
+- GDB
+- Clang
+- clang-format
+- clang-tidy
+- clangd
+- LLD
+- LLDB
+- Valgrind
 
-```text
-gcc
-clang
-gdb
-lld
-lldb
-clangd
-clang-format
-clang-tidy
-valgrind
-```
+## Platforms
 
-These tools map to the component names used by `cup`:
+- Linux x64
+- Linux arm64
+- Windows x64
+- macOS x64
+- macOS arm64
 
-```text
-compiler/gcc
-compiler/clang
-debugger/gdb
-debugger/lldb
-linker/lld
-formatter/clang-format
-linter/clang-tidy
-language-server/clangd
-analyzer/valgrind
-```
+## Packages
 
-## Build model
+The repository produces relocatable packages for `cup`. Each package has a defined tool/version/host/target identity and includes the non-system runtime dependencies required by its tool while leaving the platform base ABI external. The version is selected when a build is run, so separately published versions of the same tool can coexist.
 
-Builds are started manually through GitHub Actions workflows. Each workflow accepts a version, host platform, target platform, package revision and a `publish` flag.
-
-The build scripts download upstream source releases, build the selected tool, stage the install tree, write package metadata, create archives, generate a deterministic `SHA256SUMS` file and run package capability tests.
-
-The produced archives are named like:
-
-```text
-<tool>-<version>[-revN]-<host_platform>-<target_platform>.tar.xz
-<tool>-<version>[-revN]-<host_platform>-<target_platform>.tar.gz
-<tool>-<version>[-revN]-<host_platform>-<target_platform>.zip
-```
-
-Release tags use the same base name without the archive extension:
-
-```text
-<tool>-<version>[-revN]-<host_platform>-<target_platform>
-```
-
-Every workflow artifact and published GitHub Release also contains:
-
-```text
-SHA256SUMS
-```
-
-It records exactly one SHA-256 digest for each `.tar.xz`, `.tar.gz` and `.zip` archive. The file is regenerated and verified immediately before upload so `cup` can reject corrupted downloads and cache entries.
-
-## Supported platform families
-
-The scripts use these platform identifiers:
-
-```text
-linux-x64
-linux-arm64
-macos-x64
-macos-arm64
-windows-x64
-```
-
-The main combinations are:
-
-```text
-GCC:
-  linux-x64   -> linux-x64
-  linux-arm64 -> linux-arm64
-  linux-x64   -> windows-x64
-  windows-x64 -> windows-x64
-
-GDB:
-  linux-x64   -> linux-x64
-  linux-arm64 -> linux-arm64
-  windows-x64 -> windows-x64
-
-LLVM tools:
-  linux-x64   -> linux-x64
-  linux-arm64 -> linux-arm64
-  macos-x64   -> macos-x64
-  macos-arm64 -> macos-arm64
-  windows-x64 -> windows-x64
-
-Valgrind:
-  linux-x64   -> linux-x64
-  linux-arm64 -> linux-arm64
-```
-
-LLVM tool packages are native host-target packages. GCC also supports the Linux-to-Windows target package because the package includes the MinGW-w64 target runtime and sysroot.
-
-## Output contract
-
-Every package root contains:
-
-```text
-info.txt
-```
-
-The metadata records package identity, host/target platforms, entry points, contents, feature flags and build configuration.
-
-A package is expected to be self-contained for the selected host and target. Windows packages include the non-system runtime DLLs needed by packaged executables. GCC Windows packages include the MinGW-w64 target layout. Clang packages include the LLVM runtime files required by the selected tool package. Package checksums cover the finished archives; they do not alter any compiler, debugger or runtime build sequence.
+Packages are emitted as `tar.xz`, `tar.gz` and `zip` archives with metadata, an exact package manifest and archive checksums.
 
 ## Documentation
 
-The full documentation is split into:
-
-- [Specification](docs/specification.md): build model, package identity, supported tools, packaging contract, metadata and workflow behavior.
-- [Dependencies](docs/dependencies.md): Docker images, MSYS2 environments, Homebrew setup, upstream sources and per-tool build dependencies.
-
-The installer and runtime state model are documented in the separate [cup](https://github.com/coffee-clang/cup) repository.
+See [docs/SUMMARY.md](docs/SUMMARY.md) for the complete technical documentation.

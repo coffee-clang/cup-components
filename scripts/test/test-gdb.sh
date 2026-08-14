@@ -8,6 +8,7 @@ mkdir -p dist/package-test
 tar -xJf "dist/$package_base.tar.xz" -C dist/package-test
 
 root="dist/package-test/$package_base"
+unset PYTHONHOME PYTHONPATH || true
 
 bash scripts/test/package-capabilities.sh "$root" gdb
 tmpdir="$(mktemp -d /tmp/cup-gdb-test.XXXXXX)"
@@ -46,14 +47,14 @@ require_executable "$root/bin/gdb"
 # Python support is a major GDB capability and is declared by the package metadata.
 # Other configure-time libraries are intentionally not asserted here: they are
 # packaging details, while this script is an acceptance test for the published tool.
-if feature_enabled "features.python" || feature_enabled "config.python" || feature_enabled "contents.uses_python"; then
-    "$root/bin/gdb" -q -batch \
-        -ex "python import sys, gdb; print(\"python-ok\", sys.version_info[0], sys.version_info[1])" \
-        | tee "$tmpdir/gdb-python-output.txt"
-    grep -F "python-ok" "$tmpdir/gdb-python-output.txt"
-else
-    echo "warning: GDB Python support not declared in info.txt"
+if ! feature_enabled "features.python" || ! feature_enabled "config.python" || ! feature_enabled "contents.uses_python"; then
+    echo "required GDB Python capability is not fully declared in info.txt" >&2
+    exit 1
 fi
+"$root/bin/gdb" -q -batch \
+    -ex "python import sys, gdb; print(\"python-ok\", sys.version_info[0], sys.version_info[1])" \
+    | tee "$tmpdir/gdb-python-output.txt"
+grep -F "python-ok" "$tmpdir/gdb-python-output.txt"
 
 cat > "$tmpdir/gdb-test.c" <<'C_EOF'
 #include <stdio.h>
@@ -83,3 +84,22 @@ gcc -g -O0 "$tmpdir/gdb-test.c" -o "$tmpdir/gdb-test"
 grep -F '$1 = 20' "$tmpdir/gdb-output.txt"
 grep -F '$2 = 22' "$tmpdir/gdb-output.txt"
 grep -F "#0" "$tmpdir/gdb-output.txt"
+
+# Relocation is part of the producer contract: repeat Python and debugger probes
+# from a package copy under an unrelated temporary path.
+reloc_root="$tmpdir/relocated-gdb"
+cp -RPp "$root" "$reloc_root"
+unset PYTHONHOME PYTHONPATH || true
+"$reloc_root/bin/gdb" --version
+"$reloc_root/bin/gdb" -q -batch \
+    -ex "python import sys, gdb; print(\"python-reloc-ok\", sys.version_info[0], sys.version_info[1])" \
+    | tee "$tmpdir/gdb-reloc-python-output.txt"
+grep -F "python-reloc-ok" "$tmpdir/gdb-reloc-python-output.txt"
+"$reloc_root/bin/gdb" -q -batch \
+    -ex "set debuginfod enabled off" \
+    -ex "file $tmpdir/gdb-test" \
+    -ex "break add" \
+    -ex "run" \
+    -ex "backtrace" \
+    | tee "$tmpdir/gdb-reloc-output.txt"
+grep -F "#0" "$tmpdir/gdb-reloc-output.txt"

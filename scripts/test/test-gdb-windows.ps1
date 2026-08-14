@@ -145,6 +145,8 @@ Assert-FileExists $testExe
 
 $gdbTestExe = To-ForwardSlashPath $testExe
 
+Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
+Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
 $env:Path = "$root\bin;$env:SystemRoot\System32;$env:SystemRoot"
 
 Invoke-Native -FilePath "$root\bin\gdb.exe" -ArgumentList @('--version')
@@ -152,17 +154,18 @@ Invoke-Native -FilePath "$root\bin\gdb.exe" -ArgumentList @('--configuration')
 
 # Python is a major user-facing GDB capability when declared by the package.
 # We intentionally do not assert every configure-time library from info.txt.
-if ((Test-FeatureEnabled -Root $root -Key 'features.python') -or (Test-FeatureEnabled -Root $root -Key 'config.python') -or (Test-FeatureEnabled -Root $root -Key 'contents.uses_python')) {
-    $output = Invoke-NativeCapture -FilePath "$root\bin\gdb.exe" -ArgumentList @(
-        '-q',
-        '-batch',
-        '-ex',
-        'python import sys, gdb; print("python-ok", sys.version_info[0], sys.version_info[1])'
-    )
-    Assert-OutputContains -Output $output -Pattern 'python-ok'
-} else {
-    Write-Host 'warning: GDB Python support not declared in info.txt'
+if (-not (Test-FeatureEnabled -Root $root -Key 'features.python') -or
+    -not (Test-FeatureEnabled -Root $root -Key 'config.python') -or
+    -not (Test-FeatureEnabled -Root $root -Key 'contents.uses_python')) {
+    throw 'required GDB Python capability is not fully declared in info.txt'
 }
+$output = Invoke-NativeCapture -FilePath "$root\bin\gdb.exe" -ArgumentList @(
+    '-q',
+    '-batch',
+    '-ex',
+    'python import sys, gdb; print("python-ok", sys.version_info[0], sys.version_info[1])'
+)
+Assert-OutputContains -Output $output -Pattern 'python-ok'
 
 $output = Invoke-NativeCapture -FilePath "$root\bin\gdb.exe" -ArgumentList @(
     '-q',
@@ -182,4 +185,23 @@ $output = Invoke-NativeCapture -FilePath "$root\bin\gdb.exe" -ArgumentList @(
 )
 Assert-OutputContains -Output $output -Pattern '\$1 = 20'
 Assert-OutputContains -Output $output -Pattern '\$2 = 22'
+Assert-OutputContains -Output $output -Pattern '#0'
+
+$relocationParent = Join-Path $testDir 'relocated'
+Remove-Item -Recurse -Force $relocationParent -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force $relocationParent | Out-Null
+Copy-Item -Recurse -Force $root $relocationParent
+$relocatedRoot = Join-Path $relocationParent $packageBase
+Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
+Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+$env:Path = "$relocatedRoot\bin;$env:SystemRoot\System32;$env:SystemRoot"
+
+Invoke-Native -FilePath "$relocatedRoot\bin\gdb.exe" -ArgumentList @('--version')
+$output = Invoke-NativeCapture -FilePath "$relocatedRoot\bin\gdb.exe" -ArgumentList @(
+    '-q', '-batch', '-ex', 'python import sys, gdb; print("python-reloc-ok", sys.version_info[0], sys.version_info[1])'
+)
+Assert-OutputContains -Output $output -Pattern 'python-reloc-ok'
+$output = Invoke-NativeCapture -FilePath "$relocatedRoot\bin\gdb.exe" -ArgumentList @(
+    '-q', '-batch', '-ex', "file $gdbTestExe", '-ex', 'break add', '-ex', 'run', '-ex', 'backtrace'
+)
 Assert-OutputContains -Output $output -Pattern '#0'

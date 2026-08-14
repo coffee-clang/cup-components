@@ -8,15 +8,15 @@ source "$REPO_ROOT/scripts/package/package-common.sh"
 usage() {
     cat <<USAGE
 Usage:
-  $0 <version|stable|latest> <host_platform> <target_platform> <revision>
+  $0 <version|stable> <host_platform> <target_platform>
 
 Examples:
-  $0 stable linux-x64 linux-x64 1
-  $0 stable windows-x64 windows-x64 1
+  $0 stable linux-x64 linux-x64
+  $0 stable windows-x64 windows-x64
 USAGE
 }
 
-if [ "$#" -ne 4 ]; then
+if [ "$#" -ne 3 ]; then
     usage >&2
     exit 2
 fi
@@ -24,7 +24,7 @@ fi
 REQUESTED_VERSION="$1"
 HOST_PLATFORM="$2"
 TARGET_PLATFORM="$3"
-REVISION="$4"
+REVISION=""
 
 TOOL="gdb"
 COMPONENT="debugger"
@@ -39,6 +39,13 @@ BUILD_ENVIRONMENT="${CUP_BUILD_ENVIRONMENT:-manual}"
 SOURCE_POLICY="source-release"
 PREFIX="$CUP_STAGE_DIR/$(package_base_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
 SOURCE_URL="$(source_url_gdb "$VERSION")"
+
+validate_platforms() {
+    case "$HOST_PLATFORM:$TARGET_PLATFORM" in
+        linux-x64:linux-x64|linux-arm64:linux-arm64|windows-x64:windows-x64) ;;
+        *) die "unsupported GDB build combination: $HOST_PLATFORM -> $TARGET_PLATFORM" ;;
+    esac
+}
 
 python_command() {
     if command -v python3 >/dev/null 2>&1; then
@@ -115,6 +122,7 @@ build_gdb() {
     local build_dir="$CUP_BUILD_DIR/gdb-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
     local python_cmd
     local feature_args=()
+    local python_args=()
 
     if is_cross_build "$HOST_PLATFORM" "$TARGET_PLATFORM"; then
         die "cross GDB is not supported by this build recipe yet: $HOST_PLATFORM -> $TARGET_PLATFORM"
@@ -123,6 +131,7 @@ build_gdb() {
     python_cmd="$(python_command)"
     if ! is_windows_platform "$HOST_PLATFORM"; then
         mapfile -t feature_args < <(gdb_linux_feature_configure_args)
+        python_args+=(--with-python-libdir="$PREFIX/lib")
     fi
 
     log "building GDB $VERSION for $HOST_PLATFORM"
@@ -136,6 +145,7 @@ build_gdb() {
             --prefix="$PREFIX" \
             --disable-werror \
             --with-python="$python_cmd" \
+            "${python_args[@]}" \
             --enable-tui \
             --with-curses \
             --with-expat \
@@ -152,6 +162,8 @@ build_gdb() {
         copy_windows_python_runtime
         copy_windows_runtime_dlls "$PREFIX/bin"
         verify_windows_runtime_dlls "$PREFIX/bin"
+    else
+        copy_posix_python_runtime "$python_cmd"
     fi
 
     validate_gdb_required_features
@@ -188,7 +200,6 @@ write_gdb_info() {
         "package.component=$COMPONENT"
         "package.tool=$TOOL"
         "package.version=$PACKAGE_VERSION"
-        "package.revision=$REVISION"
         "package.mode=self-contained"
         "package.formats=$(package_formats_csv "$HOST_PLATFORM")"
         "platform.host=$HOST_PLATFORM"
@@ -218,8 +229,8 @@ write_gdb_info() {
         "config.intel_pt=$intel_pt"
         "$(info_required_entry entry.gdb "$PREFIX" gdb)"
         "$(info_entry_if_present entry.gdbserver "$PREFIX" gdbserver)"
-        "contents.self_contained=true"
         "contents.uses_python=$has_python"
+        "contents.python_runtime=packaged"
         "contents.uses_readline=true"
         "contents.uses_expat=true"
         "contents.uses_zlib=true"
@@ -246,6 +257,7 @@ write_gdb_info() {
 
 
 main() {
+    validate_platforms
     make_dirs
     need_common_tools
     rm -rf "$PREFIX"

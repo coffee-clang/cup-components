@@ -8,16 +8,16 @@ source "$REPO_ROOT/scripts/package/package-common.sh"
 usage() {
     cat <<USAGE
 Usage:
-  $0 <version|stable|latest> <host_platform> <revision>
+  $0 <version|stable> <host_platform>
 
 Examples:
-  $0 stable linux-x64 1
-  $0 stable linux-arm64 1
-  $0 3.27.0 linux-arm64 1
+  $0 stable linux-x64
+  $0 stable linux-arm64
+  $0 3.27.0 linux-arm64
 USAGE
 }
 
-if [ "$#" -ne 3 ]; then
+if [ "$#" -ne 2 ]; then
     usage >&2
     exit 2
 fi
@@ -25,7 +25,7 @@ fi
 REQUESTED_VERSION="$1"
 HOST_PLATFORM="$2"
 TARGET_PLATFORM="$HOST_PLATFORM"
-REVISION="$3"
+REVISION=""
 
 TOOL="valgrind"
 COMPONENT="analyzer"
@@ -48,12 +48,8 @@ need_valgrind_tools() {
     need gcc
     need perl
     need zip
-    need mpicc
 }
 
-valgrind_mpicc_command() {
-    command -v mpicc 2>/dev/null || printf '%s\n' mpicc
-}
 
 validate_platforms() {
     case "$HOST_PLATFORM" in
@@ -81,35 +77,6 @@ find_valgrind_runtime_dir() {
     fi
 
     die "could not find installed Valgrind runtime directory under $PREFIX"
-}
-
-find_valgrind_mpi_library() {
-    find "$PREFIX" \
-        \( -path "$PREFIX/libexec/valgrind/libmpiwrap-*" -o -path "$PREFIX/lib/valgrind/libmpiwrap-*" \) \
-        -type f -print -quit
-}
-
-valgrind_has_mpi_support() {
-    [ -n "$(find_valgrind_mpi_library)" ]
-}
-
-valgrind_mpi_metadata_value() {
-    if valgrind_has_mpi_support; then
-        printf '%s\n' true
-    else
-        printf '%s\n' false
-    fi
-}
-
-valgrind_mpi_library_metadata_value() {
-    local mpi_library
-    mpi_library="$(find_valgrind_mpi_library)"
-
-    if [ -n "$mpi_library" ]; then
-        printf '%s\n' "${mpi_library#$PREFIX/}"
-    else
-        printf '%s\n' ""
-    fi
 }
 
 make_valgrind_relocatable() {
@@ -173,23 +140,15 @@ WRAPPER
 }
 
 
-validate_valgrind_required_features() {
-    if ! valgrind_has_mpi_support; then
-        die "required Valgrind MPI wrapper was not installed"
-    fi
-}
-
 build_valgrind() {
     local source_dir="$1"
     local build_dir="$CUP_BUILD_DIR/valgrind-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
-    local mpicc
-
-    mpicc="$(valgrind_mpicc_command)"
 
     local configure_args=(
         --prefix="$PREFIX"
         --enable-only64bit
-        --with-mpicc="$mpicc"
+        --without-mpicc
+        --without-gdb-scripts-dir
     )
 
     log "building Valgrind $VERSION for $HOST_PLATFORM -> $TARGET_PLATFORM"
@@ -205,27 +164,34 @@ build_valgrind() {
     )
 
     make_valgrind_relocatable
-    validate_valgrind_required_features
+    make_valgrind_pkgconfig_relocatable
+}
+
+make_valgrind_pkgconfig_relocatable() {
+    local pc_file="$PREFIX/lib/pkgconfig/valgrind.pc"
+
+    [ -f "$pc_file" ] || return 0
+
+    awk '
+        /^prefix=/ { print "prefix=${pcfiledir}/../.."; next }
+        { print }
+    ' "$pc_file" > "$pc_file.tmp"
+    mv "$pc_file.tmp" "$pc_file"
 }
 
 write_valgrind_info() {
     local runtime_dir
-    local mpi_library
-    local has_mpi
     local has_valgrind
-    local has_relocatable
+    local has_vgdb
 
     runtime_dir="$(find_valgrind_runtime_dir)"
-    mpi_library="$(valgrind_mpi_library_metadata_value)"
-    has_mpi="$(valgrind_mpi_metadata_value)"
     has_valgrind="$(metadata_bool_for_executable "$PREFIX" valgrind)"
-    has_relocatable="$(metadata_bool_for_executable "$PREFIX" valgrind)"
+    has_vgdb="$(metadata_bool_for_executable "$PREFIX" vgdb)"
 
     local info=(
         "package.component=$COMPONENT"
         "package.tool=$TOOL"
         "package.version=$PACKAGE_VERSION"
-        "package.revision=$REVISION"
         "package.mode=self-contained"
         "package.formats=$(package_formats_csv "$HOST_PLATFORM")"
         "platform.host=$HOST_PLATFORM"
@@ -240,18 +206,16 @@ write_valgrind_info() {
         "source.primary.name=valgrind"
         "source.primary.version=$VERSION"
         "source.primary.url=$SOURCE_URL"
-        "config.configure=--enable-only64bit"
+        "config.configure=--enable-only64bit;--without-mpicc;--without-gdb-scripts-dir"
         "config.only64bit=true"
-        "config.mpi=true"
-        "config.mpicc=$(valgrind_mpicc_command)"
+        "config.mpi=false"
         "$(info_required_entry entry.valgrind "$PREFIX" valgrind)"
-        "contents.self_contained=true"
         "contents.relocatable_wrapper=true"
         "contents.runtime_dir=${runtime_dir#$PREFIX/}"
         "contents.tools=memcheck,cachegrind,callgrind,massif,helgrind,drd,dhat,lackey"
         "contents.experimental_tools=exp-bbv"
-        "contents.internal_tools=none"
-        "contents.mpi=$has_mpi"
+        "contents.mpi=false"
+        "contents.vgdb=$has_vgdb"
         "features.memcheck=$has_valgrind"
         "features.cachegrind=$(metadata_bool_for_files "$PREFIX" 'cachegrind-*' 'vgpreload_*cachegrind*')"
         "features.callgrind=$(metadata_bool_for_files "$PREFIX" 'callgrind-*' 'vgpreload_*callgrind*')"
@@ -261,14 +225,10 @@ write_valgrind_info() {
         "features.dhat=$(metadata_bool_for_files "$PREFIX" 'dhat-*' 'vgpreload_*dhat*')"
         "features.lackey=$(metadata_bool_for_files "$PREFIX" 'lackey-*')"
         "features.exp_bbv=$(metadata_bool_for_files "$PREFIX" 'exp-bbv-*')"
-        "features.mpiwrap=$has_mpi"
-        "features.gdbserver=$has_valgrind"
-        "features.relocatable=$has_relocatable"
+        "features.mpiwrap=false"
+        "features.gdbserver=$has_vgdb"
+        "features.gdb_python_frontend=false"
     )
-
-    if [ -n "$mpi_library" ]; then
-        info+=("contents.mpi_library=$mpi_library")
-    fi
 
     write_info_file "$PREFIX" "${info[@]}"
 }

@@ -27,6 +27,7 @@ mkdir -p dist/package-test
 tar -xJf "dist/$package_base.tar.xz" -C dist/package-test
 
 root="dist/package-test/$package_base"
+host_path="$PATH"
 tmpdir="$(mktemp -d /tmp/cup-gcc-test.XXXXXX)"
 trap 'rm -rf "$tmpdir"' EXIT
 
@@ -185,8 +186,11 @@ LTO_EOF
     "$root/bin/gcc" -flto "$tmpdir/lto-test.c" -o "$tmpdir/lto-test"
     "$tmpdir/lto-test"
 
-    if log_optional_feature "OpenMP" "features.openmp"; then
-        cat > "$tmpdir/openmp-test.c" <<'OMP_EOF'
+    if ! feature_enabled "features.openmp"; then
+        echo "required GCC OpenMP capability is not declared" >&2
+        exit 1
+    fi
+    cat > "$tmpdir/openmp-test.c" <<'OMP_EOF'
 #include <omp.h>
 #include <stdio.h>
 
@@ -198,12 +202,14 @@ int main(void) {
     return n > 0 ? 0 : 1;
 }
 OMP_EOF
-        "$root/bin/gcc" -fopenmp "$tmpdir/openmp-test.c" -o "$tmpdir/openmp-test"
-        "$tmpdir/openmp-test" | grep -F "openmp"
-    fi
+    "$root/bin/gcc" -fopenmp "$tmpdir/openmp-test.c" -o "$tmpdir/openmp-test"
+    "$tmpdir/openmp-test" | grep -F "openmp"
 
-    if log_optional_feature "sanitizers" "features.sanitizers"; then
-        cat > "$tmpdir/sanitizer-test.c" <<'SAN_EOF'
+    if ! feature_enabled "features.sanitizers"; then
+        echo "required native Linux GCC sanitizer capability is not declared" >&2
+        exit 1
+    fi
+    cat > "$tmpdir/sanitizer-test.c" <<'SAN_EOF'
 #include <stdio.h>
 
 int main(void) {
@@ -212,9 +218,8 @@ int main(void) {
     return 0;
 }
 SAN_EOF
-        "$root/bin/gcc" -fsanitize=undefined "$tmpdir/sanitizer-test.c" -o "$tmpdir/sanitizer-test"
-        "$tmpdir/sanitizer-test" | grep -F "sanitizer 1"
-    fi
+    "$root/bin/gcc" -fsanitize=undefined "$tmpdir/sanitizer-test.c" -o "$tmpdir/sanitizer-test"
+    "$tmpdir/sanitizer-test" | grep -F "sanitizer 1"
 elif [ "$TARGET_PLATFORM" = "windows-x64" ]; then
     target_prefix="x86_64-w64-mingw32"
 
@@ -278,8 +283,11 @@ LTO_EOF
     "$root/bin/$target_prefix-gcc" -flto "$tmpdir/windows-lto-test.c" -o "$tmpdir/windows-lto-test.exe"
     require_pe_file "$tmpdir/windows-lto-test.exe"
 
-    if log_optional_feature "OpenMP" "features.openmp"; then
-        cat > "$tmpdir/windows-openmp-test.c" <<'OMP_EOF'
+    if ! feature_enabled "features.openmp"; then
+        echo "required GCC OpenMP capability is not declared for the Windows target" >&2
+        exit 1
+    fi
+    cat > "$tmpdir/windows-openmp-test.c" <<'OMP_EOF'
 #include <omp.h>
 
 int main(void) {
@@ -289,9 +297,8 @@ int main(void) {
     return n > 0 ? 0 : 1;
 }
 OMP_EOF
-        "$root/bin/$target_prefix-gcc" -fopenmp "$tmpdir/windows-openmp-test.c" -o "$tmpdir/windows-openmp-test.exe"
-        require_pe_file "$tmpdir/windows-openmp-test.exe"
-    fi
+    "$root/bin/$target_prefix-gcc" -fopenmp "$tmpdir/windows-openmp-test.c" -o "$tmpdir/windows-openmp-test.exe"
+    require_pe_file "$tmpdir/windows-openmp-test.exe"
 
     if log_optional_feature "sanitizers" "features.sanitizers"; then
         cat > "$tmpdir/windows-sanitizer-test.c" <<'SAN_EOF'
@@ -306,4 +313,17 @@ SAN_EOF
 else
     echo "unsupported target platform: $TARGET_PLATFORM" >&2
     exit 2
+fi
+
+# Re-run a real compile after copying the package to an unrelated path.
+reloc_root="$tmpdir/relocated-gcc"
+cp -RPp "$root" "$reloc_root"
+export PATH="$reloc_root/bin:$host_path"
+if [ "$HOST_PLATFORM" = "$TARGET_PLATFORM" ] && [ "${HOST_PLATFORM#linux-}" != "$HOST_PLATFORM" ]; then
+    "$reloc_root/bin/gcc" "$tmpdir/c-test.c" -o "$tmpdir/c-test-relocated"
+    "$tmpdir/c-test-relocated" | grep -F "hello gcc c"
+elif [ "$TARGET_PLATFORM" = "windows-x64" ]; then
+    target_prefix="x86_64-w64-mingw32"
+    "$reloc_root/bin/$target_prefix-gcc" "$tmpdir/windows-c-test.c" -o "$tmpdir/windows-c-test-relocated.exe"
+    require_pe_file "$tmpdir/windows-c-test-relocated.exe"
 fi

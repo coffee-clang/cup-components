@@ -276,9 +276,10 @@ Invoke-NativeCapture -FilePath "$root\bin\gcc.exe" -ArgumentList @(
 Assert-FileExists $ltoExe
 Invoke-Native -FilePath $ltoExe
 
-if (Test-FeatureEnabled -Root $root -Key 'features.openmp') {
-    Write-Host 'optional feature enabled: OpenMP'
-    @'
+if (-not (Test-FeatureEnabled -Root $root -Key 'features.openmp')) {
+    throw 'required GCC OpenMP capability is not declared'
+}
+@'
 #include <omp.h>
 #include <stdio.h>
 
@@ -290,19 +291,16 @@ int main(void) {
     return n > 0 ? 0 : 1;
 }
 '@ | Set-Content $openmpSource
-    Invoke-NativeCapture -FilePath "$root\bin\gcc.exe" -ArgumentList @(
-        '-static',
-        '-fopenmp',
-        $openmpSource,
-        '-o',
-        $openmpExe
-    )
-    Assert-FileExists $openmpExe
-    $output = Invoke-NativeCapture -FilePath $openmpExe
-    Assert-OutputContains -Output $output -Pattern 'openmp'
-} else {
-    Write-Host 'optional feature not enabled: OpenMP'
-}
+Invoke-NativeCapture -FilePath "$root\bin\gcc.exe" -ArgumentList @(
+    '-static',
+    '-fopenmp',
+    $openmpSource,
+    '-o',
+    $openmpExe
+)
+Assert-FileExists $openmpExe
+$output = Invoke-NativeCapture -FilePath $openmpExe
+Assert-OutputContains -Output $output -Pattern 'openmp'
 
 if (Test-FeatureEnabled -Root $root -Key 'features.sanitizers') {
     Write-Host 'optional feature enabled: sanitizers'
@@ -322,3 +320,17 @@ int main(void) {
 } else {
     Write-Host 'optional feature not enabled: sanitizers'
 }
+
+$relocationParent = Join-Path $testDir 'relocated'
+Remove-Item -Recurse -Force $relocationParent -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force $relocationParent | Out-Null
+Copy-Item -Recurse -Force $root $relocationParent
+$relocatedRoot = Join-Path $relocationParent $packageBase
+$env:Path = "$relocatedRoot\bin;$env:SystemRoot\System32;$env:SystemRoot"
+$relocatedExe = To-ForwardSlashPath (Join-Path $testDir 'relocated-gcc-c-test.exe')
+Invoke-NativeCapture -FilePath "$relocatedRoot\bin\gcc.exe" -ArgumentList @(
+    '-static', $cSource, '-o', $relocatedExe
+)
+Assert-FileExists $relocatedExe
+$output = Invoke-NativeCapture -FilePath $relocatedExe
+Assert-OutputContains -Output $output -Pattern 'hello gcc windows c'

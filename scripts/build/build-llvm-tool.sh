@@ -8,19 +8,19 @@ source "$REPO_ROOT/scripts/package/package-common.sh"
 usage() {
     cat <<USAGE
 Usage:
-  $0 <clang|lld|lldb|clangd|clang-format|clang-tidy> <version|stable|latest> <host_platform> <target_platform> <revision>
+  $0 <clang|lld|lldb|clangd|clang-format|clang-tidy> <version|stable> <host_platform> <target_platform>
 
 Examples:
-  $0 clang stable linux-x64 linux-x64 1
-  $0 lld stable windows-x64 windows-x64 1
-  $0 lldb stable windows-x64 windows-x64 1
-  $0 clangd stable linux-x64 linux-x64 1
-  $0 clang-format stable linux-x64 linux-x64 1
-  $0 clang-tidy stable windows-x64 windows-x64 1
+  $0 clang stable linux-x64 linux-x64
+  $0 lld stable windows-x64 windows-x64
+  $0 lldb stable windows-x64 windows-x64
+  $0 clangd stable linux-x64 linux-x64
+  $0 clang-format stable linux-x64 linux-x64
+  $0 clang-tidy stable windows-x64 windows-x64
 USAGE
 }
 
-if [ "$#" -ne 5 ]; then
+if [ "$#" -ne 4 ]; then
     usage >&2
     exit 2
 fi
@@ -29,7 +29,7 @@ TOOL="$1"
 REQUESTED_VERSION="$2"
 HOST_PLATFORM="$3"
 TARGET_PLATFORM="$4"
-REVISION="$5"
+REVISION=""
 
 VERSION="$(resolve_version llvm "$REQUESTED_VERSION")"
 PACKAGE_VERSION="$(package_version_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
@@ -151,6 +151,10 @@ macos_sdk_path() {
     if is_macos_platform "$HOST_PLATFORM" && command -v xcrun >/dev/null 2>&1; then
         xcrun --sdk macosx --show-sdk-path
     fi
+}
+
+macos_deployment_target() {
+    printf '%s\n' "${CUP_MACOS_DEPLOYMENT_TARGET:-15.0}"
 }
 
 cmake_native_path() {
@@ -355,7 +359,7 @@ copy_msys2_package_files_to_clang_sysroot() {
         dest_dir="$(dirname "$dest_path")"
 
         mkdir -p "$dest_dir"
-        cp -a "$path" "$dest_path"
+        cp -RPp "$path" "$dest_path"
         copied=true
     done < <(pacman -Qlq "$package")
 
@@ -404,15 +408,15 @@ copy_windows_clang_mingw_sysroot_from_layout() {
 
     if [ -d "$source_sysroot/include" ] && [ -d "$source_sysroot/lib" ]; then
         log "copying MinGW target sysroot for Clang from $source_sysroot"
-        cp -a "$source_sysroot/include" "$canonical_target_dir/"
-        cp -a "$source_sysroot/lib" "$canonical_target_dir/"
+        cp -RPp "$source_sysroot/include" "$canonical_target_dir/"
+        cp -RPp "$source_sysroot/lib" "$canonical_target_dir/"
         return 0
     fi
 
     if [ -f "$MINGW_PREFIX/include/stdlib.h" ] && [ -d "$MINGW_PREFIX/lib" ]; then
         log "copying MinGW flat sysroot for Clang from $MINGW_PREFIX"
-        cp -a "$MINGW_PREFIX/include" "$canonical_target_dir/"
-        cp -a "$MINGW_PREFIX/lib" "$canonical_target_dir/"
+        cp -RPp "$MINGW_PREFIX/include" "$canonical_target_dir/"
+        cp -RPp "$MINGW_PREFIX/lib" "$canonical_target_dir/"
         return 0
     fi
 
@@ -427,7 +431,7 @@ copy_windows_clang_runtime_dll_if_present() {
     [ -f "$source_path" ] || return 0
     mkdir -p "$PREFIX/bin"
     if [ ! -f "$dest_path" ]; then
-        cp -a "$source_path" "$dest_path"
+        cp -RPp "$source_path" "$dest_path"
         log "  copied runtime DLL: $dll_name"
     fi
 }
@@ -547,6 +551,11 @@ llvm_cxx_runtime_files_present() {
 
 PREFIX="$CUP_STAGE_DIR/$(package_base_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
 
+validate_platforms() {
+    [ "$HOST_PLATFORM" = "$TARGET_PLATFORM" ] ||
+        die "cross LLVM tool builds are not supported by this recipe yet: $HOST_PLATFORM -> $TARGET_PLATFORM"
+}
+
 need_common_tools() {
     need curl
     need tar
@@ -580,7 +589,7 @@ prune_bin_except() {
     [ -d "$bin_dir" ] || return 0
 
     for entry in "$bin_dir"/*; do
-        [ -e "$entry" ] || continue
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
 
         base="$(basename "$entry")"
 
@@ -593,13 +602,6 @@ prune_bin_except() {
         fi
 
         if is_kept_bin_tool "$base" "${keep_tools[@]}"; then
-            if [ -L "$entry" ]; then
-                local tmp
-                tmp="$entry.tmp"
-                cp -f -L "$entry" "$tmp"
-                mv -f "$tmp" "$entry"
-                chmod +x "$entry"
-            fi
             continue
         fi
 
@@ -642,11 +644,16 @@ copy_clang_sanitizer_runtime_dlls() {
 prune_llvm_package_bins() {
     case "$TOOL" in
         clang)
-            prune_bin_except \
-                clang clang++ clang-cpp clang-cl clang-scan-deps \
-                lld ld.lld lld-link wasm-ld \
-                llvm-ar llvm-ranlib llvm-nm llvm-objcopy llvm-objdump llvm-readelf \
+            local -a clang_bins=(
+                clang clang++ clang-cpp clang-cl clang-scan-deps
+                lld ld.lld lld-link wasm-ld
+                llvm-ar llvm-ranlib llvm-nm llvm-objcopy llvm-objdump llvm-readelf
                 llvm-strip llvm-size llvm-strings llvm-lib llvm-dlltool llvm-rc
+            )
+            if is_macos_platform "$HOST_PLATFORM"; then
+                clang_bins+=(ld64.lld)
+            fi
+            prune_bin_except "${clang_bins[@]}"
             ;;
         lld)
             prune_bin_except \
@@ -672,13 +679,154 @@ prune_llvm_package_bins() {
 }
 
 
+llvm_python_helper_names() {
+    case "$TOOL" in
+        clang-format) printf '%s\n' git-clang-format ;;
+        clang-tidy) printf '%s\n' run-clang-tidy clang-tidy-diff ;;
+    esac
+}
+
+write_posix_python_helper_wrapper() {
+    local name="$1"
+    local wrapper="$PREFIX/bin/$name"
+
+    cat > "$wrapper" <<EOF_WRAPPER
+#!/usr/bin/env sh
+set -eu
+case "\$0" in
+    */*) self="\$0" ;;
+    *) self="\$(command -v -- "\$0")" ;;
+esac
+bin_dir="\$(CDPATH= cd -- "\${self%/*}" && pwd)"
+prefix="\$(CDPATH= cd -- "\$bin_dir/.." && pwd)"
+PATH="\$bin_dir\${PATH:+:\$PATH}"
+export PATH
+exec "\$prefix/libexec/python3" "\$prefix/libexec/llvm-python-scripts/$name.py" "\$@"
+EOF_WRAPPER
+    chmod 0755 "$wrapper"
+}
+
+write_windows_python_helper_wrapper() {
+    local name="$1"
+    local wrapper="$PREFIX/bin/$name.bat"
+
+    cat > "$wrapper" <<EOF_WRAPPER
+@echo off
+set "PATH=%~dp0;%PATH%"
+"%~dp0cup-python3.exe" "%~dp0..\\libexec\\llvm-python-scripts\\$name.py" %*
+EOF_WRAPPER
+}
+
+prepare_llvm_python_helpers() {
+    local name
+    local source
+    local destination
+    local python_cmd=""
+    local found=false
+
+    case "$TOOL" in
+        clang-format|clang-tidy) ;;
+        *) return 0 ;;
+    esac
+
+    for name in $(llvm_python_helper_names); do
+        source="$PREFIX/bin/$name"
+        [ -f "$source" ] || continue
+        if ! head -n 1 "$source" | grep -Eq '^#!.*python'; then
+            die "LLVM helper is not the expected Python script: $source"
+        fi
+        found=true
+    done
+
+    [ "$found" = true ] || return 0
+    mkdir -p "$PREFIX/libexec/llvm-python-scripts"
+
+    if is_windows_platform "$HOST_PLATFORM"; then
+        copy_windows_python_runtime "${LLVM_BUILD_DIR:-}" true
+    else
+        python_cmd="$(command -v python3 2>/dev/null || true)"
+        [ -x "$python_cmd" ] || die "python3 is required to package LLVM Python helper scripts"
+        copy_posix_python_runtime "$python_cmd" true
+    fi
+
+    for name in $(llvm_python_helper_names); do
+        source="$PREFIX/bin/$name"
+        [ -f "$source" ] || continue
+        destination="$PREFIX/libexec/llvm-python-scripts/$name.py"
+        mv "$source" "$destination"
+        chmod 0644 "$destination"
+        if is_windows_platform "$HOST_PLATFORM"; then
+            rm -f "$PREFIX/bin/$name.cmd" "$PREFIX/bin/$name.bat"
+            write_windows_python_helper_wrapper "$name"
+        else
+            write_posix_python_helper_wrapper "$name"
+        fi
+    done
+}
+
+prune_llvm_development_payload() {
+    local lib_dir
+    local archive
+    local base
+
+    # The monorepo-wide install target also installs the C/C++ SDK used to
+    # develop against LLVM/Clang/LLD/LLDB. Those APIs are not part of a CUP
+    # command-line tool package. Keep compiler/runtime headers (libc++, unwind,
+    # sanitizer/profile/fuzzer), lib/clang resources and runtime shared libraries;
+    # known embedding/development shared APIs are removed below.
+    rm -rf \
+        "$PREFIX/include/llvm" \
+        "$PREFIX/include/llvm-c" \
+        "$PREFIX/include/clang" \
+        "$PREFIX/include/clang-c" \
+        "$PREFIX/include/lld" \
+        "$PREFIX/include/lldb" \
+        "$PREFIX/include/mach-o" \
+        "$PREFIX/lib/cmake" \
+        "$PREFIX/lib64/cmake"
+
+    for lib_dir in "$PREFIX/lib" "$PREFIX/lib64"; do
+        [ -d "$lib_dir" ] || continue
+
+        # Shared LLVM/Clang embedding APIs are development payload too. The
+        # command-line tools are built without runtime dependencies on these
+        # libraries; compiler runtimes under lib/clang are not matched here.
+        rm -f \
+            "$lib_dir"/libLTO.so* "$lib_dir"/libLTO.dylib* \
+            "$lib_dir"/libRemarks.so* "$lib_dir"/libRemarks.dylib* \
+            "$lib_dir"/libclang.so* "$lib_dir"/libclang.dylib* \
+            "$lib_dir"/libclang-cpp.so* "$lib_dir"/libclang-cpp.dylib*
+        while IFS= read -r -d '' archive; do
+            base="$(basename "$archive")"
+            case "$base" in
+                libc++.a|libc++abi.a|libc++experimental.a|libunwind.a|\
+                libc++.lib|libc++abi.lib|libc++experimental.lib|libunwind.lib|\
+                libc++.dll.a|libc++abi.dll.a|libunwind.dll.a|\
+                libclang_rt.*)
+                    continue
+                    ;;
+            esac
+            rm -f "$archive"
+        done < <(find "$lib_dir" ! -path "$lib_dir" -prune -type f \
+            \( -name '*.a' -o -name '*.lib' -o -name '*.dll.a' \) -print0)
+    done
+}
+
+
 clang_resource_dir() {
-    local dir
+    local candidate
+    local resource_dir=""
 
     if [ -d "$PREFIX/lib/clang" ]; then
-        dir="$(find "$PREFIX/lib/clang" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1 || true)"
-        if [ -n "$dir" ]; then
-            printf '%s\n' "$dir"
+        for candidate in "$PREFIX/lib/clang"/*; do
+            [ -d "$candidate" ] || continue
+            if [ -n "$resource_dir" ]; then
+                die "multiple Clang resource directories were installed under $PREFIX/lib/clang"
+            fi
+            resource_dir="$candidate"
+        done
+        if [ -n "$resource_dir" ]; then
+            printf '%s\n' "$resource_dir"
             return 0
         fi
     fi
@@ -738,7 +886,7 @@ copy_clang_runtimes_to_resource_dir() {
     do
         if [ -d "$source_dir_candidate" ]; then
             log "copying clang runtimes from $source_dir_candidate to $destination"
-            cp -a "$source_dir_candidate"/. "$destination"/
+            cp -RPp "$source_dir_candidate"/. "$destination"/
             copied=true
         fi
     done
@@ -765,7 +913,7 @@ copy_clang_resource_runtime_aliases() {
         [ -n "$alias_dir" ] || continue
         [ "$alias_dir" != "$canonical_dir" ] || continue
         mkdir -p "$alias_dir"
-        cp -a "$canonical_dir"/. "$alias_dir"/
+        cp -RPp "$canonical_dir"/. "$alias_dir"/
     done < <(clang_resource_runtime_alias_dirs "$resource_dir" | sort -u)
 }
 
@@ -897,6 +1045,9 @@ llvm_runtime_common_args() {
         done < <(llvm_windows_runtime_cmake_args)
     elif is_macos_platform "$HOST_PLATFORM"; then
         sdk_path="$(macos_sdk_path)"
+        args+=(
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$(macos_deployment_target)"
+        )
         if [ -n "$sdk_path" ]; then
             args+=(
                 -DCMAKE_OSX_SYSROOT="$sdk_path"
@@ -1279,6 +1430,8 @@ build_llvm_tool() {
     local cmake_extra_args=()
     local cmake_common_args=()
     local sdk_path
+    local lldb_python=""
+    local lldb_python_version=""
 
     if is_cross_build "$HOST_PLATFORM" "$TARGET_PLATFORM"; then
         die "cross LLVM tool builds are not supported by this recipe yet: $HOST_PLATFORM -> $TARGET_PLATFORM"
@@ -1289,7 +1442,6 @@ build_llvm_tool() {
             -DLLDB_INCLUDE_TESTS=OFF
             -DLLDB_ENABLE_PYTHON=ON
             -DLLDB_ENABLE_SWIG=ON
-            -DLLDB_EMBED_PYTHON_HOME=OFF
             -DLLDB_ENABLE_LIBXML2=ON
             -DLLDB_ENABLE_LZMA=ON
         )
@@ -1308,9 +1460,19 @@ build_llvm_tool() {
                 -DPython3_FIND_STRATEGY=LOCATION
             )
         else
+            lldb_python="$(command -v python3 2>/dev/null || true)"
+            [ -x "$lldb_python" ] || die "python3 is required to build LLDB with Python support"
+            lldb_python_version="$(python_runtime_version "$lldb_python")"
+            [ -n "$lldb_python_version" ] || die "could not determine Python major/minor version for LLDB"
+
             cmake_extra_args+=(
                 -DLLDB_ENABLE_LIBEDIT=ON
                 -DLLDB_ENABLE_CURSES=ON
+                -DLLDB_EMBED_PYTHON_HOME=ON
+                -DLLDB_PYTHON_HOME=..
+                "-DLLDB_PYTHON_RELATIVE_PATH=lib/python$lldb_python_version/site-packages"
+                -DLLDB_PYTHON_EXE_RELATIVE_PATH=libexec/python3
+                "-DPython3_EXECUTABLE=$lldb_python"
             )
 
             if is_macos_platform "$HOST_PLATFORM"; then
@@ -1341,6 +1503,9 @@ build_llvm_tool() {
 
     if is_macos_platform "$HOST_PLATFORM"; then
         sdk_path="$(macos_sdk_path)"
+        cmake_extra_args+=(
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$(macos_deployment_target)"
+        )
         if [ -n "$sdk_path" ]; then
             cmake_extra_args+=(
                 -DCMAKE_OSX_SYSROOT="$sdk_path"
@@ -1371,11 +1536,17 @@ build_llvm_tool() {
     build_llvm_runtimes "$source_dir" "$build_dir"
 
     prune_llvm_package_bins
+    prepare_llvm_python_helpers
+    prune_llvm_development_payload
     copy_windows_clang_mingw_sysroot
     write_windows_clang_driver_config
 
-    if is_windows_platform "$HOST_PLATFORM" && [ "$TOOL" = "lldb" ]; then
-        copy_windows_python_runtime "$build_dir"
+    if [ "$TOOL" = "lldb" ]; then
+        if is_windows_platform "$HOST_PLATFORM"; then
+            copy_windows_python_runtime "$build_dir"
+        elif is_linux_platform "$HOST_PLATFORM" || is_macos_platform "$HOST_PLATFORM"; then
+            copy_posix_python_runtime "$lldb_python" true
+        fi
     fi
 
     copy_clang_sanitizer_runtime_dlls
@@ -1440,6 +1611,7 @@ write_llvm_info() {
     local has_lld_link
     local has_wasm_ld
     local has_ld64_lld
+    local has_native_lld
     local has_lldb
     local has_lldb_server
     local has_lldb_dap
@@ -1477,6 +1649,10 @@ write_llvm_info() {
     has_lld_link="$(metadata_bool_for_executable "$PREFIX" lld-link)"
     has_wasm_ld="$(metadata_bool_for_executable "$PREFIX" wasm-ld)"
     has_ld64_lld="$(metadata_bool_for_executable "$PREFIX" ld64.lld)"
+    has_native_lld="$has_lld"
+    if is_macos_platform "$HOST_PLATFORM"; then
+        has_native_lld="$has_ld64_lld"
+    fi
     has_lldb="$(metadata_bool_for_executable "$PREFIX" lldb)"
     has_lldb_server="$(metadata_bool_for_executable "$PREFIX" lldb-server)"
     has_lldb_dap="$(metadata_bool_for_executable "$PREFIX" lldb-dap)"
@@ -1513,12 +1689,14 @@ write_llvm_info() {
     has_profile_runtime="$(metadata_bool_for_files "$PREFIX" 'clang_rt.profile*' 'libclang_rt.profile*')"
     has_cxx_runtime="$(llvm_cxx_runtime_files_present)"
     has_llvm_runtimes="$(llvm_runtime_files_present)"
-    if is_windows_platform "$HOST_PLATFORM" && [ "$TOOL" = "clang" ] &&         [ -d "$PREFIX/$HOST_TRIPLE/include" ] && [ -d "$PREFIX/$HOST_TRIPLE/lib" ]; then
+    if is_windows_platform "$HOST_PLATFORM" && [ "$TOOL" = "clang" ] && \
+        [ -d "$PREFIX/$HOST_TRIPLE/include" ] && [ -d "$PREFIX/$HOST_TRIPLE/lib" ]; then
         has_mingw_sysroot=true
     else
         has_mingw_sysroot=false
     fi
-    if is_windows_platform "$HOST_PLATFORM" && [ "$TOOL" = "clang" ] &&         [ -f "$PREFIX/bin/clang.cfg" ] && [ -f "$PREFIX/bin/clang++.cfg" ]; then
+    if is_windows_platform "$HOST_PLATFORM" && [ "$TOOL" = "clang" ] && \
+        [ -f "$PREFIX/bin/clang.cfg" ] && [ -f "$PREFIX/bin/clang++.cfg" ]; then
         has_driver_config=true
     else
         has_driver_config=false
@@ -1528,7 +1706,6 @@ write_llvm_info() {
         "package.component=$COMPONENT"
         "package.tool=$TOOL"
         "package.version=$PACKAGE_VERSION"
-        "package.revision=$REVISION"
         "package.mode=self-contained"
         "package.formats=$(package_formats_csv "$HOST_PLATFORM")"
         "platform.host=$HOST_PLATFORM"
@@ -1547,7 +1724,6 @@ write_llvm_info() {
         "config.llvm_targets=$LLVM_TARGETS"
         "config.zlib=$cmake_zlib"
         "config.zstd=$cmake_zstd"
-        "contents.self_contained=true"
     )
 
     info+=("${CONTENTS_EXTRA[@]}")
@@ -1565,8 +1741,8 @@ write_llvm_info() {
                 "features.c=$has_clang"
                 "features.cpp=$has_clangpp"
                 "features.resource_dir=$has_resource_dir"
-                "features.lld_integration=$has_lld"
-                "features.lto=$has_lld"
+                "features.lld_integration=$has_native_lld"
+                "features.lto=$has_native_lld"
                 "features.llvm_ar=$(metadata_bool_for_executable "$PREFIX" llvm-ar)"
                 "features.llvm_ranlib=$(metadata_bool_for_executable "$PREFIX" llvm-ranlib)"
                 "features.llvm_objdump=$(metadata_bool_for_executable "$PREFIX" llvm-objdump)"
@@ -1602,11 +1778,7 @@ write_llvm_info() {
             )
             ;;
         lldb)
-            if is_windows_platform "$HOST_PLATFORM"; then
-                info+=("contents.python_runtime=packaged")
-            else
-                info+=("contents.python_runtime=system")
-            fi
+            info+=("contents.python_runtime=packaged")
             info+=(
                 "$(info_required_entry entry.lldb "$PREFIX" lldb)"
                 "$(info_entry_if_present entry.lldb_server "$PREFIX" lldb-server)"
@@ -1636,6 +1808,7 @@ write_llvm_info() {
             )
             ;;
         clang-format)
+            [ "$has_git_clang_format" = true ] && info+=("contents.python_runtime=packaged")
             info+=(
                 "$(info_required_entry entry.clang_format "$PREFIX" clang-format)"
                 "$(info_entry_if_present entry.git_clang_format "$PREFIX" git-clang-format)"
@@ -1646,6 +1819,9 @@ write_llvm_info() {
             )
             ;;
         clang-tidy)
+            if [ "$has_run_clang_tidy" = true ] || [ "$has_clang_tidy_diff" = true ]; then
+                info+=("contents.python_runtime=packaged")
+            fi
             info+=(
                 "$(info_required_entry entry.clang_tidy "$PREFIX" clang-tidy)"
                 "$(info_entry_if_present entry.clang_apply_replacements "$PREFIX" clang-apply-replacements)"
@@ -1666,6 +1842,7 @@ write_llvm_info() {
 
 
 main() {
+    validate_platforms
     make_dirs
     need_common_tools
     rm -rf "$PREFIX"

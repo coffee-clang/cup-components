@@ -36,7 +36,9 @@ tar -xJf "dist/$package_base.tar.xz" -C dist/package-test
 
 root="dist/package-test/$package_base"
 root="$(cd "$root" && pwd)"
-export PATH="$root/bin:$PATH"
+host_path="$PATH"
+unset PYTHONHOME PYTHONPATH || true
+export PATH="$root/bin:$host_path"
 
 macos_sdk_args() {
     if [ "$(uname -s)" = "Darwin" ]; then
@@ -88,6 +90,50 @@ info_bool() {
     [ "$(info_value "$1")" = "true" ]
 }
 
+assert_no_llvm_development_payload() {
+    local path
+    local lib_dir
+    local archive
+    local base
+
+    for path in \
+        include/llvm include/llvm-c include/clang include/clang-c \
+        include/lld include/lldb include/mach-o lib/cmake lib64/cmake; do
+        if [ -e "$root/$path" ] || [ -L "$root/$path" ]; then
+            echo "LLVM development payload leaked into package: $path" >&2
+            exit 1
+        fi
+    done
+
+    for lib_dir in "$root/lib" "$root/lib64"; do
+        [ -d "$lib_dir" ] || continue
+
+        for path in \
+            "$lib_dir"/libLTO.so* "$lib_dir"/libLTO.dylib* \
+            "$lib_dir"/libRemarks.so* "$lib_dir"/libRemarks.dylib* \
+            "$lib_dir"/libclang.so* "$lib_dir"/libclang.dylib* \
+            "$lib_dir"/libclang-cpp.so* "$lib_dir"/libclang-cpp.dylib*; do
+            if [ -e "$path" ] || [ -L "$path" ]; then
+                echo "LLVM shared development API leaked into package: ${path#"$root/"}" >&2
+                exit 1
+            fi
+        done
+
+        while IFS= read -r -d '' archive; do
+            base="$(basename "$archive")"
+            case "$base" in
+                libc++.a|libc++abi.a|libc++experimental.a|libunwind.a|libclang_rt.*)
+                    continue
+                    ;;
+            esac
+            echo "LLVM static development archive leaked into package: ${archive#"$root/"}" >&2
+            exit 1
+        done < <(find "$lib_dir" ! -path "$lib_dir" -prune -type f -name '*.a' -print0)
+    done
+}
+
+assert_no_llvm_development_payload
+
 case "$LLVM_TOOL" in
     clang)
         require_executable "$root/bin/clang"
@@ -119,7 +165,14 @@ C_EOF
         "$tmp_root/clang-test" | grep -F "hello clang 42"
 
         if [ "$(uname -s)" = "Darwin" ]; then
-            echo "warning: skipping clang -fuse-ld=lld and LTO link tests on macOS"
+            require_executable "$root/bin/ld64.lld"
+            "$root/bin/clang" "${sdk_args[@]}" -fuse-ld="$root/bin/ld64.lld" \
+                "$tmp_root/clang-test.c" -o "$tmp_root/clang-lld-test"
+            "$tmp_root/clang-lld-test" | grep -F "hello clang 42"
+
+            "$root/bin/clang" "${sdk_args[@]}" -flto -fuse-ld="$root/bin/ld64.lld" \
+                "$tmp_root/clang-test.c" -o "$tmp_root/clang-lto-test"
+            "$tmp_root/clang-lto-test" | grep -F "hello clang 42"
         else
             "$root/bin/clang" -fuse-ld=lld "$tmp_root/clang-test.c" -o "$tmp_root/clang-lld-test"
             "$tmp_root/clang-lld-test" | grep -F "hello clang 42"
@@ -141,6 +194,15 @@ CPP_EOF
         mapfile -t sdk_args < <(macos_sdk_args)
         "$root/bin/clang++" "${sdk_args[@]}" "$tmp_root/clang-cpp-test.cpp" -o "$tmp_root/clang-cpp-test"
         "$tmp_root/clang-cpp-test" | grep -F "42"
+
+        if ! info_bool features.cxx_runtime; then
+            echo "required packaged Clang C++ runtime is not declared" >&2
+            exit 1
+        fi
+        if [ "$(uname -s)" != "Darwin" ]; then
+            "$root/bin/clang++" -stdlib=libc++ "$tmp_root/clang-cpp-test.cpp" -o "$tmp_root/clang-libcxx-test"
+            "$tmp_root/clang-libcxx-test" | grep -F "42"
+        fi
 
         if info_bool features.asan || info_bool features.sanitizers; then
             cat > "$tmp_root/asan-test.c" <<'ASAN_C_EOF'
@@ -193,7 +255,9 @@ int main(void) {
 }
 C_EOF
         if [ "$(uname -s)" = "Darwin" ]; then
-            echo "warning: skipping direct lld link test on macOS"
+            require_executable "$root/bin/ld64.lld"
+            cc -fuse-ld="$root/bin/ld64.lld" "$tmp_root/lld-test.c" -o "$tmp_root/lld-test"
+            "$tmp_root/lld-test" | grep -F "hello lld"
         else
             cc -B"$root/bin" -fuse-ld=lld "$tmp_root/lld-test.c" -o "$tmp_root/lld-test"
             "$tmp_root/lld-test" | grep -F "hello lld"
@@ -283,6 +347,12 @@ EOF_JSON
 
         "$root/bin/clang-format" --version
 
+        if info_bool features.git_clang_format; then
+            require_executable "$root/bin/git-clang-format"
+            "$root/bin/git-clang-format" --help > "$tmp_root/git-clang-format-help.txt"
+            grep -F "git clang-format" "$tmp_root/git-clang-format-help.txt"
+        fi
+
         printf "%s\n" "int main( void ){return 0;}" > "$tmp_root/format-test.c"
         "$root/bin/clang-format" "$tmp_root/format-test.c" | tee "$tmp_root/format-output.c"
         grep -F "int main(void)" "$tmp_root/format-output.c"
@@ -340,5 +410,59 @@ C_EOF
     *)
         echo "unsupported LLVM tool: $LLVM_TOOL" >&2
         exit 2
+        ;;
+esac
+
+# Relocation is qualified with a real tool operation, not only file existence.
+reloc_root="$tmp_root/relocated-$LLVM_TOOL"
+cp -RPp "$root" "$reloc_root"
+unset PYTHONHOME PYTHONPATH || true
+export PATH="$reloc_root/bin:$host_path"
+case "$LLVM_TOOL" in
+    clang)
+        mapfile -t sdk_args < <(macos_sdk_args)
+        "$reloc_root/bin/clang" --version
+        if [ "$(uname -s)" = "Darwin" ]; then
+            require_executable "$reloc_root/bin/ld64.lld"
+            "$reloc_root/bin/clang" "${sdk_args[@]}" -flto \
+                -fuse-ld="$reloc_root/bin/ld64.lld" "$tmp_root/clang-test.c" \
+                -o "$tmp_root/clang-relocated-test"
+        else
+            "$reloc_root/bin/clang" -flto -fuse-ld=lld "$tmp_root/clang-test.c" \
+                -o "$tmp_root/clang-relocated-test"
+        fi
+        "$tmp_root/clang-relocated-test" | grep -F "hello clang 42"
+        ;;
+    lld)
+        "$reloc_root/bin/ld.lld" --version
+        if [ "$(uname -s)" = "Darwin" ]; then
+            require_executable "$reloc_root/bin/ld64.lld"
+            cc -fuse-ld="$reloc_root/bin/ld64.lld" "$tmp_root/lld-test.c" -o "$tmp_root/lld-relocated-test"
+            "$tmp_root/lld-relocated-test" | grep -F "hello lld"
+        else
+            cc -B"$reloc_root/bin" -fuse-ld=lld "$tmp_root/lld-test.c" -o "$tmp_root/lld-relocated-test"
+            "$tmp_root/lld-relocated-test" | grep -F "hello lld"
+        fi
+        ;;
+    lldb)
+        "$reloc_root/bin/lldb" --version
+        "$reloc_root/bin/lldb" -b \
+            -o "script import sys; print('python-reloc-ok', sys.version_info[0], sys.version_info[1])" \
+            -o "target create $tmp_root/lldb-test" \
+            -o "image lookup -n cup_lldb_test_add_unique" \
+            -o quit 2>&1 | tee "$tmp_root/lldb-reloc-output.txt"
+        grep -F "python-reloc-ok" "$tmp_root/lldb-reloc-output.txt"
+        grep -F "cup_lldb_test_add_unique" "$tmp_root/lldb-reloc-output.txt"
+        ;;
+    clangd)
+        "$reloc_root/bin/clangd" --check="$project_dir/main.c" 2>&1 | tee "$tmp_root/clangd-reloc-output.txt"
+        assert_output_contains "$tmp_root/clangd-reloc-output.txt" "All checks completed|Testing on source file"
+        ;;
+    clang-format)
+        "$reloc_root/bin/clang-format" "$tmp_root/format-test.c" | tee "$tmp_root/format-reloc-output.c"
+        grep -F "int main(void)" "$tmp_root/format-reloc-output.c"
+        ;;
+    clang-tidy)
+        "$reloc_root/bin/clang-tidy" "--checks=clang-analyzer-*" "$tmp_root/tidy-test.c" -- -std=c11
         ;;
 esac

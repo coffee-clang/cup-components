@@ -29,8 +29,6 @@ DEFAULT_BINUTILS_VERSION="${DEFAULT_BINUTILS_VERSION:-2.46.0}"
 DEFAULT_MINGW_VERSION="${DEFAULT_MINGW_VERSION:-14.0.0}"
 DEFAULT_LLVM_VERSION="${DEFAULT_LLVM_VERSION:-22.1.5}"
 DEFAULT_VALGRIND_VERSION="${DEFAULT_VALGRIND_VERSION:-3.27.0}"
-DEFAULT_DRMEMORY_VERSION="${DEFAULT_DRMEMORY_VERSION:-2.6.0}"
-DEFAULT_LEAKS_VERSION="${DEFAULT_LEAKS_VERSION:-1.0.0}"
 
 log() {
     printf '[cup-build] %s\n' "$*" >&2
@@ -49,26 +47,45 @@ make_dirs() {
     mkdir -p "$CUP_SRC_DIR" "$CUP_BUILD_DIR" "$CUP_STAGE_DIR" "$CUP_OUT_DIR"
 }
 
+numeric_version_is_valid() {
+    [[ "$1" =~ ^[0-9]+([.][0-9]+)*$ ]]
+}
+
+package_revision_is_valid() {
+    [[ "$1" =~ ^[1-9][0-9]*$ ]]
+}
+
+package_revision_is_applicable() {
+    [ "$1" = gcc ]
+}
+
 resolve_version() {
     local tool="$1"
     local requested="$2"
+    local resolved
 
-    if [ "$requested" != "latest" ] && [ "$requested" != "stable" ]; then
+    if [ "$requested" != "stable" ]; then
+        [ "$requested" != "latest" ] ||
+            die "unsupported symbolic version: latest; use stable or an explicit numeric version"
+        numeric_version_is_valid "$requested" ||
+            die "invalid explicit version: $requested; expected a numeric dotted version"
         printf '%s\n' "$requested"
         return 0
     fi
 
     case "$tool" in
-        gcc) printf '%s\n' "$DEFAULT_GCC_VERSION" ;;
-        gdb) printf '%s\n' "$DEFAULT_GDB_VERSION" ;;
-        binutils) printf '%s\n' "$DEFAULT_BINUTILS_VERSION" ;;
-        mingw|mingw-w64) printf '%s\n' "$DEFAULT_MINGW_VERSION" ;;
-        clang|lld|lldb|clangd|clang-format|clang-tidy|llvm) printf '%s\n' "$DEFAULT_LLVM_VERSION" ;;
-        valgrind) printf '%s\n' "$DEFAULT_VALGRIND_VERSION" ;;
-        drmemory) printf '%s\n' "$DEFAULT_DRMEMORY_VERSION" ;;
-        leaks) printf '%s\n' "$DEFAULT_LEAKS_VERSION" ;;
+        gcc) resolved="$DEFAULT_GCC_VERSION" ;;
+        gdb) resolved="$DEFAULT_GDB_VERSION" ;;
+        binutils) resolved="$DEFAULT_BINUTILS_VERSION" ;;
+        mingw|mingw-w64) resolved="$DEFAULT_MINGW_VERSION" ;;
+        clang|lld|lldb|clangd|clang-format|clang-tidy|llvm) resolved="$DEFAULT_LLVM_VERSION" ;;
+        valgrind) resolved="$DEFAULT_VALGRIND_VERSION" ;;
         *) die "cannot resolve default version for tool: $tool" ;;
     esac
+
+    numeric_version_is_valid "$resolved" ||
+        die "invalid configured stable version for $tool: $resolved"
+    printf '%s\n' "$resolved"
 }
 
 platform_triple() {
@@ -115,15 +132,6 @@ platform_thread_model() {
     esac
 }
 
-host_extension() {
-    local host_platform="$1"
-
-    case "$host_platform" in
-        windows-x64) printf '%s\n' ".exe" ;;
-        *) printf '%s\n' "" ;;
-    esac
-}
-
 is_windows_platform() {
     case "$1" in
         windows-x64) return 0 ;;
@@ -145,31 +153,8 @@ is_linux_platform() {
     esac
 }
 
-is_supported_platform() {
-    case "$1" in
-        linux-x64|linux-arm64|windows-x64|macos-x64|macos-arm64) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
 is_cross_build() {
     [ "$1" != "$2" ]
-}
-
-package_uses_revision_in_name() {
-    local tool="$1"
-    local host_platform="$2"
-    local target_platform="$3"
-
-    if [ "$tool" = "gcc" ]; then
-        return 0
-    fi
-
-    if is_cross_build "$host_platform" "$target_platform"; then
-        return 0
-    fi
-
-    return 1
 }
 
 package_version_name() {
@@ -179,11 +164,28 @@ package_version_name() {
     local target_platform="$4"
     local revision="$5"
 
-    if package_uses_revision_in_name "$tool" "$host_platform" "$target_platform"; then
+    : "$host_platform" "$target_platform"
+    numeric_version_is_valid "$version" || die "invalid package version: $version"
+    if package_revision_is_applicable "$tool"; then
+        package_revision_is_valid "$revision" || die "invalid package revision: $revision"
         printf '%s-rev%s\n' "$version" "$revision"
     else
+        [ -z "$revision" ] || die "package revision is not applicable to tool: $tool"
         printf '%s\n' "$version"
     fi
+}
+
+package_component_for_tool() {
+    case "$1" in
+        gcc|clang) printf '%s\n' compiler ;;
+        gdb|lldb) printf '%s\n' debugger ;;
+        lld) printf '%s\n' linker ;;
+        clang-format) printf '%s\n' formatter ;;
+        clang-tidy) printf '%s\n' linter ;;
+        clangd) printf '%s\n' language-server ;;
+        valgrind) printf '%s\n' analyzer ;;
+        *) return 1 ;;
+    esac
 }
 
 package_base_name() {
@@ -231,11 +233,6 @@ source_url_llvm_project() {
 source_url_valgrind() {
     local version="$1"
     printf 'https://sourceware.org/pub/valgrind/valgrind-%s.tar.bz2\n' "$version"
-}
-
-source_url_drmemory_windows() {
-    local version="$1"
-    printf 'https://github.com/DynamoRIO/drmemory/releases/download/release_%s/DrMemory-Windows-%s.zip\n' "$version" "$version"
 }
 
 
@@ -326,8 +323,8 @@ prepare_source_tree() {
     archive="$CUP_SRC_DIR/$(archive_name_from_url "$url" "$fallback_archive")"
     source_dir="$CUP_SRC_DIR/$name-$version"
 
-    fetch "$url" "$archive"
-    extract_archive "$archive" "$source_dir"
+    fetch "$url" "$archive" || return 1
+    extract_archive "$archive" "$source_dir" || return 1
 
     printf '%s\n' "$source_dir"
 }
@@ -464,22 +461,7 @@ package_bin_exact_file_exists() {
     [ -n "$candidate" ] || return 1
     [ -d "$prefix/bin" ] || return 1
 
-    [ -n "$(find "$prefix/bin" -maxdepth 1 -name "$candidate" -print -quit 2>/dev/null)" ]
-}
-
-package_bin_entry_path() {
-    local prefix="$1"
-    local name="$2"
-    local candidate
-
-    while IFS= read -r candidate; do
-        if package_bin_exact_file_exists "$prefix" "$candidate"; then
-            printf 'bin/%s\n' "$candidate"
-            return 0
-        fi
-    done < <(package_bin_candidate_names "$name")
-
-    printf 'bin/%s\n' "$name"
+    [ -e "$prefix/bin/$candidate" ] || [ -L "$prefix/bin/$candidate" ]
 }
 
 package_bin_entry_path_if_present() {
@@ -562,16 +544,6 @@ cmake_cache_bool() {
     esac
 }
 
-append_info_if_not_empty() {
-    local -n out_ref="$1"
-    local key="$2"
-    local value="$3"
-
-    if [ -n "$value" ]; then
-        out_ref+=("$key=$value")
-    fi
-}
-
 package_formats_for_host() {
     local host_platform="$1"
 
@@ -587,6 +559,533 @@ package_formats_csv() {
     package_formats_for_host "$host_platform" | paste -sd, -
 }
 
+
+linux_runtime_library_name_is_base() {
+    local name
+    name="$(basename "$1")"
+
+    case "$name" in
+        linux-vdso.so.*|ld-linux-*.so.*|ld64.so.*|\
+        libc.so.*|libm.so.*|libpthread.so.*|libdl.so.*|librt.so.*|\
+        libutil.so.*|libresolv.so.*|libanl.so.*|libBrokenLocale.so.*|\
+        libthread_db.so.*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+linux_is_dynamic_elf() {
+    local path="$1"
+    readelf -d "$path" 2>/dev/null | grep -Fq 'Dynamic section'
+}
+
+linux_dynamic_elf_files() {
+    local prefix="$1"
+    local path
+
+    while IFS= read -r -d '' path; do
+        if linux_is_dynamic_elf "$path"; then
+            printf '%s\n' "$path"
+        fi
+    done < <(find "$prefix" -type f -print0)
+}
+
+python_runtime_version() {
+    local python_executable="$1"
+    local output
+
+    output="$($python_executable --version 2>&1)"
+    printf '%s\n' "$output" | sed -nE 's/^Python ([0-9]+\.[0-9]+)(\..*)?$/\1/p'
+}
+
+python_runtime_prefix() {
+    local python_executable="$1"
+    local config
+    local base
+
+    base="$(basename "$python_executable")"
+    for config in "${python_executable}-config" "$(dirname "$python_executable")/${base}-config" "${base}-config" python3-config; do
+        if [ -x "$config" ]; then
+            "$config" --prefix
+            return 0
+        fi
+        if command -v "$config" >/dev/null 2>&1; then
+            "$config" --prefix
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+copy_posix_python_runtime() {
+    local python_executable="$1"
+    local copy_executable="${2:-false}"
+    local version
+    local python_prefix
+    local stdlib
+    local destination
+    local entry
+    local base
+
+    if ! is_linux_platform "$HOST_PLATFORM" && ! is_macos_platform "$HOST_PLATFORM"; then
+        return 0
+    fi
+
+    if [[ "$python_executable" != */* ]]; then
+        python_executable="$(command -v "$python_executable" 2>/dev/null || true)"
+    fi
+    [ -x "$python_executable" ] || die "Python executable was not found: $python_executable"
+
+    version="$(python_runtime_version "$python_executable")"
+    [ -n "$version" ] || die "could not determine Python major/minor version: $python_executable"
+
+    python_prefix="$(python_runtime_prefix "$python_executable" || true)"
+    [ -n "$python_prefix" ] || die "could not determine Python prefix: $python_executable"
+
+    stdlib="$python_prefix/lib/python$version"
+    [ -d "$stdlib" ] || die "Python standard library was not found: $stdlib"
+
+    destination="$PREFIX/lib/python$version"
+    mkdir -p "$destination"
+
+    # Copy only interpreter-owned stdlib entries. Preserve any LLDB package
+    # modules already installed into site-packages/dist-packages by CMake.
+    while IFS= read -r -d '' entry; do
+        base="$(basename "$entry")"
+        case "$base" in
+            site-packages|dist-packages) continue ;;
+        esac
+        cp -RPp "$entry" "$destination/"
+    done < <(find "$stdlib" ! -path "$stdlib" -prune -print0)
+
+    if [ "$copy_executable" = true ]; then
+        mkdir -p "$PREFIX/libexec"
+        cp -pL "$python_executable" "$PREFIX/libexec/python3"
+        chmod 0755 "$PREFIX/libexec/python3"
+    fi
+
+    log "copied Python $version runtime into package"
+}
+
+linux_ldd_dependencies() {
+    local file="$1"
+    local output
+
+    # Producer closure must not depend on an ambient LD_LIBRARY_PATH from the
+    # builder. Only the explicit staging search path may influence discovery.
+    if ! output="$(env LD_LIBRARY_PATH="${LINUX_RUNTIME_SEARCH_PATH:-}" \
+        ldd "$file" 2>&1)"; then
+        log "ldd failed for $file"
+        [ -z "$output" ] || printf '%s\n' "$output" >&2
+        return 1
+    fi
+
+    printf '%s\n' "$output" | awk '
+        {
+            line=$0
+            sub(/^[[:space:]]+/, "", line)
+            if (line == "") next
+
+            arrow=index(line, " => ")
+            if (arrow > 0) {
+                name=substr(line, 1, arrow - 1)
+                value=substr(line, arrow + 4)
+                if (value ~ /^not found([[:space:]]|$)/) {
+                    print name "\t!NOT_FOUND!"
+                    next
+                }
+                sub(/[[:space:]]+\(0x[0-9A-Fa-f]+\)[[:space:]]*$/, "", value)
+                print name "\t" value
+                next
+            }
+
+            sub(/[[:space:]]+\(0x[0-9A-Fa-f]+\)[[:space:]]*$/, "", line)
+            print "!DIRECT!\t" line
+        }
+    '
+}
+
+linux_runtime_library_name_is_safe() {
+    local name="$1"
+
+    [ -n "$name" ] || return 1
+    [ "$name" = "$(basename "$name")" ] || return 1
+    package_relative_path_is_safe "lib/$name"
+}
+
+linux_copy_resolved_runtime_libraries() {
+    local prefix="$1"
+    local copied
+    local file
+    local name
+    local resolved
+    local destination
+    local dependencies
+    local search_path="$prefix/lib:$prefix/lib64"
+
+    mkdir -p "$prefix/lib"
+
+    while :; do
+        copied=0
+
+        while IFS= read -r file; do
+            if ! dependencies="$(LINUX_RUNTIME_SEARCH_PATH="$search_path" linux_ldd_dependencies "$file")"; then
+                die "failed to inspect Linux runtime dependencies for $(basename "$file")"
+            fi
+            while IFS=$'\t' read -r name resolved; do
+                [ -n "$name" ] || continue
+
+                if [ "$name" = "!DIRECT!" ]; then
+                    linux_runtime_library_name_is_base "$resolved" && continue
+                    case "$resolved" in
+                        "$prefix"/*) continue ;;
+                        *) die "unsupported direct Linux runtime dependency for $(basename "$file"): $resolved" ;;
+                    esac
+                fi
+
+                linux_runtime_library_name_is_safe "$name" ||
+                    die "unsafe Linux runtime dependency name for $(basename "$file"): $name"
+
+                if [ "$resolved" = "!NOT_FOUND!" ]; then
+                    linux_runtime_library_name_is_base "$name" && continue
+                    die "unresolved Linux runtime dependency for $(basename "$file"): $name"
+                fi
+
+                linux_runtime_library_name_is_base "$name" && continue
+                [ -n "$resolved" ] && [ -f "$resolved" ] ||
+                    die "invalid Linux runtime dependency resolution for $(basename "$file"): $name -> $resolved"
+
+                case "$resolved" in
+                    "$prefix"/*)
+                        continue
+                        ;;
+                esac
+
+                destination="$prefix/lib/$name"
+                if [ -e "$destination" ]; then
+                    cmp -s "$resolved" "$destination" ||
+                        die "conflicting Linux runtime libraries for $name"
+                    continue
+                fi
+
+                cp -L "$resolved" "$destination"
+                chmod --reference="$resolved" "$destination" 2>/dev/null || true
+                copied=$((copied + 1))
+                log "  copied ELF dependency: $name"
+            done <<< "$dependencies"
+        done < <(linux_dynamic_elf_files "$prefix")
+
+        [ "$copied" -gt 0 ] || return 0
+    done
+}
+
+linux_patch_runtime_search_paths() {
+    local prefix="$1"
+    local file
+    local relative
+    local runpath
+
+    command -v patchelf >/dev/null 2>&1 ||
+        die "patchelf is required to make Linux component packages relocatable"
+
+    while IFS= read -r file; do
+        relative="$(realpath --relative-to="$(dirname "$file")" "$prefix/lib")"
+        if [ "$relative" = "." ]; then
+            runpath='$ORIGIN'
+        else
+            runpath="\$ORIGIN/$relative"
+        fi
+        patchelf --set-rpath "$runpath" "$file"
+    done < <(linux_dynamic_elf_files "$prefix")
+}
+
+verify_linux_runtime_libraries() {
+    local prefix="$1"
+    local file
+    local name
+    local resolved
+    local dependencies
+
+    while IFS= read -r file; do
+        if ! dependencies="$(LD_LIBRARY_PATH='' LINUX_RUNTIME_SEARCH_PATH='' linux_ldd_dependencies "$file")"; then
+            die "failed to verify Linux runtime dependencies for $(basename "$file")"
+        fi
+        while IFS=$'\t' read -r name resolved; do
+            [ -n "$name" ] || continue
+
+            if [ "$name" = "!DIRECT!" ]; then
+                linux_runtime_library_name_is_base "$resolved" && continue
+                case "$resolved" in
+                    "$prefix"/*) continue ;;
+                    *) die "Linux package retains an external direct runtime dependency for $(basename "$file"): $resolved" ;;
+                esac
+            fi
+
+            linux_runtime_library_name_is_safe "$name" ||
+                die "unsafe Linux runtime dependency name after packaging for $(basename "$file"): $name"
+
+            if [ "$resolved" = "!NOT_FOUND!" ]; then
+                die "unresolved Linux runtime dependency after packaging for $(basename "$file"): $name"
+            fi
+
+            linux_runtime_library_name_is_base "$name" && continue
+            case "$resolved" in
+                "$prefix"/*) ;;
+                *) die "Linux package still resolves external runtime dependency for $(basename "$file"): $name -> $resolved" ;;
+            esac
+        done <<< "$dependencies"
+    done < <(linux_dynamic_elf_files "$prefix")
+}
+
+prepare_linux_runtime_closure() {
+    local prefix="$1"
+    local host_platform="$2"
+
+    is_linux_platform "$host_platform" || return 0
+    command -v readelf >/dev/null 2>&1 || die "readelf is required to package Linux runtime dependencies"
+    command -v ldd >/dev/null 2>&1 || die "ldd is required to package Linux runtime dependencies"
+    command -v realpath >/dev/null 2>&1 || die "realpath is required to package Linux runtime dependencies"
+
+    if ! linux_dynamic_elf_files "$prefix" | grep . >/dev/null; then
+        return 0
+    fi
+
+    log "closing Linux host runtime dependencies"
+    linux_copy_resolved_runtime_libraries "$prefix"
+    linux_patch_runtime_search_paths "$prefix"
+    verify_linux_runtime_libraries "$prefix"
+}
+
+macos_runtime_library_is_base() {
+    local dependency="$1"
+
+    case "$dependency" in
+        /usr/lib/*|/System/Library/*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+macos_is_macho() {
+    local path="$1"
+    file -b "$path" 2>/dev/null | grep -Fq 'Mach-O'
+}
+
+macos_macho_files() {
+    local prefix="$1"
+    local path
+
+    while IFS= read -r -d '' path; do
+        if macos_is_macho "$path"; then
+            printf '%s\n' "$path"
+        fi
+    done < <(find "$prefix" -type f -print0)
+}
+
+macos_macho_dependencies() {
+    local path="$1"
+    local id=""
+    local dependency
+    local output
+
+    # For a dylib, otool -L reports its install-name before its dependencies.
+    # That install-name is metadata, not a dependency edge.
+    id="$(otool -D "$path" 2>/dev/null | tail -n +2 | head -n 1 || true)"
+    if ! output="$(otool -L "$path" 2>&1)"; then
+        log "otool -L failed for $path"
+        [ -z "$output" ] || printf '%s\n' "$output" >&2
+        return 1
+    fi
+    while IFS= read -r dependency; do
+        [ -n "$dependency" ] || continue
+        [ -n "$id" ] && [ "$dependency" = "$id" ] && continue
+        printf '%s\n' "$dependency"
+    done < <(printf '%s\n' "$output" | tail -n +2 | awk '{print $1}')
+}
+
+macos_loader_relative_lib_dir() {
+    local file="$1"
+    local prefix="$2"
+    local relative
+    local directory
+    local component
+    local result=""
+
+    case "$file" in
+        "$prefix"/*) relative="${file#"$prefix"/}" ;;
+        *) die "Mach-O path is outside package prefix: $file" ;;
+    esac
+
+    directory="${relative%/*}"
+    if [ "$directory" = "$relative" ] || [ -z "$directory" ]; then
+        printf '%s\n' lib
+        return 0
+    fi
+
+    while [ -n "$directory" ]; do
+        component="${directory%%/*}"
+        [ -n "$component" ] && [ "$component" != "." ] && result="../$result"
+        if [ "$directory" = "$component" ]; then
+            break
+        fi
+        directory="${directory#*/}"
+    done
+
+    printf '%slib\n' "$result"
+}
+
+macos_copy_and_rewrite_runtime_libraries() {
+    local prefix="$1"
+    local copied
+    local file
+    local dependency
+    local dependency_output
+    local destination
+    local dependency_relative
+    local relative
+    local replacement
+
+    mkdir -p "$prefix/lib"
+
+    while :; do
+        copied=0
+
+        while IFS= read -r file; do
+            if ! dependency_output="$(macos_macho_dependencies "$file")"; then
+                die "failed to inspect macOS runtime dependencies for $(basename "$file")"
+            fi
+            while IFS= read -r dependency; do
+                [ -n "$dependency" ] || continue
+                macos_runtime_library_is_base "$dependency" && continue
+
+                case "$dependency" in
+                    @rpath/*)
+                        dependency_relative="${dependency#@rpath/}"
+                        package_relative_path_is_safe "lib/$dependency_relative" ||
+                            die "unsafe packaged @rpath dependency for $(basename "$file"): $dependency"
+                        destination="$prefix/lib/$dependency_relative"
+                        [ -e "$destination" ] ||
+                            die "unresolved packaged @rpath dependency for $(basename "$file"): $dependency"
+                        relative="$(macos_loader_relative_lib_dir "$file" "$prefix")"
+                        replacement="@loader_path/$relative/$dependency_relative"
+                        install_name_tool -change "$dependency" "$replacement" "$file"
+                        ;;
+                    @loader_path/*|@executable_path/*)
+                        continue
+                        ;;
+                    /*)
+                        [ -f "$dependency" ] ||
+                            die "unresolved macOS runtime dependency for $(basename "$file"): $dependency"
+                        destination="$prefix/lib/$(basename "$dependency")"
+                        if [ -e "$destination" ]; then
+                            cmp -s "$dependency" "$destination" ||
+                                die "conflicting macOS runtime libraries for $(basename "$dependency")"
+                        else
+                            cp -pL "$dependency" "$destination"
+                            if [ -n "$(otool -D "$destination" 2>/dev/null | tail -n +2 | head -n 1 || true)" ]; then
+                                install_name_tool -id "@rpath/$(basename "$destination")" "$destination"
+                            fi
+                            copied=$((copied + 1))
+                            log "  copied Mach-O dependency: $(basename "$dependency")"
+                        fi
+
+                        relative="$(macos_loader_relative_lib_dir "$file" "$prefix")"
+                        replacement="@loader_path/$relative/$(basename "$dependency")"
+                        install_name_tool -change "$dependency" "$replacement" "$file"
+                        ;;
+                    *)
+                        die "unsupported macOS runtime dependency form for $(basename "$file"): $dependency"
+                        ;;
+                esac
+            done <<< "$dependency_output"
+        done < <(macos_macho_files "$prefix")
+
+        [ "$copied" -gt 0 ] || return 0
+    done
+}
+
+macos_sign_packaged_binaries() {
+    local prefix="$1"
+    local file
+
+    # install_name_tool invalidates existing signatures. Ad-hoc signing is sufficient
+    # for relocatable command-line packages and is required for modified arm64 Mach-O files.
+    while IFS= read -r file; do
+        codesign --force --sign - "$file" >/dev/null 2>&1 ||
+            die "failed to ad-hoc sign packaged Mach-O file: ${file#"$prefix"/}"
+    done < <(macos_macho_files "$prefix")
+}
+
+verify_macos_runtime_libraries() {
+    local prefix="$1"
+    local file
+    local dependency
+    local dependency_output
+    local target
+
+    while IFS= read -r file; do
+        if ! dependency_output="$(macos_macho_dependencies "$file")"; then
+            die "failed to inspect macOS runtime dependencies for $(basename "$file")"
+        fi
+        while IFS= read -r dependency; do
+            [ -n "$dependency" ] || continue
+            macos_runtime_library_is_base "$dependency" && continue
+
+            case "$dependency" in
+                @rpath/*)
+                    target="$prefix/lib/${dependency#@rpath/}"
+                    [ -e "$target" ] ||
+                        die "packaged @rpath dependency is missing for $(basename "$file"): $dependency"
+                    ;;
+                @loader_path/*)
+                    target="$(dirname "$file")/${dependency#@loader_path/}"
+                    target="$(cd "$(dirname "$target")" 2>/dev/null && pwd -P)/$(basename "$target")" ||
+                        die "invalid @loader_path dependency for $(basename "$file"): $dependency"
+                    case "$target" in
+                        "$prefix"/*) ;;
+                        *) die "@loader_path dependency escapes package for $(basename "$file"): $dependency" ;;
+                    esac
+                    [ -e "$target" ] ||
+                        die "packaged @loader_path dependency is missing for $(basename "$file"): $dependency"
+                    ;;
+                @executable_path/*)
+                    # Current producer output does not require this form. Rejecting it keeps
+                    # package validation deterministic rather than guessing the main executable.
+                    die "unsupported @executable_path dependency in package: $(basename "$file"): $dependency"
+                    ;;
+                /*)
+                    die "macOS package still contains non-system absolute runtime dependency for $(basename "$file"): $dependency"
+                    ;;
+                *)
+                    die "unsupported macOS runtime dependency form for $(basename "$file"): $dependency"
+                    ;;
+            esac
+        done <<< "$dependency_output"
+    done < <(macos_macho_files "$prefix")
+}
+
+prepare_macos_runtime_closure() {
+    local prefix="$1"
+    local host_platform="$2"
+
+    is_macos_platform "$host_platform" || return 0
+    command -v file >/dev/null 2>&1 || die "file is required to package macOS runtime dependencies"
+    command -v otool >/dev/null 2>&1 || die "otool is required to package macOS runtime dependencies"
+    command -v install_name_tool >/dev/null 2>&1 || die "install_name_tool is required to package macOS runtime dependencies"
+
+    if ! macos_macho_files "$prefix" | grep . >/dev/null; then
+        return 0
+    fi
+    need codesign
+
+    log "closing macOS host runtime dependencies"
+    macos_copy_and_rewrite_runtime_libraries "$prefix"
+    macos_sign_packaged_binaries "$prefix"
+    verify_macos_runtime_libraries "$prefix"
+}
 
 windows_runtime_dll_allowed_path() {
     local path="$1"
@@ -620,12 +1119,23 @@ windows_runtime_dll_name_is_system() {
         advapi32.dll|bcrypt.dll|bcryptprimitives.dll|combase.dll|comctl32.dll|comdlg32.dll|crypt32.dll|cryptbase.dll|cryptsp.dll|dbghelp.dll|dnsapi.dll|gdi32.dll|gdi32full.dll|imm32.dll|iphlpapi.dll|kernel32.dll|kernelbase.dll|msvcp_win.dll|msvcrt.dll|netapi32.dll|ntdll.dll|ole32.dll|oleaut32.dll|propsys.dll|psapi.dll|rpcrt4.dll|rsaenh.dll|sechost.dll|shell32.dll|shcore.dll|shlwapi.dll|ucrtbase.dll|user32.dll|userenv.dll|uuid.dll|version.dll|win32u.dll|winhttp.dll|winmm.dll|wintypes.dll|ws2_32.dll)
             return 0
             ;;
-        vcruntime*.dll|msvcp*.dll|concrt*.dll)
-            return 0
-            ;;
         *)
             return 1
             ;;
+    esac
+}
+
+windows_runtime_dll_name_is_safe() {
+    local name="$1"
+    local lower
+
+    [ -n "$name" ] || return 1
+    [ "$name" = "$(basename "$name")" ] || return 1
+    package_relative_path_is_safe "bin/$name" || return 1
+    lower="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
+    case "$lower" in
+        *.dll) return 0 ;;
+        *) return 1 ;;
     esac
 }
 
@@ -636,7 +1146,7 @@ windows_runtime_dll_is_system_path() {
     lower="$(printf '%s\n' "$path" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
 
     case "$lower" in
-        /c/windows/*|/windows/*|c:/*)
+        /c/windows/*|/windows/*|c:/windows/*)
             return 0
             ;;
     esac
@@ -664,12 +1174,13 @@ windows_runtime_dll_search_dirs() {
 collect_windows_package_pe_files() {
     local bin_dir="$1"
 
-    if [ -d "$bin_dir" ]; then
-        find "$bin_dir" -maxdepth 1 -type f \( -name '*.exe' -o -name '*.dll' \)
+    if [ -n "${PREFIX:-}" ] && [ -d "$PREFIX" ]; then
+        find "$PREFIX" -type f \( -iname '*.exe' -o -iname '*.dll' -o -iname '*.pyd' \)
+        return 0
     fi
 
-    if [ -n "${PREFIX:-}" ] && [ -d "$PREFIX/lib" ]; then
-        find "$PREFIX/lib" -type f \( -name '*.dll' -o -name '*.pyd' \)
+    if [ -d "$bin_dir" ]; then
+        find "$bin_dir" -type f \( -iname '*.exe' -o -iname '*.dll' -o -iname '*.pyd' \)
     fi
 }
 
@@ -684,11 +1195,18 @@ windows_pe_import_tool() {
 windows_pe_import_dll_names() {
     local file="$1"
     local objdump_cmd
+    local output
 
     objdump_cmd="$(windows_pe_import_tool)"
-    [ -n "$objdump_cmd" ] || return 0
+    [ -n "$objdump_cmd" ] || return 1
 
-    LC_ALL=C "$objdump_cmd" -p "$file" 2>/dev/null | \
+    if ! output="$(LC_ALL=C "$objdump_cmd" -p "$file" 2>&1)"; then
+        log "$objdump_cmd -p failed for $file"
+        [ -z "$output" ] || printf '%s\n' "$output" >&2
+        return 1
+    fi
+
+    printf '%s\n' "$output" | \
         sed -n 's/^[[:space:]]*DLL Name:[[:space:]]*//p' | \
         sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
         sed '/^$/d' | sort -u
@@ -725,6 +1243,7 @@ copy_windows_runtime_dlls() {
     local queue_file
     local seen_file
     local current
+    local imports
     local dll_path
     local dll_name
     local processed=0
@@ -766,8 +1285,14 @@ copy_windows_runtime_dlls() {
         fi
         printf '%s\n' "$current" >> "$seen_file"
 
+        if ! imports="$(windows_pe_import_dll_names "$current")"; then
+            die "failed to inspect Windows PE imports for $(basename "$current")"
+        fi
         while IFS= read -r dll_name; do
             [ -n "$dll_name" ] || continue
+
+            windows_runtime_dll_name_is_safe "$dll_name" ||
+                die "unsafe Windows runtime DLL import name for $(basename "$current"): $dll_name"
 
             if windows_runtime_dll_name_is_system "$dll_name"; then
                 continue
@@ -796,7 +1321,7 @@ copy_windows_runtime_dlls() {
             cp -f "$dll_path" "$bin_dir/$dll_name"
             log "  copied PE import: $dll_name"
             printf '%s\n' "$bin_dir/$dll_name" >> "$queue_file"
-        done < <(windows_pe_import_dll_names "$current")
+        done <<< "$imports"
     done
 
     rm -f "$queue_file" "$queue_file.next" "$seen_file"
@@ -804,6 +1329,7 @@ copy_windows_runtime_dlls() {
 
 copy_windows_python_runtime() {
     local cmake_cache="${1:-}"
+    local copy_executable="${2:-false}"
     local python_executable=""
     local python_library=""
     local version
@@ -893,7 +1419,7 @@ PYSCRIPT
     log "copying Python standard library: $stdlib -> $dst"
 
     mkdir -p "$dst"
-    cp -a "$stdlib"/. "$dst"/
+    cp -RPp "$stdlib"/. "$dst"/
 
     if [ -d "$dst/site-packages/lldb" ]; then
         log "preserved LLDB Python package: $dst/site-packages/lldb"
@@ -957,6 +1483,17 @@ EOF_DLLS
 
     create_windows_python_dll_aliases "$PREFIX/bin"
     create_windows_python_path_config "$PREFIX/bin" "$version"
+
+    if [ "$copy_executable" = true ]; then
+        cp -f "$python_executable" "$PREFIX/bin/cup-python3.exe"
+        cat > "$PREFIX/bin/cup-python3._pth" <<EOF_PYTHON_PATH
+../lib/python$version
+../lib/python$version/lib-dynload
+../lib/python$version/site-packages
+import site
+EOF_PYTHON_PATH
+        log "copied private Windows Python interpreter for packaged helper scripts"
+    fi
 }
 
 
@@ -1023,6 +1560,7 @@ create_windows_python_dll_aliases() {
 verify_windows_runtime_dlls() {
     local bin_dir="$1"
     local current
+    local imports
     local dll_name
     local missing=0
 
@@ -1043,8 +1581,14 @@ verify_windows_runtime_dlls() {
     while IFS= read -r current; do
         [ -n "$current" ] || continue
 
+        if ! imports="$(windows_pe_import_dll_names "$current")"; then
+            die "failed to inspect Windows PE imports for $(basename "$current")"
+        fi
         while IFS= read -r dll_name; do
             [ -n "$dll_name" ] || continue
+
+            windows_runtime_dll_name_is_safe "$dll_name" ||
+                die "unsafe Windows runtime DLL import name for $(basename "$current"): $dll_name"
 
             if windows_runtime_dll_name_is_system "$dll_name"; then
                 continue
@@ -1056,7 +1600,7 @@ verify_windows_runtime_dlls() {
 
             log "  missing packaged Windows runtime DLL import for $(basename "$current"): $dll_name"
             missing=1
-        done < <(windows_pe_import_dll_names "$current")
+        done <<< "$imports"
     done < <(collect_windows_package_pe_files "$bin_dir" | sort -u)
 
     if [ "$missing" -ne 0 ]; then
@@ -1064,11 +1608,510 @@ verify_windows_runtime_dlls() {
     fi
 }
 
+package_relative_path_is_safe() {
+    local relative="$1"
+    local segment
+    local base
+    local lower
+    local old_ifs
+    local -a _package_path_segments
+
+    case "$relative" in
+        ""|/*|*/|\\*|*\\*|*:*) return 1 ;;
+    esac
+    # `read` below is line-oriented. Reject embedded newlines before splitting
+    # so a malformed path can never be truncated into an apparently safe one.
+    [ "$relative" = "${relative//$'\n'/}" ] || return 1
+
+    old_ifs="$IFS"
+    IFS=/
+    read -r -a _package_path_segments <<< "$relative"
+    IFS="$old_ifs"
+
+    for segment in "${_package_path_segments[@]}"; do
+        [ -n "$segment" ] || return 1
+        [ "$segment" != "." ] && [ "$segment" != ".." ] || return 1
+        LC_ALL=C printf '%s' "$segment" | grep -Eq '^[!-~]+$' || return 1
+        case "$segment" in
+            *[\\/:*?\"\<\>\|]*|*.) return 1 ;;
+        esac
+        base="${segment%%.*}"
+        lower="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')"
+        case "$lower" in
+            con|prn|aux|nul|com[1-9]|lpt[1-9]) return 1 ;;
+        esac
+    done
+
+    return 0
+}
+
+package_file_digest() {
+    local path="$1"
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$path" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$path" | awk '{print $1}'
+    else
+        die "sha256sum or shasum is required to generate package manifests"
+    fi
+}
+
+package_text_digest() {
+    local text="$1"
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$text" | sha256sum | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        printf '%s' "$text" | shasum -a 256 | awk '{print $1}'
+    else
+        die "sha256sum or shasum is required to generate package manifests"
+    fi
+}
+
+package_file_mode_class() {
+    local path="$1"
+    local host_platform="$2"
+    local base
+
+    if is_windows_platform "$host_platform"; then
+        base="$(basename "$path" | tr '[:upper:]' '[:lower:]')"
+        case "$base" in
+            *.exe|*.com|*.bat|*.cmd) printf '%s\n' 0755 ;;
+            *) printf '%s\n' 0644 ;;
+        esac
+    elif [ -x "$path" ]; then
+        printf '%s\n' 0755
+    else
+        printf '%s\n' 0644
+    fi
+}
+
+package_write_path_list() {
+    local package_root="$1"
+    local output="$2"
+    local folded
+    local duplicate
+    local path
+    local relative
+
+    : > "$output"
+    while IFS= read -r -d '' path; do
+        relative="${path#"$package_root"/}"
+        [ "$relative" != "manifest.txt" ] || continue
+        [ "$relative" != ".manifest.verify" ] || continue
+        [ "$relative" != ".manifest.paths" ] || continue
+        package_relative_path_is_safe "$relative" ||
+            die "package contains a path outside the CUP package grammar: $relative"
+        [ "${#relative}" -lt 1024 ] || die "package path exceeds CUP path limit: $relative"
+        printf '%s\n' "$relative" >> "$output"
+    done < <(find "$package_root" ! -path "$package_root" -print0)
+
+    LC_ALL=C sort -o "$output" "$output"
+    folded="$(mktemp)"
+    LC_ALL=C tr 'A-Z' 'a-z' < "$output" | LC_ALL=C sort > "$folded"
+    duplicate="$(uniq -d "$folded" | sed -n '1p')"
+    rm -f "$folded"
+    [ -z "$duplicate" ] || die "package contains a case-fold path collision: $duplicate"
+}
+
+package_verify_tree() {
+    local package_root="$1"
+    local host_platform="$2"
+    local path
+    local relative
+    local hardlinked
+
+    while IFS= read -r -d '' path; do
+        relative="${path#"$package_root"/}"
+        if [ -L "$path" ]; then
+            if is_windows_platform "$host_platform"; then
+                die "Windows package root contains a symbolic link: $relative"
+            fi
+            package_resolve_staging_link "$package_root" "$relative" >/dev/null ||
+                die "final package root contains an unsafe symbolic link: $relative"
+            continue
+        fi
+        if [ -d "$path" ] || [ -f "$path" ]; then
+            continue
+        fi
+        die "final package root contains an unsupported object: $relative"
+    done < <(find "$package_root" ! -path "$package_root" -print0)
+
+    hardlinked="$(find "$package_root" -type f -links +1 -print -quit 2>/dev/null || true)"
+    [ -z "$hardlinked" ] ||
+        die "final package root preserves hardlink identity: ${hardlinked#"$package_root"/}"
+}
+
+package_write_manifest() {
+    local package_root="$1"
+    local host_platform="$2"
+    local output="$3"
+    local path_list="$package_root/.manifest.paths"
+    local relative
+    local path
+    local mode
+    local digest
+    local target
+
+    package_write_path_list "$package_root" "$path_list"
+    {
+        printf 'format=2\n'
+        while IFS= read -r relative; do
+            [ -n "$relative" ] || continue
+            path="$package_root/$relative"
+            if [ -L "$path" ]; then
+                if is_windows_platform "$host_platform"; then
+                    rm -f "$path_list"
+                    die "Windows package contains a symbolic link while generating manifest: $relative"
+                fi
+                target="$(package_read_link_target "$path")" || {
+                    rm -f "$path_list"
+                    die "cannot authenticate invalid symbolic-link target: $relative"
+                }
+                digest="$(package_text_digest "$target")"
+                printf 'l\t-\t%s\t%s\n' "$digest" "$relative"
+            elif [ -d "$path" ]; then
+                printf 'd\t0755\t-\t%s\n' "$relative"
+            elif [ -f "$path" ]; then
+                mode="$(package_file_mode_class "$path" "$host_platform")"
+                digest="$(package_file_digest "$path")"
+                printf 'f\t%s\t%s\t%s\n' "$mode" "$digest" "$relative"
+            else
+                rm -f "$path_list"
+                die "unsupported object while generating manifest: $relative"
+            fi
+        done < "$path_list"
+    } > "$output"
+    rm -f "$path_list"
+}
+
+package_generate_and_verify_manifest() {
+    local package_root="$1"
+    local host_platform="$2"
+    local manifest="$package_root/manifest.txt"
+    local verification="$package_root/.manifest.verify"
+
+    rm -f "$manifest" "$verification"
+    package_verify_tree "$package_root" "$host_platform"
+    package_write_manifest "$package_root" "$host_platform" "$manifest"
+    package_write_manifest "$package_root" "$host_platform" "$verification"
+    cmp -s "$manifest" "$verification" || {
+        rm -f "$verification"
+        die "package manifest self-verification failed"
+    }
+    rm -f "$verification"
+    package_verify_tree "$package_root" "$host_platform"
+}
+
+package_info_value() {
+    local info="$1"
+    local key="$2"
+    awk -F= -v key="$key" '$1 == key { print substr($0, length(key) + 2); found=1 } END { if (!found) exit 1 }' "$info"
+}
+
+package_verify_info_structure() {
+    local info="$1"
+    local seen
+    local line
+    local key
+    local value
+    local bytes
+
+    [ -f "$info" ] || die "final package is missing info.txt"
+    bytes="$(wc -c < "$info" | tr -d '[:space:]')"
+    [ "$bytes" -le 4194304 ] || die "info.txt exceeds CUP metadata size limit"
+    [ "$bytes" -gt 0 ] || die "info.txt is empty"
+    [ "$(tail -c 1 "$info" | wc -l | tr -d '[:space:]')" = 1 ] ||
+        die "info.txt must end with a newline"
+
+    seen="$(mktemp)"
+    : > "$seen"
+    while IFS= read -r line; do
+        [ "${#line}" -lt 512 ] || {
+            rm -f "$seen"
+            die "info.txt line exceeds CUP metadata line limit"
+        }
+        case "$line" in
+            *=*) ;;
+            *)
+                rm -f "$seen"
+                die "info.txt contains a line without '='"
+                ;;
+        esac
+        key="${line%%=*}"
+        value="${line#*=}"
+        if ! info_key_is_valid "$key" || [ -z "$value" ] ||
+            [ "${#key}" -ge 128 ] || [ "${#value}" -ge 384 ]; then
+            rm -f "$seen"
+            die "info.txt contains an invalid or oversized key/value field: $key"
+        fi
+        if LC_ALL=C printf '%s' "$value" | grep -q '[[:cntrl:]]'; then
+            rm -f "$seen"
+            die "info.txt contains a control character in field: $key"
+        fi
+        if grep -Fx -- "$key" "$seen" >/dev/null 2>&1; then
+            rm -f "$seen"
+            die "info.txt contains a duplicate field: $key"
+        fi
+        printf '%s\n' "$key" >> "$seen"
+    done < "$info"
+    rm -f "$seen"
+}
+
+package_verify_info_contract() {
+    local package_root="$1"
+    local tool="$2"
+    local version="$3"
+    local host_platform="$4"
+    local target_platform="$5"
+    local revision="$6"
+    local info="$package_root/info.txt"
+    local package_version
+    local key
+    local value
+    local entry_count=0
+
+    package_version="$(package_version_name "$tool" "$version" "$host_platform" "$target_platform" "$revision")"
+    package_verify_info_structure "$info"
+
+    for key in \
+        package.component package.tool package.version package.mode package.formats \
+        platform.host platform.target platform.host_triple platform.target_triple \
+        platform.family platform.runtime platform.thread_model \
+        build.environment build.source_policy \
+        source.primary.name source.primary.version source.primary.url; do
+        package_info_value "$info" "$key" >/dev/null || die "info.txt is missing required field: $key"
+    done
+
+    [ "$(package_info_value "$info" package.component)" = "$(package_component_for_tool "$tool")" ] ||
+        die "info.txt package.component does not match package identity"
+    [ "$(package_info_value "$info" package.tool)" = "$tool" ] ||
+        die "info.txt package.tool does not match package identity"
+    [ "$(package_info_value "$info" package.version)" = "$package_version" ] ||
+        die "info.txt package.version does not match package identity"
+    if package_revision_is_applicable "$tool"; then
+        package_info_value "$info" package.revision >/dev/null ||
+            die "info.txt is missing required field: package.revision"
+        [ "$(package_info_value "$info" package.revision)" = "$revision" ] ||
+            die "info.txt package.revision does not match package identity"
+    elif package_info_value "$info" package.revision >/dev/null 2>&1; then
+        die "info.txt package.revision is not valid for a revisionless package"
+    fi
+    [ "$(package_info_value "$info" package.mode)" = "self-contained" ] ||
+        die "info.txt package.mode must be self-contained"
+    [ "$(package_info_value "$info" package.formats)" = "$(package_formats_csv "$host_platform")" ] ||
+        die "info.txt package.formats does not match host package formats"
+    [ "$(package_info_value "$info" platform.host)" = "$host_platform" ] ||
+        die "info.txt platform.host does not match package identity"
+    [ "$(package_info_value "$info" platform.target)" = "$target_platform" ] ||
+        die "info.txt platform.target does not match package identity"
+    [ "$(package_info_value "$info" platform.host_triple)" = "$(platform_triple "$host_platform")" ] ||
+        die "info.txt platform.host_triple does not match package identity"
+    [ "$(package_info_value "$info" platform.target_triple)" = "$(platform_triple "$target_platform")" ] ||
+        die "info.txt platform.target_triple does not match package identity"
+    [ "$(package_info_value "$info" platform.family)" = "$(platform_family "$target_platform")" ] ||
+        die "info.txt platform.family does not match package identity"
+    [ "$(package_info_value "$info" platform.runtime)" = "$(platform_runtime "$target_platform")" ] ||
+        die "info.txt platform.runtime does not match package identity"
+    [ "$(package_info_value "$info" platform.thread_model)" = "$(platform_thread_model "$target_platform")" ] ||
+        die "info.txt platform.thread_model does not match package identity"
+
+    while IFS='=' read -r key value; do
+        case "$key" in
+            entry.*)
+                package_relative_path_is_safe "$value" || die "invalid entry path in info.txt: $key=$value"
+                if [ -L "$package_root/$value" ]; then
+                    if is_windows_platform "$host_platform" ||
+                        ! package_resolve_staging_link "$package_root" "$value" >/dev/null; then
+                        die "info.txt entry is not a safe package command: $key=$value"
+                    fi
+                elif [ ! -f "$package_root/$value" ]; then
+                    die "info.txt entry is not a regular file or safe symbolic-link alias: $key=$value"
+                fi
+                if ! is_windows_platform "$host_platform" && [ ! -x "$package_root/$value" ]; then
+                    die "info.txt entry is not executable: $key=$value"
+                fi
+                entry_count=$((entry_count + 1))
+                ;;
+        esac
+    done < "$info"
+
+    [ "$entry_count" -gt 0 ] || die "info.txt does not declare any entry.* command"
+}
+
+package_read_link_target() {
+    local link="$1"
+    local line_count
+
+    # readlink writes one record terminator of its own. More than one output line
+    # therefore means the stored link target itself contains a newline. Command
+    # substitution would otherwise truncate trailing newlines and `read` would
+    # silently ignore everything after the first embedded newline. Such targets
+    # are outside the CUP package path grammar and must never be normalized.
+    line_count="$(readlink "$link" | wc -l | tr -d '[:space:]')" || return 1
+    [ "$line_count" = 1 ] || return 1
+    readlink "$link"
+}
+
+package_lexical_relative_target() {
+    local link_relative="$1"
+    local target="$2"
+    local parent
+    local combined
+    local segment
+    local old_ifs
+    local -a input_segments
+    local -a output_segments=()
+
+    case "$target" in
+        ""|/*|\\*|*\\*|*:*) return 1 ;;
+    esac
+
+    parent="${link_relative%/*}"
+    [ "$parent" != "$link_relative" ] || parent=""
+    if [ -n "$parent" ]; then
+        combined="$parent/$target"
+    else
+        combined="$target"
+    fi
+    [ "$combined" = "${combined//$'\n'/}" ] || return 1
+
+    old_ifs="$IFS"
+    IFS=/
+    read -r -a input_segments <<< "$combined"
+    IFS="$old_ifs"
+
+    for segment in "${input_segments[@]}"; do
+        case "$segment" in
+            ""|.) continue ;;
+            ..)
+                [ "${#output_segments[@]}" -gt 0 ] || return 1
+                unset 'output_segments[${#output_segments[@]}-1]'
+                ;;
+            *) output_segments+=("$segment") ;;
+        esac
+    done
+
+    [ "${#output_segments[@]}" -gt 0 ] || return 1
+    (IFS=/; printf '%s\n' "${output_segments[*]}")
+}
+
+package_resolve_staging_link() {
+    local prefix="$1"
+    local start_relative="$2"
+    local current="$start_relative"
+    local target
+    local next
+    local seen='|'
+
+    while [ -L "$prefix/$current" ]; do
+        case "$seen" in
+            *"|$current|"*) return 1 ;;
+        esac
+        seen="$seen$current|"
+
+        target="$(package_read_link_target "$prefix/$current")" || return 1
+        next="$(package_lexical_relative_target "$current" "$target")" || return 1
+        package_relative_path_is_safe "$next" || return 1
+        current="$next"
+    done
+
+    [ -f "$prefix/$current" ] && [ ! -L "$prefix/$current" ] || return 1
+    printf '%s\n' "$current"
+}
+
+package_verify_staging_objects() {
+    local prefix="$1"
+    local path
+
+    while IFS= read -r -d '' path; do
+        if [ -L "$path" ] || [ -d "$path" ] || [ -f "$path" ]; then
+            continue
+        fi
+        die "staging package contains an unsupported object: ${path#"$prefix"/}"
+    done < <(find "$prefix" ! -path "$prefix" -print0)
+}
+
+package_verify_staging_paths() {
+    local prefix="$1"
+    local path
+    local relative
+
+    while IFS= read -r -d '' path; do
+        relative="${path#"$prefix"/}"
+        package_relative_path_is_safe "$relative" ||
+            die "staging package contains a path outside the CUP path grammar: $relative"
+        [ "${#relative}" -lt 1024 ] ||
+            die "staging package path exceeds CUP path limit: $relative"
+    done < <(find "$prefix" ! -path "$prefix" -print0)
+}
+
+package_verify_staging_links() {
+    local prefix="$1"
+    local host_platform="$2"
+    local link
+    local relative
+    local target
+    local resolved
+
+    while IFS= read -r -d '' link; do
+        relative="${link#"$prefix"/}"
+        if is_windows_platform "$host_platform"; then
+            die "Windows staging package contains a symbolic link: $relative"
+        fi
+        package_relative_path_is_safe "$relative" ||
+            die "staging package contains an unsafe symbolic-link path: $relative"
+        target="$(package_read_link_target "$link")" ||
+            die "staging symbolic-link target is outside the CUP path grammar: $relative"
+        resolved="$(package_resolve_staging_link "$prefix" "$relative")" ||
+            die "staging symbolic link is external, dangling, cyclic or not a regular-file alias: $relative -> $target"
+        log "preserving package symlink: $relative -> $target (resolves to $resolved)"
+    done < <(find "$prefix" -type l -print0)
+}
+
+package_normalize_modes() {
+    local package_root="$1"
+    local host_platform="$2"
+    local path
+    local mode
+
+    chmod 0755 "$package_root"
+    while IFS= read -r -d '' path; do
+        [ -L "$path" ] && continue
+        if [ -d "$path" ]; then
+            chmod 0755 "$path"
+        elif [ -f "$path" ]; then
+            mode="$(package_file_mode_class "$path" "$host_platform")"
+            chmod "$mode" "$path"
+        fi
+    done < <(find "$package_root" ! -path "$package_root" -print0)
+}
+
+package_normalize_root() {
+    local prefix="$1"
+    local package_root="$2"
+    local host_platform="$3"
+
+    package_verify_staging_objects "$prefix"
+    package_verify_staging_links "$prefix" "$host_platform"
+    rm -rf "$package_root"
+    mkdir -p "$package_root"
+
+    # Preserve admitted symbolic links, but deliberately do not preserve hardlink identity.
+    # -P is the portable cp spelling for "do not follow symbolic links" during recursive copy;
+    # omitting --preserve=links makes hardlinked regular files independent in the package root.
+    cp -RPp "$prefix"/. "$package_root"/
+    package_normalize_modes "$package_root" "$host_platform"
+    package_verify_tree "$package_root" "$host_platform"
+}
+
 create_archive() {
     local format="$1"
     local package_base="$2"
     local package_root="$3"
     local output_dir="$4"
+    local host_platform="$5"
 
     local output
     output="$output_dir/$package_base.$format"
@@ -1083,7 +2126,11 @@ create_archive() {
             tar -C "$(dirname "$package_root")" -czf "$output" "$(basename "$package_root")"
             ;;
         zip)
-            (cd "$(dirname "$package_root")" && zip -qr "$output" "$(basename "$package_root")")
+            if is_windows_platform "$host_platform"; then
+                (cd "$(dirname "$package_root")" && zip -qr "$output" "$(basename "$package_root")")
+            else
+                (cd "$(dirname "$package_root")" && zip -qry "$output" "$(basename "$package_root")")
+            fi
             ;;
         *)
             die "unsupported package format: $format"
@@ -1172,12 +2219,20 @@ create_packages() {
     release_tag="$(release_tag_for_package "$tool" "$version" "$host_platform" "$target_platform" "$revision")"
     package_root="$CUP_WORK_DIR/package-root/$package_base"
 
-    rm -rf "$package_root"
     mkdir -p "$(dirname "$package_root")"
-    cp -a "$prefix" "$package_root"
+    # Reject malformed staging paths/objects before runtime-closure code parses
+    # filenames or derives copy destinations from the staging tree.
+    package_verify_staging_objects "$prefix"
+    package_verify_staging_paths "$prefix"
+    prepare_linux_runtime_closure "$prefix" "$host_platform"
+    prepare_macos_runtime_closure "$prefix" "$host_platform"
+    package_normalize_root "$prefix" "$package_root" "$host_platform"
+    package_verify_info_contract \
+        "$package_root" "$tool" "$version" "$host_platform" "$target_platform" "$revision"
+    package_generate_and_verify_manifest "$package_root" "$host_platform"
 
     for format in $(package_formats_for_host "$host_platform"); do
-        create_archive "$format" "$package_base" "$package_root" "$CUP_OUT_DIR"
+        create_archive "$format" "$package_base" "$package_root" "$CUP_OUT_DIR" "$host_platform"
     done
     generate_package_checksums "$package_base" "$CUP_OUT_DIR"
 

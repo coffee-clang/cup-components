@@ -8,7 +8,7 @@ source "$REPO_ROOT/scripts/package/package-common.sh"
 usage() {
     cat <<USAGE
 Usage:
-  $0 <version|stable|latest> <host_platform> <target_platform> <revision>
+  $0 <version|stable> <host_platform> <target_platform> <revision>
 
 Examples:
   $0 stable linux-x64 linux-x64 1
@@ -51,6 +51,13 @@ GCC_SOURCE_URL="$(source_url_gcc "$VERSION")"
 BINUTILS_SOURCE_URL="$(source_url_binutils "$BINUTILS_VERSION")"
 MINGW_SOURCE_URL="$(source_url_mingw "$MINGW_VERSION")"
 
+
+validate_platforms() {
+    case "$HOST_PLATFORM:$TARGET_PLATFORM" in
+        linux-x64:linux-x64|linux-arm64:linux-arm64|windows-x64:windows-x64|linux-x64:windows-x64) ;;
+        *) die "unsupported GCC build combination: $HOST_PLATFORM -> $TARGET_PLATFORM" ;;
+    esac
+}
 
 need_common_tools() {
     need curl
@@ -208,11 +215,11 @@ ensure_prefixed_binutils_tools() {
         tmp="$dst.tmp"
 
         if [ -x "$dst" ]; then
-            if [ -L "$dst" ]; then
+            if [ -L "$dst" ] && is_windows_platform "$HOST_PLATFORM"; then
                 cp -f -L "$dst" "$tmp"
                 mv -f "$tmp" "$dst"
                 chmod +x "$dst"
-                log "  materialized symlink: $dst"
+                log "  materialized Windows symlink alias: $dst"
             else
                 log "  existing: $dst"
             fi
@@ -366,9 +373,11 @@ prune_native_windows_prefixed_binutils_from_bin() {
 
 strip_gcc_package_binaries() {
     local strip_tool
+    local exe_suffix
     local file
 
     strip_tool="$(command -v strip 2>/dev/null || true)"
+    exe_suffix="$(tool_exe_suffix)"
 
     if [ -z "$strip_tool" ]; then
         log "strip not found; skipping GCC package stripping"
@@ -384,8 +393,8 @@ strip_gcc_package_binaries() {
         {
             find "$PREFIX" -type f -path '*/bin/*' 2>/dev/null || true
             find "$PREFIX/libexec/gcc" -type f \( \
-                -name 'cc1' -o -name 'cc1plus' -o -name 'collect2' -o \
-                -name 'lto1' -o -name 'lto-wrapper' -o -name 'lto-dump' \
+                -name "cc1$exe_suffix" -o -name "cc1plus$exe_suffix" -o -name "collect2$exe_suffix" -o \
+                -name "lto1$exe_suffix" -o -name "lto-wrapper$exe_suffix" -o -name "lto-dump$exe_suffix" \
             \) 2>/dev/null || true
             find "$PREFIX" -type f \( \
                 -name '*.dll' -o -name '*.so' -o -name '*.so.*' \
@@ -625,6 +634,7 @@ build_native_binutils() {
         --prefix="$PREFIX" \
         --disable-werror \
         --disable-nls \
+        --without-debuginfod \
         --enable-ld \
         --enable-plugins
 }
@@ -787,6 +797,7 @@ build_cross_binutils() {
         --target="$TARGET_TRIPLE" \
         --disable-werror \
         --disable-nls \
+        --without-debuginfod \
         --enable-ld \
         --enable-plugins
 }
@@ -1088,26 +1099,6 @@ build_bundled_windows_gcc() {
     build_gcc_final "$gcc_src"
 }
 
-gcc_prefix_has_any() {
-    local pattern
-
-    for pattern in "$@"; do
-        if find "$PREFIX" -type f -name "$pattern" -print -quit | grep -q .; then
-            return 0
-        fi
-    done
-
-    return 1
-}
-
-gcc_bool_for_files() {
-    if gcc_prefix_has_any "$@"; then
-        printf 'true\n'
-    else
-        printf 'false\n'
-    fi
-}
-
 write_gcc_info() {
     local bundle_components=""
     local includes_binutils="false"
@@ -1214,7 +1205,6 @@ write_gcc_info() {
         "$(info_entry_if_present entry.g++ "$PREFIX" g++)"
         "$(info_entry_if_present entry.cpp "$PREFIX" cpp)"
         "$(info_entry_if_present entry.gcov "$PREFIX" gcov)"
-        "contents.self_contained=true"
         "contents.libstdcxx=$includes_libstdcxx"
         "contents.lto=$includes_lto"
         "contents.openmp=$includes_openmp"
@@ -1240,12 +1230,6 @@ write_gcc_info() {
         "features.target_layout_binutils=$has_target_layout_binutils"
         "features.sysroot=$has_sysroot"
     )
-
-    if [ "$HOST_PLATFORM" = "windows-x64" ]; then
-        info+=("build.gcc_prerequisites=msys2")
-    else
-        info+=("build.gcc_prerequisites=contrib-download_prerequisites")
-    fi
 
     if is_windows_platform "$TARGET_PLATFORM"; then
         info+=(
@@ -1287,7 +1271,10 @@ write_gcc_info() {
 
 main() {
     local gcc_src
+    local binutils_src
+    local mingw_src
 
+    validate_platforms
     make_dirs
     need_common_tools
 
@@ -1297,9 +1284,6 @@ main() {
     gcc_src="$(prepare_source_tree gcc "$VERSION" "$GCC_SOURCE_URL" "gcc-$VERSION.tar.xz")"
 
     if is_windows_platform "$TARGET_PLATFORM"; then
-        local binutils_src
-        local mingw_src
-
         binutils_src="$(prepare_source_tree binutils "$BINUTILS_VERSION" "$BINUTILS_SOURCE_URL" "binutils-$BINUTILS_VERSION.tar.xz")"
         mingw_src="$(prepare_source_tree mingw-w64 "$MINGW_VERSION" "$MINGW_SOURCE_URL" "mingw-w64-v$MINGW_VERSION.tar.bz2")"
 
@@ -1309,7 +1293,6 @@ main() {
             die "unsupported GCC target: $HOST_PLATFORM -> $TARGET_PLATFORM"
         fi
 
-        local binutils_src
         binutils_src="$(prepare_source_tree binutils "$BINUTILS_VERSION" "$BINUTILS_SOURCE_URL" "binutils-$BINUTILS_VERSION.tar.xz")"
         build_bundled_native_gcc "$gcc_src" "$binutils_src"
     fi

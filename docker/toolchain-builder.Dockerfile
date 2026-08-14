@@ -13,6 +13,7 @@ RUN apt-get update \
         bison \
         make \
         patch \
+        patchelf \
         perl \
         python3 \
         python3-dev \
@@ -35,8 +36,6 @@ RUN apt-get update \
         libsource-highlight-dev \
         libxxhash-dev \
         libbabeltrace-dev \
-        openmpi-bin \
-        libopenmpi-dev \
         libc6-dbg \
     && if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
         apt-get install -y --no-install-recommends libipt-dev; \

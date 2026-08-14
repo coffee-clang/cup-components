@@ -950,11 +950,12 @@ verify_linux_runtime_libraries() {
             linux_runtime_library_name_is_safe "$name" ||
                 die "unsafe Linux runtime dependency name after packaging for $(basename "$file"): $name"
 
+            linux_runtime_library_name_is_base "$name" && continue
+
             if [ "$resolved" = "!NOT_FOUND!" ]; then
                 die "unresolved Linux runtime dependency after packaging for $(basename "$file"): $name"
             fi
 
-            linux_runtime_library_name_is_base "$name" && continue
             case "$resolved" in
                 "$prefix"/*) ;;
                 *) die "Linux package still resolves external runtime dependency for $(basename "$file"): $name -> $resolved" ;;

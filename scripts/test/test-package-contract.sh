@@ -948,6 +948,35 @@ EOF_TOOL
         exit 1
     fi
 
+    verifier_fixture="$elf_tmp/verifier-fixture"
+    mkdir -p "$verifier_fixture/bin"
+    : > "$verifier_fixture/bin/tool"
+
+    # Final verification applies the base-ABI exception before unresolved-path
+    # rejection. Non-base dependencies remain fail-closed.
+    (
+        linux_dynamic_elf_files() { printf '%s\n' "$verifier_fixture/bin/tool"; }
+        linux_ldd_dependencies() { printf 'ld-linux-fixture.so.2\t!NOT_FOUND!\n'; }
+        verify_linux_runtime_libraries "$verifier_fixture"
+    )
+    if (
+        linux_dynamic_elf_files() { printf '%s\n' "$verifier_fixture/bin/tool"; }
+        linux_ldd_dependencies() { printf 'libmissingfixture.so.1\t!NOT_FOUND!\n'; }
+        verify_linux_runtime_libraries "$verifier_fixture"
+    ) >/dev/null 2>&1; then
+        echo 'Linux verifier accepted an unresolved non-base dependency' >&2
+        exit 1
+    fi
+    if (
+        linux_dynamic_elf_files() { printf '%s\n' "$verifier_fixture/bin/tool"; }
+        linux_ldd_dependencies() { printf 'libexternalfixture.so.1\t/outside/libexternalfixture.so.1\n'; }
+        verify_linux_runtime_libraries "$verifier_fixture"
+    ) >/dev/null 2>&1; then
+        echo 'Linux verifier accepted a resolved external non-base dependency' >&2
+        exit 1
+    fi
+    printf 'Linux final-verifier base/non-base ordering test passed\n'
+
     external_root="$elf_tmp/external"
     external_prefix="$elf_tmp/external-prefix"
     mkdir -p "$external_root" "$external_prefix/bin"

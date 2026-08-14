@@ -45,7 +45,7 @@ Windows packages may contain:
 
 POSIX symbolic links are rejected if they are absolute, escape the package, are dangling, are cyclic or resolve to a directory. Link-target text must also satisfy the shared package path grammar.
 
-Hardlink identity is not part of the package contract. Hardlinked source paths are normalized into independent regular files. FIFOs, sockets, device nodes and other special filesystem objects are rejected.
+Hardlink inode identity is not part of the logical package contract. Hardlinked pathnames are represented as regular-file paths, and packaging or archive formats may preserve or materialize inode sharing. When a required pathname-specific transformation needs independent bytes, the producer may materialize only that pathname before applying the transformation. FIFOs, sockets, device nodes and other special filesystem objects are rejected.
 
 Before the manifest is written, directory and executable-file modes are normalized to `0755`; non-executable regular files are normalized to `0644`.
 
@@ -165,7 +165,7 @@ Every package is emitted as:
 <package-base>.zip
 ```
 
-All three archives represent the same logical object graph.
+All three archives represent the same logical object graph: path set, object semantics, regular-file contents, relevant modes, symbolic-link semantics and manifest agreement. Hardlink inode sharing is not part of archive parity.
 
 POSIX ZIP creation preserves admitted symbolic links rather than dereferencing them. Windows packages contain no symbolic links, so the Windows object graph is directory/regular-file only in every format.
 
@@ -204,9 +204,11 @@ Runtime closure starts from the dynamic objects inside the package, follows thei
 
 ### Linux
 
-Dynamic ELF files are inspected recursively. glibc and loader facilities remain external. Other resolved shared-library dependencies are copied into package `lib/`.
+Dynamic ELF files are inspected recursively. `DT_NEEDED` entries define the dependency graph; `ldd` is used only to resolve those dependency names. A dynamic ELF with no `DT_NEEDED` entries therefore has an empty dependency set rather than a diagnostic-text dependency.
 
-Dynamic ELF objects receive package-relative `$ORIGIN` RUNPATHs. The dependency walk is then repeated and every non-base dependency must resolve inside the package.
+Glibc and loader facilities remain external. A required non-base dependency that is external to the package is copied into package `lib/`. A dependency already supplied by the upstream package layout stays in that layout rather than being moved or duplicated merely to fit the closure implementation.
+
+For each dynamic ELF, the producer derives the package-owned directories that contain its required non-base dependencies and replaces build/staging search paths with equivalent package-relative `$ORIGIN` RUNPATH entries. This preserves upstream runtime layouts such as a tool-provided `lib64` when they are actually needed. If hardlinked pathnames require different RUNPATH bytes, the producer materializes only the pathname being rewritten. The dependency walk is then repeated and every non-base dependency accepted as package-owned during discovery must still resolve inside the package after rewriting.
 
 Dependency discovery ignores ambient builder `LD_LIBRARY_PATH`, so a library available only because of the build environment cannot make an incomplete package appear valid.
 

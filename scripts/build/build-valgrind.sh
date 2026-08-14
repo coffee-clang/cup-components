@@ -143,12 +143,18 @@ WRAPPER
 build_valgrind() {
     local source_dir="$1"
     local build_dir="$CUP_BUILD_DIR/valgrind-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
+    local configure_help
+
+    configure_help="$("$source_dir/configure" --help)" ||
+        die "could not inspect Valgrind configure options"
+    printf '%s\n' "$configure_help" | grep -F -- '--with-gdbscripts-dir' >/dev/null ||
+        die "Valgrind configure does not expose gdbscripts-dir control"
 
     local configure_args=(
         --prefix="$PREFIX"
         --enable-only64bit
         --without-mpicc
-        --without-gdb-scripts-dir
+        --without-gdbscripts-dir
     )
 
     log "building Valgrind $VERSION for $HOST_PLATFORM -> $TARGET_PLATFORM"
@@ -206,7 +212,7 @@ write_valgrind_info() {
         "source.primary.name=valgrind"
         "source.primary.version=$VERSION"
         "source.primary.url=$SOURCE_URL"
-        "config.configure=--enable-only64bit;--without-mpicc;--without-gdb-scripts-dir"
+        "config.configure=--enable-only64bit;--without-mpicc;--without-gdbscripts-dir"
         "config.only64bit=true"
         "config.mpi=false"
         "$(info_required_entry entry.valgrind "$PREFIX" valgrind)"

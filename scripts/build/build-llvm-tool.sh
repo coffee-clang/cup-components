@@ -1543,7 +1543,7 @@ build_llvm_tool() {
 
     if [ "$TOOL" = "lldb" ]; then
         if is_windows_platform "$HOST_PLATFORM"; then
-            copy_windows_python_runtime "$build_dir"
+            copy_windows_python_runtime "$build_dir" false true
         elif is_linux_platform "$HOST_PLATFORM" || is_macos_platform "$HOST_PLATFORM"; then
             copy_posix_python_runtime "$lldb_python" true
         fi

@@ -175,8 +175,8 @@ A failed download or failed extraction stops the build. Source identity/trust se
 After a tool installs into staging, common finalization:
 
 1. validates staging paths and object types;
-2. closes supported non-system host runtime dependencies;
-3. normalizes the package root, hardlink identity and file modes;
+2. closes supported non-system host runtime dependencies, materializing a pathname only when a path-specific runtime rewrite requires independent bytes;
+3. normalizes the package root representation and file modes;
 4. validates `info.txt`;
 5. writes and verifies `manifest.txt`;
 6. creates all three archive formats;

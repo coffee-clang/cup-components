@@ -671,42 +671,68 @@ copy_posix_python_runtime() {
     log "copied Python $version runtime into package"
 }
 
-linux_ldd_dependencies() {
+linux_elf_needed_names() {
     local file="$1"
     local output
 
+    if ! output="$(LC_ALL=C readelf -dW "$file" 2>&1)"; then
+        log "readelf -dW failed for $file"
+        [ -z "$output" ] || printf '%s\n' "$output" >&2
+        return 1
+    fi
+
+    printf '%s\n' "$output" | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p'
+}
+
+linux_ldd_dependencies() {
+    local file="$1"
+    local needed
+    local output
+    local name
+    local record
+
+    # DT_NEEDED defines the dependency graph. ldd is used only to resolve
+    # those names; loader diagnostics are never interpreted as dependencies.
+    if ! needed="$(linux_elf_needed_names "$file")"; then
+        return 1
+    fi
+    [ -n "$needed" ] || return 0
+
     # Producer closure must not depend on an ambient LD_LIBRARY_PATH from the
-    # builder. Only the explicit staging search path may influence discovery.
-    if ! output="$(env LD_LIBRARY_PATH="${LINUX_RUNTIME_SEARCH_PATH:-}" \
+    # builder. Only the explicit staging search path may influence resolution.
+    if ! output="$(env LC_ALL=C LD_LIBRARY_PATH="${LINUX_RUNTIME_SEARCH_PATH:-}" \
         ldd "$file" 2>&1)"; then
         log "ldd failed for $file"
         [ -z "$output" ] || printf '%s\n' "$output" >&2
         return 1
     fi
 
-    printf '%s\n' "$output" | awk '
-        {
-            line=$0
-            sub(/^[[:space:]]+/, "", line)
-            if (line == "") next
-
-            arrow=index(line, " => ")
-            if (arrow > 0) {
-                name=substr(line, 1, arrow - 1)
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        record="$(printf '%s\n' "$output" | awk -v wanted="$name" '
+            {
+                line=$0
+                sub(/^[[:space:]]+/, "", line)
+                arrow=index(line, " => ")
+                if (arrow <= 0) next
+                candidate=substr(line, 1, arrow - 1)
+                if (candidate != wanted) next
                 value=substr(line, arrow + 4)
                 if (value ~ /^not found([[:space:]]|$)/) {
-                    print name "\t!NOT_FOUND!"
-                    next
+                    print "!NOT_FOUND!"
+                    exit
                 }
                 sub(/[[:space:]]+\(0x[0-9A-Fa-f]+\)[[:space:]]*$/, "", value)
-                print name "\t" value
-                next
+                print value
+                exit
             }
-
-            sub(/[[:space:]]+\(0x[0-9A-Fa-f]+\)[[:space:]]*$/, "", line)
-            print "!DIRECT!\t" line
-        }
-    '
+        ')"
+        if [ -z "$record" ]; then
+            printf '%s\t!NOT_FOUND!\n' "$name"
+        else
+            printf '%s\t%s\n' "$name" "$record"
+        fi
+    done <<< "$needed"
 }
 
 linux_runtime_library_name_is_safe() {
@@ -739,14 +765,6 @@ linux_copy_resolved_runtime_libraries() {
             while IFS=$'\t' read -r name resolved; do
                 [ -n "$name" ] || continue
 
-                if [ "$name" = "!DIRECT!" ]; then
-                    linux_runtime_library_name_is_base "$resolved" && continue
-                    case "$resolved" in
-                        "$prefix"/*) continue ;;
-                        *) die "unsupported direct Linux runtime dependency for $(basename "$file"): $resolved" ;;
-                    esac
-                fi
-
                 linux_runtime_library_name_is_safe "$name" ||
                     die "unsafe Linux runtime dependency name for $(basename "$file"): $name"
 
@@ -759,10 +777,11 @@ linux_copy_resolved_runtime_libraries() {
                 [ -n "$resolved" ] && [ -f "$resolved" ] ||
                     die "invalid Linux runtime dependency resolution for $(basename "$file"): $name -> $resolved"
 
+                # A dependency already supplied by the package keeps its upstream
+                # layout. The rewrite phase will make that directory reachable
+                # through a package-relative RUNPATH.
                 case "$resolved" in
-                    "$prefix"/*)
-                        continue
-                        ;;
+                    "$prefix"/*) continue ;;
                 esac
 
                 destination="$prefix/lib/$name"
@@ -783,22 +802,132 @@ linux_copy_resolved_runtime_libraries() {
     done
 }
 
+linux_materialize_hardlinked_path_for_rewrite() {
+    local file="$1"
+    local links
+    local temporary
+
+    links="$(stat -c %h "$file")" || return 1
+    [ "$links" -gt 1 ] || return 0
+
+    temporary="$file.cup-cow.$$"
+    cp -p "$file" "$temporary" || return 1
+    mv -f "$temporary" "$file" || {
+        rm -f "$temporary"
+        return 1
+    }
+}
+
+linux_runtime_directory_for_dependency() {
+    local prefix="$1"
+    local name="$2"
+    local resolved="$3"
+    local copied="$prefix/lib/$name"
+    local canonical_prefix
+    local canonical_resolved
+    local canonical_directory
+
+    canonical_prefix="$(realpath -m "$prefix")" || return 1
+    canonical_resolved="$(realpath -m "$resolved")" || return 1
+    canonical_directory="$(realpath -m "$(dirname "$resolved")")" || return 1
+
+    case "$canonical_resolved" in
+        "$canonical_prefix"/*)
+            # Preserve the directory through which the loader resolved the
+            # dependency name. The final file may itself be a symlink.
+            case "$canonical_directory" in
+                "$canonical_prefix"/*|"$canonical_prefix")
+                    printf '%s\n' "$canonical_directory"
+                    return 0
+                    ;;
+            esac
+            return 1
+            ;;
+    esac
+
+    # External non-base libraries are copied by the closure phase into lib/.
+    # An upstream DT_RPATH can still make ldd report the original path, so use
+    # the package copy when it is byte-identical to that resolution.
+    if [ -f "$copied" ] && cmp -s "$resolved" "$copied"; then
+        printf '%s\n' "$canonical_prefix/lib"
+        return 0
+    fi
+
+    return 1
+}
+
+linux_runpath_for_file() {
+    local prefix="$1"
+    local file="$2"
+    local dependencies
+    local name
+    local resolved
+    local runtime_dir
+    local relative
+    local entry
+    local runpath=""
+    local seen=""
+    local search_path="$prefix/lib:$prefix/lib64"
+    local canonical_prefix
+
+    canonical_prefix="$(realpath -m "$prefix")" || return 1
+
+    if ! dependencies="$(LINUX_RUNTIME_SEARCH_PATH="$search_path" linux_ldd_dependencies "$file")"; then
+        return 1
+    fi
+
+    while IFS=$'\t' read -r name resolved; do
+        [ -n "$name" ] || continue
+        linux_runtime_library_name_is_safe "$name" || return 1
+
+        if [ "$resolved" = "!NOT_FOUND!" ]; then
+            linux_runtime_library_name_is_base "$name" && continue
+            return 1
+        fi
+        linux_runtime_library_name_is_base "$name" && continue
+
+        runtime_dir="$(linux_runtime_directory_for_dependency "$prefix" "$name" "$resolved")" || return 1
+        case "$runtime_dir" in
+            "$canonical_prefix"/*|"$canonical_prefix") ;;
+            *) return 1 ;;
+        esac
+
+        case $'\n'"$seen"$'\n' in
+            *$'\n'"$runtime_dir"$'\n'*) continue ;;
+        esac
+        seen="${seen:+$seen$'\n'}$runtime_dir"
+
+        relative="$(realpath --relative-to="$(dirname "$file")" "$runtime_dir")" || return 1
+        if [ "$relative" = "." ]; then
+            entry='$ORIGIN'
+        else
+            entry="\$ORIGIN/$relative"
+        fi
+        runpath="${runpath:+$runpath:}$entry"
+    done <<< "$dependencies"
+
+    printf '%s\n' "$runpath"
+}
+
 linux_patch_runtime_search_paths() {
     local prefix="$1"
     local file
-    local relative
     local runpath
 
     command -v patchelf >/dev/null 2>&1 ||
         die "patchelf is required to make Linux component packages relocatable"
 
+    # A pathname-specific RUNPATH requires independent bytes. Break only ELF
+    # hardlinks that are about to be rewritten; hardlink identity itself is not
+    # part of the logical package contract.
     while IFS= read -r file; do
-        relative="$(realpath --relative-to="$(dirname "$file")" "$prefix/lib")"
-        if [ "$relative" = "." ]; then
-            runpath='$ORIGIN'
-        else
-            runpath="\$ORIGIN/$relative"
-        fi
+        linux_materialize_hardlinked_path_for_rewrite "$file" ||
+            die "failed to materialize hardlinked ELF before RUNPATH rewrite: $file"
+    done < <(linux_dynamic_elf_files "$prefix")
+
+    while IFS= read -r file; do
+        runpath="$(linux_runpath_for_file "$prefix" "$file")" ||
+            die "failed to derive package-relative Linux RUNPATH for $(basename "$file")"
         patchelf --set-rpath "$runpath" "$file"
     done < <(linux_dynamic_elf_files "$prefix")
 }
@@ -817,13 +946,6 @@ verify_linux_runtime_libraries() {
         while IFS=$'\t' read -r name resolved; do
             [ -n "$name" ] || continue
 
-            if [ "$name" = "!DIRECT!" ]; then
-                linux_runtime_library_name_is_base "$resolved" && continue
-                case "$resolved" in
-                    "$prefix"/*) continue ;;
-                    *) die "Linux package retains an external direct runtime dependency for $(basename "$file"): $resolved" ;;
-                esac
-            fi
 
             linux_runtime_library_name_is_safe "$name" ||
                 die "unsafe Linux runtime dependency name after packaging for $(basename "$file"): $name"
@@ -1330,6 +1452,7 @@ copy_windows_runtime_dlls() {
 copy_windows_python_runtime() {
     local cmake_cache="${1:-}"
     local copy_executable="${2:-false}"
+    local include_lldb="${3:-false}"
     local python_executable=""
     local python_library=""
     local version
@@ -1421,12 +1544,14 @@ PYSCRIPT
     mkdir -p "$dst"
     cp -RPp "$stdlib"/. "$dst"/
 
-    if [ -d "$dst/site-packages/lldb" ]; then
-        log "preserved LLDB Python package: $dst/site-packages/lldb"
-        "$python_executable" -m compileall -q "$dst/site-packages/lldb" || true
-        "$python_executable" -O -m compileall -q "$dst/site-packages/lldb" || true
-    else
-        log "warning: LLDB Python package was not found under $dst/site-packages/lldb"
+    if [ "$include_lldb" = true ]; then
+        if [ -d "$dst/site-packages/lldb" ]; then
+            log "preserved LLDB Python package: $dst/site-packages/lldb"
+            "$python_executable" -m compileall -q "$dst/site-packages/lldb" || true
+            "$python_executable" -O -m compileall -q "$dst/site-packages/lldb" || true
+        else
+            log "warning: LLDB Python package was not found under $dst/site-packages/lldb"
+        fi
     fi
 
     find "$dst" -type d -name __pycache__ -prune -exec rm -rf {} +
@@ -1482,7 +1607,7 @@ EOF_DLLS
     fi
 
     create_windows_python_dll_aliases "$PREFIX/bin"
-    create_windows_python_path_config "$PREFIX/bin" "$version"
+    create_windows_python_path_config "$PREFIX/bin" "$version" "$include_lldb"
 
     if [ "$copy_executable" = true ]; then
         cp -f "$python_executable" "$PREFIX/bin/cup-python3.exe"
@@ -1500,6 +1625,7 @@ EOF_PYTHON_PATH
 create_windows_python_path_config() {
     local bin_dir="$1"
     local version="$2"
+    local include_lldb="${3:-false}"
     local major
     local minor
     local names=()
@@ -1520,9 +1646,10 @@ create_windows_python_path_config() {
         "python${major}${minor}"
         "libpython${version}"
         "libpython${major}"
-        "lldb"
-        "lldb-dap"
     )
+    if [ "$include_lldb" = true ]; then
+        names+=(lldb lldb-dap)
+    fi
 
     for name in "${names[@]}"; do
         pth_file="$bin_dir/$name._pth"
@@ -1720,7 +1847,6 @@ package_verify_tree() {
     local host_platform="$2"
     local path
     local relative
-    local hardlinked
 
     while IFS= read -r -d '' path; do
         relative="${path#"$package_root"/}"
@@ -1738,9 +1864,6 @@ package_verify_tree() {
         die "final package root contains an unsupported object: $relative"
     done < <(find "$package_root" ! -path "$package_root" -print0)
 
-    hardlinked="$(find "$package_root" -type f -links +1 -print -quit 2>/dev/null || true)"
-    [ -z "$hardlinked" ] ||
-        die "final package root preserves hardlink identity: ${hardlinked#"$package_root"/}"
 }
 
 package_write_manifest() {
@@ -2098,9 +2221,8 @@ package_normalize_root() {
     rm -rf "$package_root"
     mkdir -p "$package_root"
 
-    # Preserve admitted symbolic links, but deliberately do not preserve hardlink identity.
-    # -P is the portable cp spelling for "do not follow symbolic links" during recursive copy;
-    # omitting --preserve=links makes hardlinked regular files independent in the package root.
+    # Preserve admitted symbolic links. Hardlink inode identity is not part of the
+    # logical package contract; this ordinary copy may materialize hardlinked paths.
     cp -RPp "$prefix"/. "$package_root"/
     package_normalize_modes "$package_root" "$host_platform"
     package_verify_tree "$package_root" "$host_platform"
@@ -2202,6 +2324,19 @@ verify_package_checksums() {
     done
 }
 
+package_prune_nonrelocatable_libtool_archives() {
+    local prefix="$1"
+    local path
+
+    while IFS= read -r -d '' path; do
+        if grep -F "$CUP_WORK_DIR/" "$path" >/dev/null 2>&1 ||
+           grep -F "$prefix/" "$path" >/dev/null 2>&1; then
+            log "removing non-relocatable libtool metadata: ${path#"$prefix"/}"
+            rm -f "$path"
+        fi
+    done < <(find "$prefix" -type f -name '*.la' -print0)
+}
+
 create_packages() {
     local tool="$1"
     local version="$2"
@@ -2224,6 +2359,7 @@ create_packages() {
     # filenames or derives copy destinations from the staging tree.
     package_verify_staging_objects "$prefix"
     package_verify_staging_paths "$prefix"
+    package_prune_nonrelocatable_libtool_archives "$prefix"
     prepare_linux_runtime_closure "$prefix" "$host_platform"
     prepare_macos_runtime_closure "$prefix" "$host_platform"
     package_normalize_root "$prefix" "$package_root" "$host_platform"

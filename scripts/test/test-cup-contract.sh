@@ -79,16 +79,15 @@ expect_reject() {
 
 case "${CUP_CONTRACT_MODE:-reject}" in
     reject)
-        # The read-only CUP authority in the producer-freeze handoff still uses
-        # the pre-propagation consumer contract. Rejection is the expected proof
-        # that CUP must be updated only after this producer model is frozen.
+        # The current CUP consumer still implements the previous package
+        # contract, so it must reject this manifest-v2/symlink producer fixture.
         expect_reject "$package_root"
         printf 'current CUP consumer rejection of revisionless manifest-v2/symlink package confirmed\n'
         exit 0
         ;;
     accept)
-        # Use this mode in the subsequent CUP consumer wave. Once the new object
-        # model is implemented, the producer fixture must pass and mutations must fail.
+        # This mode qualifies a CUP consumer that implements the current
+        # producer object model; the valid fixture must pass before mutations run.
         validate "$package_root"
         ;;
     *)

@@ -45,6 +45,14 @@ function Assert-FileExists {
     }
 }
 
+function Assert-FileMissing {
+    param([Parameter(Mandatory = $true)][string] $Path)
+
+    if (Test-Path $Path) {
+        throw "Unexpected file is present: $Path"
+    }
+}
+
 function Assert-OutputContains {
     param(
         [Parameter(Mandatory = $true)]
@@ -112,6 +120,30 @@ Get-Content "$root\info.txt"
 
 pwsh scripts/test/package-capabilities-windows.ps1 -Root $root -Tool 'gdb'
 
+if (-not (Test-FeatureEnabled -Root $root -Key 'features.tui') -or
+    -not (Test-FeatureEnabled -Root $root -Key 'config.tui')) {
+    throw 'required GDB TUI capability is not fully declared in info.txt'
+}
+if (-not (Test-FeatureEnabled -Root $root -Key 'features.gdbserver') -or
+    -not (Test-FeatureEnabled -Root $root -Key 'features.remote_debugging')) {
+    throw 'required GDB remote-debugging capability is not fully declared in info.txt'
+}
+Assert-FileMissing (Join-Path $root 'bin\lldb._pth')
+Assert-FileMissing (Join-Path $root 'bin\lldb-dap._pth')
+
+$objdump = (Get-Command objdump.exe -ErrorAction Stop).Source
+$gdbSections = Invoke-NativeCapture -FilePath $objdump -ArgumentList @('-h', "$root\bin\gdb.exe")
+if (($gdbSections | Out-String) -match '(?m)\.debug_') {
+    throw 'GDB Windows executable still contains debug-only sections after package stripping'
+}
+
+$nonRelocatableLa = Get-ChildItem -Path $root -Recurse -File -Filter '*.la' | Where-Object {
+    (Get-Content -Raw $_.FullName) -match '\.cup-build|/d/a/cup-components/'
+}
+if ($nonRelocatableLa) {
+    throw "Non-relocatable libtool metadata remains in package: $($nonRelocatableLa.FullName -join ', ')"
+}
+
 $testDir = Join-Path $env:TEMP 'cup-gdb-windows-test'
 Remove-Item -Recurse -Force $testDir -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $testDir | Out-Null
@@ -150,7 +182,14 @@ Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
 $env:Path = "$root\bin;$env:SystemRoot\System32;$env:SystemRoot"
 
 Invoke-Native -FilePath "$root\bin\gdb.exe" -ArgumentList @('--version')
-Invoke-Native -FilePath "$root\bin\gdb.exe" -ArgumentList @('--configuration')
+$configurationOutput = Invoke-NativeCapture -FilePath "$root\bin\gdb.exe" -ArgumentList @('--configuration')
+Assert-OutputContains -Output $configurationOutput -Pattern '--enable-tui'
+Invoke-Native -FilePath "$root\bin\gdbserver.exe" -ArgumentList @('--version')
+$tuiOutput = Invoke-NativeCapture -FilePath "$root\bin\gdb.exe" -ArgumentList @('-q', '-batch', '-ex', 'help tui')
+Assert-OutputContains -Output $tuiOutput -Pattern '(?im)text user interface|^tui\s+--'
+if (($tuiOutput | Out-String) -match 'Undefined command') {
+    throw 'packaged GDB does not provide the declared TUI command set'
+}
 
 # Python is a major user-facing GDB capability when declared by the package.
 # We intentionally do not assert every configure-time library from info.txt.
@@ -187,6 +226,53 @@ Assert-OutputContains -Output $output -Pattern '\$1 = 20'
 Assert-OutputContains -Output $output -Pattern '\$2 = 22'
 Assert-OutputContains -Output $output -Pattern '#0'
 
+# Exercise the packaged gdbserver over loopback; no external network is used.
+$listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+$listener.Start()
+$remotePort = ([Net.IPEndPoint] $listener.LocalEndpoint).Port
+$listener.Stop()
+$serverOut = Join-Path $testDir 'gdbserver.out'
+$serverErr = Join-Path $testDir 'gdbserver.err'
+$server = Start-Process -FilePath "$root\bin\gdbserver.exe" `
+    -ArgumentList @("127.0.0.1:$remotePort", "`"$testExe`"") `
+    -RedirectStandardOutput $serverOut -RedirectStandardError $serverErr -PassThru -NoNewWindow
+try {
+    $serverReady = $false
+    for ($attempt = 0; $attempt -lt 40; $attempt++) {
+        if ($server.HasExited) { break }
+        $serverText = @()
+        if (Test-Path $serverOut) { $serverText += Get-Content $serverOut }
+        if (Test-Path $serverErr) { $serverText += Get-Content $serverErr }
+        if (($serverText | Out-String) -match '(?i)listening on port') {
+            $serverReady = $true
+            break
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    if (-not $serverReady) {
+        throw 'packaged gdbserver did not reach loopback listening state'
+    }
+    $remoteOutput = Invoke-NativeCapture -FilePath "$root\bin\gdb.exe" -ArgumentList @(
+        '-q', '-batch',
+        '-ex', "file $gdbTestExe",
+        '-ex', "target remote 127.0.0.1:$remotePort",
+        '-ex', 'break add',
+        '-ex', 'continue',
+        '-ex', 'print a',
+        '-ex', 'print b',
+        '-ex', 'backtrace'
+    )
+    Assert-OutputContains -Output $remoteOutput -Pattern '\$1 = 20'
+    Assert-OutputContains -Output $remoteOutput -Pattern '\$2 = 22'
+    Assert-OutputContains -Output $remoteOutput -Pattern '#0'
+}
+finally {
+    if (-not $server.HasExited) { $server.Kill() }
+    $server.WaitForExit()
+    if (Test-Path $serverOut) { Get-Content $serverOut | ForEach-Object { Write-Host $_ } }
+    if (Test-Path $serverErr) { Get-Content $serverErr | ForEach-Object { Write-Host $_ } }
+}
+
 $relocationParent = Join-Path $testDir 'relocated'
 Remove-Item -Recurse -Force $relocationParent -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $relocationParent | Out-Null
@@ -197,6 +283,9 @@ Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
 $env:Path = "$relocatedRoot\bin;$env:SystemRoot\System32;$env:SystemRoot"
 
 Invoke-Native -FilePath "$relocatedRoot\bin\gdb.exe" -ArgumentList @('--version')
+Invoke-Native -FilePath "$relocatedRoot\bin\gdbserver.exe" -ArgumentList @('--version')
+$relocatedTuiOutput = Invoke-NativeCapture -FilePath "$relocatedRoot\bin\gdb.exe" -ArgumentList @('-q', '-batch', '-ex', 'help tui')
+Assert-OutputContains -Output $relocatedTuiOutput -Pattern '(?im)text user interface|^tui\s+--'
 $output = Invoke-NativeCapture -FilePath "$relocatedRoot\bin\gdb.exe" -ArgumentList @(
     '-q', '-batch', '-ex', 'python import sys, gdb; print("python-reloc-ok", sys.version_info[0], sys.version_info[1])'
 )

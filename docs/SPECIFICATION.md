@@ -146,7 +146,7 @@ manifest.txt
 
 `info.txt` describes semantic package identity, platform, entry points, capabilities, build configuration and source provenance. `manifest.txt` inventories the finalized package tree.
 
-On POSIX hosts the package object model admits directories, regular files and safe relative internal symbolic links whose finite chain ends at a regular file. Windows packages contain directories and regular files only. Hardlink identity is normalized away, special filesystem objects are rejected, and the three archive formats represent the same logical object graph.
+On POSIX hosts the package object model admits directories, regular files and safe relative internal symbolic links whose finite chain ends at a regular file. Windows packages contain directories and regular files only. Hardlink inode sharing is not logical package semantics, special filesystem objects are rejected, and the three archive formats represent the same logical object graph without requiring identical inode topology.
 
 The complete representation and validation rules are defined in [Packages](PACKAGES.md).
 

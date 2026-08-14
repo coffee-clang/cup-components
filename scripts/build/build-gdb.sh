@@ -111,9 +111,35 @@ gdb_supports_python() {
     fi
 }
 
+gdb_supports_tui() {
+    local gdb_bin
+    local output
+
+    gdb_bin="$PREFIX/bin/gdb"
+    if is_windows_platform "$HOST_PLATFORM"; then
+        gdb_bin="$PREFIX/bin/gdb.exe"
+    fi
+
+    [ -x "$gdb_bin" ] || {
+        printf '%s\n' false
+        return 0
+    }
+
+    if output="$(LC_ALL=C "$gdb_bin" -q -batch -ex 'help tui' 2>&1)" \
+        && ! printf '%s\n' "$output" | grep -F 'Undefined command' >/dev/null \
+        && printf '%s\n' "$output" | grep -Ei 'text user interface|^tui[[:space:]]+--' >/dev/null; then
+        printf '%s\n' true
+    else
+        printf '%s\n' false
+    fi
+}
+
 validate_gdb_required_features() {
     if [ "$(gdb_supports_python)" != "true" ]; then
         die "required GDB Python support is not working"
+    fi
+    if [ "$(gdb_supports_tui)" != "true" ]; then
+        die "required GDB TUI support is not working"
     fi
 }
 
@@ -159,6 +185,12 @@ build_gdb() {
     )
 
     if is_windows_platform "$HOST_PLATFORM"; then
+        need strip
+        need objdump
+        strip --strip-debug "$PREFIX/bin/gdb.exe"
+        if objdump -h "$PREFIX/bin/gdb.exe" | grep -Eq '[[:space:]]\.debug_'; then
+            die "GDB Windows executable retains debug-only sections after stripping"
+        fi
         copy_windows_python_runtime
         copy_windows_runtime_dlls "$PREFIX/bin"
         verify_windows_runtime_dlls "$PREFIX/bin"
@@ -178,7 +210,7 @@ write_gdb_info() {
     local has_gdb
     local has_gdbserver
     local has_python
-    local has_tui=true
+    local has_tui
 
     if ! is_windows_platform "$HOST_PLATFORM"; then
         debuginfod=true
@@ -188,13 +220,12 @@ write_gdb_info() {
         if [ "$HOST_PLATFORM" = "linux-x64" ] && [ "$TARGET_PLATFORM" = "linux-x64" ]; then
             intel_pt=true
         fi
-    else
-        has_tui=false
     fi
 
     has_gdb="$(metadata_bool_for_executable "$PREFIX" gdb)"
     has_gdbserver="$(metadata_bool_for_executable "$PREFIX" gdbserver)"
     has_python="$(gdb_supports_python)"
+    has_tui="$(gdb_supports_tui)"
 
     local info=(
         "package.component=$COMPONENT"

@@ -130,11 +130,6 @@ fi
 [ -L "$package_root/lib/libfixture-current.so" ] || { echo 'symlink chain was not preserved' >&2; exit 1; }
 [ -L "$package_root/lib/aliases/libfixture.so" ] || { echo 'parent-relative symlink was not preserved' >&2; exit 1; }
 [ "$(cat "$package_root/lib/libfixture-current.so")" = payload ] || { echo 'preserved symlink chain resolves to wrong bytes' >&2; exit 1; }
-[ "$(find "$package_root" -type f -links +1 -print -quit)" = "" ] || {
-    echo 'hardlink identity survived package normalization' >&2
-    exit 1
-}
-
 link_digest="$(package_text_digest 'libfixture.so.2')"
 grep -F $'l\t-\t'"$link_digest"$'\tlib/libfixture.so' "$package_root/manifest.txt" >/dev/null
 grep -F $'f\t0644\t' "$package_root/manifest.txt" | grep -F $'\tshare/data/a' >/dev/null
@@ -594,12 +589,16 @@ printf 'macOS 15.0 source contract tests passed\n'
 # LD_LIBRARY_PATH. A fake ldd records the exact value it receives.
 fake_bin="$TMP/fake-bin"
 mkdir -p "$fake_bin"
+cat > "$fake_bin/readelf" <<'EOF_FAKE_READELF'
+#!/bin/sh
+printf ' 0x0000000000000001 (NEEDED)             Shared library: [libfixture.so]\n'
+EOF_FAKE_READELF
 cat > "$fake_bin/ldd" <<'EOF_FAKE_LDD'
 #!/bin/sh
 printf '%s' "$LD_LIBRARY_PATH" > "$LDD_CAPTURE"
-printf 'linux-vdso.so.1 (0x0000000000000000)\n'
+printf 'libfixture.so => /package/lib/libfixture.so (0x0000000000000000)\n'
 EOF_FAKE_LDD
-chmod +x "$fake_bin/ldd"
+chmod +x "$fake_bin/readelf" "$fake_bin/ldd"
 ldd_capture="$TMP/ldd-environment"
 PATH="$fake_bin:$PATH" \
 LDD_CAPTURE="$ldd_capture" \
@@ -834,3 +833,318 @@ for i in $(seq 1 10); do printf 'dylib%s' "$i" > "$deep_mac_external/lib$i.dylib
     exit 1
 }
 printf 'macOS runtime-closure convergence-depth test passed\n'
+# Linux runtime closure is exercised with real synthetic ELF objects on Linux.
+# DT_NEEDED is the dependency graph; ldd is only a resolver for those names.
+if [ "$(uname -s)" = Linux ] && command -v gcc >/dev/null 2>&1 && command -v perl >/dev/null 2>&1; then
+    elf_tmp="$TMP/linux-runtime-fixtures"
+    mkdir -p "$elf_tmp"
+
+    cat > "$elf_tmp/nodeps.c" <<'EOF_NODEPS'
+int fixture_nodeps(void) { return 0; }
+EOF_NODEPS
+    gcc -shared -fPIC -nostdlib -Wl,-soname,libnodeps.so \
+        "$elf_tmp/nodeps.c" -o "$elf_tmp/libnodeps.so"
+    [ -z "$(linux_elf_needed_names "$elf_tmp/libnodeps.so")" ] || {
+        echo 'synthetic no-DT_NEEDED ELF unexpectedly has dependencies' >&2
+        exit 1
+    }
+    [ -z "$(linux_ldd_dependencies "$elf_tmp/libnodeps.so")" ] || {
+        echo 'dynamic ELF without DT_NEEDED produced a runtime dependency' >&2
+        exit 1
+    }
+    if (
+        readelf() { return 7; }
+        linux_ldd_dependencies "$elf_tmp/libnodeps.so"
+    ) >/dev/null 2>&1; then
+        echo 'Linux dependency inspection accepted a readelf failure' >&2
+        exit 1
+    fi
+    printf 'Linux zero-DT_NEEDED/readelf fail-closed tests passed\n'
+
+    # Local test substitute for patchelf. Every fixture starts with a deliberately
+    # padded RUNPATH, so this helper only needs to replace existing DT_RPATH/RUNPATH
+    # text in-place. Native producer qualification still uses real patchelf.
+    fixture_tools="$elf_tmp/tools"
+    mkdir -p "$fixture_tools"
+    cat > "$fixture_tools/patchelf" <<'EOF_PATCHELF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$#" -eq 3 ] && [ "$1" = --set-rpath ] || exit 2
+new="$2"
+file="$3"
+old="$(readelf -d "$file" | sed -n 's/.*Library .*path: \[\([^]]*\)\].*/\1/p' | head -n 1)"
+[ -n "$old" ] || { echo "fixture patchelf requires an existing RUNPATH: $file" >&2; exit 1; }
+OLD="$old" NEW="$new" FILE="$file" perl -e '
+use strict;
+use warnings;
+my ($file, $old, $new) = @ENV{qw(FILE OLD NEW)};
+open my $fh, "+<:raw", $file or die "$file: $!";
+local $/;
+my $data = <$fh>;
+my $pos = index($data, $old . "\0");
+die "existing RUNPATH not found\n" if $pos < 0;
+die "replacement RUNPATH exceeds fixture capacity\n" if length($new) > length($old);
+substr($data, $pos, length($old), $new . ("\0" x (length($old) - length($new))));
+seek($fh, 0, 0) or die $!;
+print {$fh} $data;
+truncate($fh, length($data)) or die $!;
+close $fh;
+'
+EOF_PATCHELF
+    chmod 0755 "$fixture_tools/patchelf"
+
+    cat > "$elf_tmp/libfixture.c" <<'EOF_LIB'
+#include <unistd.h>
+int fixture_value(void) { return getpid() < 0 ? 8 : 7; }
+EOF_LIB
+    cat > "$elf_tmp/tool.c" <<'EOF_TOOL'
+extern int fixture_value(void);
+int main(void) { return fixture_value() == 7 ? 0 : 1; }
+EOF_TOOL
+
+    hard_prefix="$elf_tmp/hardlink-prefix"
+    mkdir -p "$hard_prefix/bin" "$hard_prefix/nested/bin" "$hard_prefix/lib"
+    hard_padding='$ORIGIN/../lib:$ORIGIN/CUP_RPATH_PADDING________________________________________________________________________________'
+    lib_padding='$ORIGIN/CUP_RPATH_PADDING_________________________________________________________________________________________'
+    gcc -shared -fPIC "$elf_tmp/libfixture.c" -Wl,-soname,libfixture.so \
+        -Wl,-rpath,"$lib_padding" -o "$hard_prefix/lib/libfixture.so"
+    gcc "$elf_tmp/tool.c" -L"$hard_prefix/lib" -lfixture \
+        -Wl,-rpath,"$hard_padding" -o "$hard_prefix/bin/tool"
+    ln "$hard_prefix/bin/tool" "$hard_prefix/nested/bin/tool"
+
+    normal_dependencies="$(LINUX_RUNTIME_SEARCH_PATH="$hard_prefix/lib" linux_ldd_dependencies "$hard_prefix/bin/tool")"
+    printf '%s\n' "$normal_dependencies" | grep -F $'libfixture.so\t' >/dev/null || {
+        echo 'normal DT_NEEDED resolution did not report libfixture.so' >&2
+        exit 1
+    }
+
+    PATH="$fixture_tools:$PATH" linux_patch_runtime_search_paths "$hard_prefix"
+    LD_LIBRARY_PATH='' "$hard_prefix/bin/tool"
+    LD_LIBRARY_PATH='' "$hard_prefix/nested/bin/tool"
+    hard_relocated="$elf_tmp/hardlink-relocated"
+    cp -RPp "$hard_prefix" "$hard_relocated"
+    LD_LIBRARY_PATH='' "$hard_relocated/bin/tool"
+    LD_LIBRARY_PATH='' "$hard_relocated/nested/bin/tool"
+    [ "$(readelf -d "$hard_prefix/bin/tool" | sed -n 's/.*Library .*path: \[\([^]]*\)\].*/\1/p' | head -n 1)" = '$ORIGIN/../lib' ] || {
+        echo 'top-level hardlink alias has the wrong package-relative RUNPATH' >&2
+        exit 1
+    }
+    [ "$(readelf -d "$hard_prefix/nested/bin/tool" | sed -n 's/.*Library .*path: \[\([^]]*\)\].*/\1/p' | head -n 1)" = '$ORIGIN/../../lib' ] || {
+        echo 'nested hardlink alias has the wrong package-relative RUNPATH' >&2
+        exit 1
+    }
+    printf 'Linux hardlinked path-specific RUNPATH test passed\n'
+
+    missing_prefix="$elf_tmp/missing-prefix"
+    mkdir -p "$missing_prefix/bin"
+    cp -p "$hard_prefix/bin/tool" "$missing_prefix/bin/tool"
+    missing_dependencies="$(LINUX_RUNTIME_SEARCH_PATH="$missing_prefix/lib" linux_ldd_dependencies "$missing_prefix/bin/tool")"
+    printf '%s\n' "$missing_dependencies" | grep -F $'libfixture.so\t!NOT_FOUND!' >/dev/null || {
+        echo 'unresolved DT_NEEDED dependency was not reported as not found' >&2
+        exit 1
+    }
+    if (linux_copy_resolved_runtime_libraries "$missing_prefix") >/dev/null 2>&1; then
+        echo 'Linux closure accepted an unresolved non-base dependency' >&2
+        exit 1
+    fi
+
+    external_root="$elf_tmp/external"
+    external_prefix="$elf_tmp/external-prefix"
+    mkdir -p "$external_root" "$external_prefix/bin"
+    gcc -shared -fPIC "$elf_tmp/libfixture.c" -Wl,-soname,libexternalfixture.so \
+        -Wl,-rpath,"$lib_padding" -o "$external_root/libexternalfixture.so"
+    cat > "$elf_tmp/external-tool.c" <<'EOF_EXTERNAL'
+extern int fixture_value(void);
+int main(void) { return fixture_value() == 7 ? 0 : 1; }
+EOF_EXTERNAL
+    gcc "$elf_tmp/external-tool.c" -L"$external_root" -lexternalfixture \
+        -Wl,-rpath,"$external_root" -o "$external_prefix/bin/tool"
+    if (verify_linux_runtime_libraries "$external_prefix") >/dev/null 2>&1; then
+        echo 'Linux verifier accepted an external non-base runtime dependency' >&2
+        exit 1
+    fi
+    printf 'Linux normal/unresolved/external dependency tests passed\n'
+
+    internal_prefix="$elf_tmp/internal-prefix"
+    mkdir -p "$internal_prefix/lib64" "$internal_prefix/lib/deep"
+    internal_padding="$internal_prefix/lib64:$internal_prefix/CUP_RPATH_PADDING________________________________________________________________________"
+    gcc -shared -fPIC "$elf_tmp/libfixture.c" -Wl,-soname,libfixture.so.1 \
+        -Wl,-rpath,"$lib_padding" -o "$internal_prefix/lib64/libfixture.so.1"
+    ln -s libfixture.so.1 "$internal_prefix/lib64/libfixture.so"
+    cat > "$elf_tmp/plugin.c" <<'EOF_PLUGIN'
+extern int fixture_value(void);
+int plugin_value(void) { return fixture_value(); }
+EOF_PLUGIN
+    gcc -shared -fPIC "$elf_tmp/plugin.c" -L"$internal_prefix/lib64" -lfixture \
+        -Wl,-rpath,"$internal_padding" -o "$internal_prefix/lib/deep/plugin.so"
+    cat > "$elf_tmp/libconsumer.c" <<'EOF_LIBCONSUMER'
+extern int fixture_value(void);
+int consumer_value(void) { return fixture_value(); }
+EOF_LIBCONSUMER
+    gcc -shared -fPIC "$elf_tmp/libconsumer.c" -L"$internal_prefix/lib64" -lfixture \
+        -Wl,-rpath,"$internal_padding" -o "$internal_prefix/lib64/libconsumer.so"
+
+    # The producer must replace the absolute staging search path with an
+    # equivalent package-relative path, not redesign the upstream lib64 layout.
+    PATH="$fixture_tools:$PATH" prepare_linux_runtime_closure "$internal_prefix" linux-x64
+    [ -f "$internal_prefix/lib64/libfixture.so.1" ] || {
+        echo 'package-owned lib64 runtime was removed from its upstream layout' >&2
+        exit 1
+    }
+    [ ! -e "$internal_prefix/lib/libfixture.so.1" ] || {
+        echo 'package-owned lib64 runtime was unnecessarily duplicated into lib/' >&2
+        exit 1
+    }
+    internal_runpath="$(readelf -d "$internal_prefix/lib/deep/plugin.so" | sed -n 's/.*Library .*path: \[\([^]]*\)\].*/\1/p' | head -n 1)"
+    [ "$internal_runpath" = '$ORIGIN/../../lib64' ] || {
+        echo "internal runtime rewrite did not preserve lib64 reachability: $internal_runpath" >&2
+        exit 1
+    }
+    ! printf '%s\n' "$internal_runpath" | grep -F "$internal_prefix" >/dev/null || {
+        echo 'absolute staging path remained in internal runtime RUNPATH' >&2
+        exit 1
+    }
+    internal_same_runpath="$(readelf -d "$internal_prefix/lib64/libconsumer.so" | sed -n 's/.*Library .*path: \[\([^]]*\)\].*/\1/p' | head -n 1)"
+    [ "$internal_same_runpath" = '$ORIGIN' ] || {
+        echo "same-directory internal runtime rewrite lost lib64 reachability: $internal_same_runpath" >&2
+        exit 1
+    }
+    ! printf '%s\n' "$internal_same_runpath" | grep -F "$internal_prefix" >/dev/null || {
+        echo 'absolute staging path remained in same-directory internal RUNPATH' >&2
+        exit 1
+    }
+    internal_resolved="$(LD_LIBRARY_PATH='' ldd "$internal_prefix/lib/deep/plugin.so" | awk '/libfixture\.so\.1/{print $3; exit}')"
+    internal_resolved="$(realpath -m "$internal_resolved")"
+    case "$internal_resolved" in
+        "$internal_prefix/lib64"/*) ;;
+        *) echo "internal runtime dependency did not remain in package lib64: $internal_resolved" >&2; exit 1 ;;
+    esac
+    internal_same_resolved="$(LD_LIBRARY_PATH='' ldd "$internal_prefix/lib64/libconsumer.so" | awk '/libfixture\.so\.1/{print $3; exit}')"
+    internal_same_resolved="$(realpath -m "$internal_same_resolved")"
+    case "$internal_same_resolved" in
+        "$internal_prefix/lib64"/*) ;;
+        *) echo "same-directory runtime dependency did not remain in package lib64: $internal_same_resolved" >&2; exit 1 ;;
+    esac
+    internal_relocated="$elf_tmp/internal-relocated"
+    cp -RPp "$internal_prefix" "$internal_relocated"
+    internal_relocated_resolved="$(LD_LIBRARY_PATH='' ldd "$internal_relocated/lib/deep/plugin.so" | awk '/libfixture\.so\.1/{print $3; exit}')"
+    internal_relocated_resolved="$(realpath -m "$internal_relocated_resolved")"
+    case "$internal_relocated_resolved" in
+        "$internal_relocated/lib64"/*) ;;
+        *) echo "relocated internal runtime dependency escaped upstream package layout: $internal_relocated_resolved" >&2; exit 1 ;;
+    esac
+    internal_same_relocated_resolved="$(LD_LIBRARY_PATH='' ldd "$internal_relocated/lib64/libconsumer.so" | awk '/libfixture\.so\.1/{print $3; exit}')"
+    internal_same_relocated_resolved="$(realpath -m "$internal_same_relocated_resolved")"
+    case "$internal_same_relocated_resolved" in
+        "$internal_relocated/lib64"/*) ;;
+        *) echo "relocated same-directory runtime dependency escaped upstream package layout: $internal_same_relocated_resolved" >&2; exit 1 ;;
+    esac
+    printf 'Linux package-owned internal runtime reachability test passed\n'
+else
+    printf 'Linux synthetic ELF regressions skipped on non-Linux/non-compiler host\n'
+fi
+
+# Hardlink inode sharing is not logical package semantics. Both paths and bytes
+# matter, but the producer and archive formats need not preserve a shared inode.
+[ -f "$package_root/share/data/a" ] && [ -f "$package_root/share/data/b" ] || {
+    echo 'hardlinked staging paths did not remain regular package paths' >&2
+    exit 1
+}
+[ "$(cat "$package_root/share/data/a")" = hardlinked ] &&
+    [ "$(cat "$package_root/share/data/b")" = hardlinked ] || {
+    echo 'hardlinked staging paths did not preserve file contents' >&2
+    exit 1
+}
+
+# Nonrelocatable libtool metadata is not a packaged capability. Remove only .la
+# files that retain producer build/staging roots; benign metadata is untouched.
+la_prefix="$TMP/la-prune-prefix"
+mkdir -p "$la_prefix/lib"
+printf "dependency_libs=' -L%s/build/tool/lib'\n" "$CUP_WORK_DIR" > "$la_prefix/lib/nonrelocatable.la"
+printf "libdir='${la_prefix}/lib'\n" > "$la_prefix/lib/prefix-bound.la"
+printf "libdir='relative'\n" > "$la_prefix/lib/benign.la"
+package_prune_nonrelocatable_libtool_archives "$la_prefix"
+[ ! -e "$la_prefix/lib/nonrelocatable.la" ] || { echo 'build-root-bearing .la survived pruning' >&2; exit 1; }
+[ ! -e "$la_prefix/lib/prefix-bound.la" ] || { echo 'staging-prefix-bearing .la survived pruning' >&2; exit 1; }
+[ -f "$la_prefix/lib/benign.la" ] || { echo 'benign .la was removed without cause' >&2; exit 1; }
+printf 'nonrelocatable libtool metadata pruning test passed\n'
+
+# Windows Python path configs are shared infrastructure, but LLDB-specific files
+# belong only to an LLDB package.
+pth_gdb="$TMP/python-pth-gdb"
+pth_lldb="$TMP/python-pth-lldb"
+mkdir -p "$pth_gdb" "$pth_lldb"
+create_windows_python_path_config "$pth_gdb" 3.12 false
+[ ! -e "$pth_gdb/lldb._pth" ] && [ ! -e "$pth_gdb/lldb-dap._pth" ] || {
+    echo 'generic Windows Python path config leaked LLDB-only files' >&2
+    exit 1
+}
+create_windows_python_path_config "$pth_lldb" 3.12 true
+[ -f "$pth_lldb/lldb._pth" ] && [ -f "$pth_lldb/lldb-dap._pth" ] || {
+    echo 'LLDB Windows Python path config lost LLDB-specific files' >&2
+    exit 1
+}
+printf 'Windows Python path-config ownership test passed\n'
+
+# Exact producer source must use the supported Valgrind configure spelling and
+# derive GDB TUI metadata from the packaged capability rather than host OS.
+grep -F 'configure_help="$("$source_dir/configure" --help)"' "$ROOT/scripts/build/build-valgrind.sh" >/dev/null || {
+    echo 'Valgrind builder does not inspect the exact source configure interface' >&2
+    exit 1
+}
+grep -F -- '--with-gdbscripts-dir' "$ROOT/scripts/build/build-valgrind.sh" >/dev/null || {
+    echo 'Valgrind builder does not verify gdbscripts-dir configure support' >&2
+    exit 1
+}
+grep -F -- '--without-gdbscripts-dir' "$ROOT/scripts/build/build-valgrind.sh" >/dev/null || {
+    echo 'Valgrind builder does not use the supported gdbscripts configure option spelling' >&2
+    exit 1
+}
+if grep -F -- '--without-gdb-scripts-dir' "$ROOT/scripts/build/build-valgrind.sh" >/dev/null; then
+    echo 'Valgrind builder still uses the unrecognized gdb-scripts option spelling' >&2
+    exit 1
+fi
+grep -F 'has_tui="$(gdb_supports_tui)"' "$ROOT/scripts/build/build-gdb.sh" >/dev/null || {
+    echo 'GDB metadata does not derive TUI capability from the packaged executable' >&2
+    exit 1
+}
+grep -F 'strip --strip-debug "$PREFIX/bin/gdb.exe"' "$ROOT/scripts/build/build-gdb.sh" >/dev/null || {
+    echo 'GDB Windows debug-only payload is not stripped deliberately' >&2
+    exit 1
+}
+grep -F 'copy_windows_python_runtime "$build_dir" false true' "$ROOT/scripts/build/build-llvm-tool.sh" >/dev/null || {
+    echo 'LLDB Windows packaging does not explicitly opt into LLDB Python path configs' >&2
+    exit 1
+}
+printf 'native-finding source alignment tests passed\n'
+
+# Explicit numeric versions are preserved verbatim and remain independent of
+# the current stable selector. This is an identity test, not a support promise.
+[ "$(resolve_version clang 22.1.4)" = 22.1.4 ] || { echo 'explicit LLVM version was replaced by stable' >&2; exit 1; }
+explicit_base="$(package_base_name clang 22.1.4 linux-x64 linux-x64 '')"
+stable_base="$(package_base_name clang "$DEFAULT_LLVM_VERSION" linux-x64 linux-x64 '')"
+[ "$explicit_base" = clang-22.1.4-linux-x64-linux-x64 ] || { echo 'explicit LLVM version produced wrong revisionless identity' >&2; exit 1; }
+[ "$explicit_base" != "$stable_base" ] || { echo 'different explicit/stable versions produced the same package identity' >&2; exit 1; }
+printf 'explicit non-default version identity test passed\n'
+
+# The MSYS2 setup entry point must resolve its package list from its own location,
+# not from the operator's current working directory.
+msys_fixture="$TMP/msys2-cwd"
+mkdir -p "$msys_fixture/bin" "$msys_fixture/cwd"
+cat > "$msys_fixture/bin/pacman" <<'EOF_PACMAN'
+#!/usr/bin/env sh
+printf '%s\n' "$@" > "$PACMAN_FIXTURE_LOG"
+EOF_PACMAN
+chmod 0755 "$msys_fixture/bin/pacman"
+(
+    cd "$msys_fixture/cwd"
+    PACMAN_FIXTURE_LOG="$msys_fixture/pacman.log" PATH="$msys_fixture/bin:$PATH" \
+        bash "$ROOT/scripts/setup/setup-windows-msys2.sh" ucrt64
+)
+grep -Fx -- '-S' "$msys_fixture/pacman.log" >/dev/null || { echo 'MSYS2 setup did not reach pacman from external cwd' >&2; exit 1; }
+first_ucrt_package="$(grep -v '^[[:space:]]*$' "$ROOT/scripts/setup/msys2-ucrt64-packages.txt" | grep -v '^[[:space:]]*#' | head -n 1)"
+grep -Fx -- "$first_ucrt_package" "$msys_fixture/pacman.log" >/dev/null || { echo 'MSYS2 setup did not load its repository-relative package list' >&2; exit 1; }
+printf 'MSYS2 arbitrary-cwd setup test passed\n'
+
+# Keep checksum tamper detection in the normal common producer contract path.
+bash "$ROOT/scripts/test/test-package-checksums.sh"

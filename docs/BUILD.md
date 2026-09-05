@@ -13,9 +13,9 @@ A normal build follows this sequence:
 ```text
 select tool, version and platform
         ↓
-prepare the platform build environment
-        ↓
 validate common package mechanics
+        ↓
+prepare the selected platform build environment
         ↓
 obtain the selected upstream source
         ↓
@@ -54,13 +54,13 @@ The repository contains five manually started workflows:
 | `Build LLVM tool` | `build-llvm.yml` | Clang, clang-format, clang-tidy, clangd, LLD and LLDB packages |
 | `Build Valgrind` | `build-valgrind.yml` | Native Linux Valgrind packages |
 
-The workflows first select the required GitHub runner and then prepare the platform build environment:
+The workflows first use their Ubuntu `select` job to validate the requested platform identity and run the common package contract. The selected `build` job then prepares the actual platform environment:
 
 - Linux uses repository Docker images;
 - Windows uses MSYS2;
 - macOS uses a GitHub-hosted macOS runner with Homebrew dependencies.
 
-The common package validation is run inside the actual selected build environment before the expensive tool build begins. See [Testing](TESTING.md#common-package-validation).
+The common contract uses synthetic package trees to validate platform-independent package rules, so it has one stable POSIX execution environment rather than depending on whether a Windows or macOS filesystem can represent a particular fixture. Tool-specific package checks still run on the real selected platform against the package that was actually built. See [Testing](TESTING.md#common-package-validation).
 
 ## Workflow inputs
 
@@ -233,7 +233,7 @@ macOS currently builds only LLVM-family packages.
 
 `scripts/setup/setup-macos-builder.sh` installs the Homebrew dependencies required by the selected LLVM build and exports the paths used by CMake and `pkg-config`.
 
-The setup deliberately selects Homebrew `python@3.12` for the current build environment because Python can become package-owned runtime content for LLDB and LLVM Python helper commands. The packaged Python version is still derived from the interpreter actually used by the build rather than hard-coded into the package layout.
+The setup selects Homebrew `python` because Python can become package-owned runtime content for LLDB and LLVM Python helper commands. The producer derives the package layout and runtime-version provenance from the interpreter actually selected by the build rather than fixing a Python major/minor release in the repository.
 
 The active macOS SDK is selected through `xcrun`. The current deployment target is macOS 15.0.
 

@@ -57,6 +57,11 @@ printf 'preserved-lldb-module\n' > "$PREFIX/lib/python3.12/site-packages/lldb.py
 
 copy_posix_python_runtime "$PY_BIN" true "bin/python3.12"
 
+[ "$PACKAGED_PYTHON_RUNTIME_VERSION" = 3.12.3 ] || {
+    echo "packaged Python runtime provenance is wrong: $PACKAGED_PYTHON_RUNTIME_VERSION" >&2
+    exit 1
+}
+
 [ -f "$PREFIX/lib/python3.12/json.py" ] || {
     echo 'missing runtime stdlib entry' >&2
     exit 1
@@ -118,6 +123,7 @@ if (
     exit 1
 fi
 
+echo 'PYTHON_RUNTIME_VERSION_PROVENANCE=PASS'
 echo 'PYTHON_RUNTIME_DEVELOPMENT_EXCLUSION=PASS'
 echo 'PYTHON_RUNTIME_SITECUSTOMIZE_EXCLUSION=PASS'
 echo 'PYTHON_RUNTIME_INTERNAL_ALIAS_PRESERVATION=PASS'

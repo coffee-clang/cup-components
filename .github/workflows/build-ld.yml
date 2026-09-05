@@ -74,6 +74,13 @@ jobs:
           echo "host_platform=$host_platform" >> "$GITHUB_OUTPUT"
           echo "target_platform=$target_platform" >> "$GITHUB_OUTPUT"
 
+      - name: Checkout for package-contract verification
+        uses: actions/checkout@v5
+
+      - name: Verify common package contract
+        shell: bash
+        run: bash scripts/test/test-package-contract.sh
+
   build:
     needs: select
     runs-on: ${{ needs.select.outputs.runner }}
@@ -96,16 +103,6 @@ jobs:
       - name: Build Docker image
         if: ${{ startsWith(needs.select.outputs.host_platform, 'linux-') }}
         run: bash scripts/workflow/build-records.sh run builder-setup docker build -f docker/toolchain-builder.Dockerfile -t cup-toolchain-builder .
-
-      - name: Verify common package contract (Linux build environment)
-        if: ${{ startsWith(needs.select.outputs.host_platform, 'linux-') }}
-        run: |
-          docker run --rm \
-            -v "$PWD:/workspace" \
-            -w /workspace \
-            cup-toolchain-builder \
-            bash scripts/workflow/build-records.sh run package-contract \
-              bash scripts/test/test-package-contract.sh
 
       - name: Build package (Linux)
         if: ${{ startsWith(needs.select.outputs.host_platform, 'linux-') }}
@@ -145,11 +142,6 @@ jobs:
         if: ${{ startsWith(needs.select.outputs.host_platform, 'windows-') }}
         shell: msys2 {0}
         run: bash scripts/workflow/build-records.sh run dependencies bash scripts/setup/setup-windows-msys2.sh ucrt64
-
-      - name: Verify common package contract (Windows UCRT64 build environment)
-        if: ${{ startsWith(needs.select.outputs.host_platform, 'windows-') }}
-        shell: msys2 {0}
-        run: bash scripts/workflow/build-records.sh run package-contract bash scripts/test/test-package-contract.sh
 
       - name: Build package (Windows)
         if: ${{ startsWith(needs.select.outputs.host_platform, 'windows-') }}

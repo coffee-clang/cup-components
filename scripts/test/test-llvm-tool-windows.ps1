@@ -191,6 +191,55 @@ function To-ForwardSlashPath {
     return $Path.Replace('\', '/')
 }
 
+
+function Assert-LldbPythonRuntime {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $PackageRoot,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Label
+    )
+
+    $versionLine = Get-Content (Join-Path $PackageRoot 'info.txt') |
+        Where-Object { $_ -like 'contents.python_runtime.version=*' } |
+        Select-Object -Last 1
+    if (-not $versionLine) {
+        throw "LLDB package is missing Python runtime provenance: $PackageRoot\info.txt"
+    }
+    $expectedVersion = $versionLine -replace '^contents\.python_runtime\.version=', ''
+
+    $output = Invoke-NativeCapture -FilePath (Join-Path $PackageRoot 'bin\lldb.exe') -ArgumentList @(
+        '-b',
+        '-o',
+        'script import sys, lldb; print("python-isolated=" + str(sys.flags.isolated)); print("python-version=" + ".".join(map(str, sys.version_info[:3]))); [print("python-path=" + p) for p in sys.path]',
+        '-o',
+        'quit'
+    )
+
+    Assert-OutputContains -Output $output -Pattern '(?m)^python-isolated=1$'
+    Assert-OutputContains -Output $output -Pattern ("(?m)^python-version=" + [regex]::Escape($expectedVersion) + '$')
+
+    $packageFull = [IO.Path]::GetFullPath($PackageRoot).TrimEnd('\') + '\'
+    $pythonPaths = @($output | ForEach-Object { "$($_)" } | Where-Object { $_ -like 'python-path=*' })
+    if ($pythonPaths.Count -eq 0) {
+        throw "LLDB Python sys.path probe produced no entries at relocation $Label"
+    }
+
+    foreach ($line in $pythonPaths) {
+        $path = $line -replace '^python-path=', ''
+        if ([string]::IsNullOrWhiteSpace($path)) {
+            throw "LLDB Python sys.path contains an ambient empty entry at relocation $Label"
+        }
+        $full = [IO.Path]::GetFullPath($path)
+        if (-not $full.StartsWith($packageFull, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "LLDB Python sys.path escaped the package at relocation ${Label}: $path"
+        }
+    }
+
+    Write-Host "python-package-owned=1 ($Label)"
+}
+
 $releaseEnv = Get-Content dist/release.env
 $packageBase = ($releaseEnv | Where-Object { $_ -like 'package_base=*' }) -replace '^package_base=', ''
 if (-not $packageBase) { throw 'package_base not found in dist/release.env' }
@@ -364,13 +413,7 @@ int main(void) {
         if (Test-Path "$root\bin\lldb-server.exe") { Show-PEImports "$root\bin\lldb-server.exe" }
 
         Invoke-Native -FilePath "$root\bin\lldb.exe" -ArgumentList @('--version')
-        Invoke-Native -FilePath "$root\bin\lldb.exe" -ArgumentList @(
-            '-b',
-            '-o',
-            "script import sys; import lldb; print('python-ok', sys.version_info[0], sys.version_info[1]); print('lldb-module-ok', lldb.SBDebugger); print('executable', sys.executable); print('prefix', sys.prefix); print('path', sys.path)",
-            '-o',
-            'quit'
-        )
+        Assert-LldbPythonRuntime -PackageRoot $root -Label 'A'
 
         if ($runnerGcc) {
             $lldbFixtureCompiler = $runnerGcc.Source
@@ -536,13 +579,18 @@ int main(void) { return (int)sizeof(size_t); }
 # Re-run a real operation from a copied package root. This is intentionally more
 # than a path rename assertion: resource/Python/helper discovery must follow the
 # relocated package without PYTHONHOME/PYTHONPATH or the original package on PATH.
-$relocationParent = Join-Path $testDir 'relocated'
+$relocationParent = Join-Path $testDir 'relocation with spaces'
 Remove-Item -Recurse -Force $relocationParent -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $relocationParent | Out-Null
 Copy-Item -Recurse -Force $root $relocationParent
 $relocatedRoot = Join-Path $relocationParent $packageBase
 if (-not (Test-Path $relocatedRoot)) {
     throw "relocated package root was not created: $relocatedRoot"
+}
+$disabledRoot = Join-Path $testDir 'original-package-root-disabled'
+Move-Item -Force $root $disabledRoot
+if (Test-Path $root) {
+    throw "original package root remained available during relocation: $root"
 }
 Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
 Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
@@ -576,14 +624,7 @@ switch ($Tool) {
         Assert-FileExists $relocatedExe
     }
     'lldb' {
-        $output = Invoke-NativeCapture -FilePath "$relocatedRoot\bin\lldb.exe" -ArgumentList @(
-            '-b',
-            '-o',
-            "script import sys; import lldb; print('python-reloc-ok', sys.version_info[0], sys.version_info[1]); print('prefix', sys.prefix)",
-            '-o',
-            'quit'
-        )
-        Assert-OutputContains -Output $output -Pattern 'python-reloc-ok'
+        Assert-LldbPythonRuntime -PackageRoot $relocatedRoot -Label 'B'
         $output = Invoke-NativeCapture -FilePath "$relocatedRoot\bin\lldb.exe" -ArgumentList @(
             '-b', '-o', "target create $exeForLldb", '-o', 'breakpoint set --name add',
             '-o', 'run', '-o', 'backtrace', '-o', 'quit'

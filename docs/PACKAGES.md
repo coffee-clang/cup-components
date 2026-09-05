@@ -150,6 +150,15 @@ A GCC package must also record the composition identified by that revision. Nati
 
 The primary source metadata is also bound to the package being finalized. `source.primary.name` must identify the upstream project for the selected tool, and `source.primary.version` must equal the selected main package version. GCC therefore records the GCC source version without the package `revN` suffix; GNU ld records Binutils; every LLVM-family package records `llvm-project`.
 
+When Python becomes package-owned runtime payload, `info.txt` also records:
+
+```text
+contents.python_runtime=packaged
+contents.python_runtime.version=<major.minor.micro>
+```
+
+The version is derived from the interpreter whose runtime was actually copied. It is provenance for the payload, not a compatibility table or an additional version-selection input. The common finalizer rejects a packaged Python runtime without a numeric dotted runtime version, and it rejects runtime-version metadata when no packaged Python runtime is declared.
+
 `package.component` is derived from the tool:
 
 | Tool | Component |

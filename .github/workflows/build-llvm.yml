@@ -71,6 +71,13 @@ jobs:
           echo "host_platform=$platform" >> "$GITHUB_OUTPUT"
           echo "target_platform=$platform" >> "$GITHUB_OUTPUT"
 
+      - name: Checkout for package-contract verification
+        uses: actions/checkout@v5
+
+      - name: Verify common package contract
+        shell: bash
+        run: bash scripts/test/test-package-contract.sh
+
   build:
     needs: select
     runs-on: ${{ needs.select.outputs.runner }}
@@ -93,16 +100,6 @@ jobs:
       - name: Build Docker image
         if: ${{ startsWith(needs.select.outputs.host_platform, 'linux-') }}
         run: bash scripts/workflow/build-records.sh run builder-setup docker build -f docker/llvm-builder.Dockerfile -t cup-llvm-builder .
-
-      - name: Verify common package contract (Linux build environment)
-        if: ${{ startsWith(needs.select.outputs.host_platform, 'linux-') }}
-        run: |
-          docker run --rm \
-            -v "$PWD:/workspace" \
-            -w /workspace \
-            cup-llvm-builder \
-            bash scripts/workflow/build-records.sh run package-contract \
-              bash scripts/test/test-package-contract.sh
 
       - name: Build package (Linux)
         if: ${{ startsWith(needs.select.outputs.host_platform, 'linux-') }}
@@ -142,11 +139,6 @@ jobs:
         shell: msys2 {0}
         run: bash scripts/workflow/build-records.sh run dependencies bash scripts/setup/setup-windows-msys2.sh clang64
 
-      - name: Verify common package contract (Windows CLANG64 build environment)
-        if: ${{ startsWith(needs.select.outputs.host_platform, 'windows-') }}
-        shell: msys2 {0}
-        run: bash scripts/workflow/build-records.sh run package-contract bash scripts/test/test-package-contract.sh
-
       - name: Build package (Windows)
         if: ${{ startsWith(needs.select.outputs.host_platform, 'windows-') }}
         shell: msys2 {0}
@@ -170,14 +162,6 @@ jobs:
         if: ${{ startsWith(needs.select.outputs.host_platform, 'macos-') }}
         shell: bash
         run: bash scripts/workflow/build-records.sh run dependencies bash scripts/setup/setup-macos-builder.sh
-
-      - name: Verify common package contract (macOS build environment)
-        if: ${{ startsWith(needs.select.outputs.host_platform, 'macos-') }}
-        shell: bash
-        run: |
-          brew_bash="$(brew --prefix bash)/bin/bash"
-          "$brew_bash" scripts/workflow/build-records.sh run package-contract \
-            "$brew_bash" scripts/test/test-package-contract.sh
 
       - name: Build package (macOS)
         if: ${{ startsWith(needs.select.outputs.host_platform, 'macos-') }}

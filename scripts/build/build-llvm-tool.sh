@@ -1843,6 +1843,7 @@ build_llvm_tool() {
             cmake_extra_args+=(
                 -DLLDB_ENABLE_LIBEDIT=OFF
                 -DLLDB_ENABLE_CURSES=OFF
+                -DLLDB_EMBED_PYTHON_HOME=OFF
                 -DPython3_EXECUTABLE="$MINGW_PREFIX/bin/python.exe"
                 -DPython3_ROOT_DIR="$MINGW_PREFIX"
                 -DPython3_FIND_REGISTRY=NEVER
@@ -1859,7 +1860,6 @@ build_llvm_tool() {
                 -DLLDB_ENABLE_CURSES=ON
                 -DLLDB_EMBED_PYTHON_HOME=ON
                 -DLLDB_PYTHON_HOME=..
-                -DLLDB_ENABLE_PYTHON_LIMITED_API=OFF
                 "-DLLDB_PYTHON_RELATIVE_PATH=lib/python$lldb_python_version/site-packages"
                 "-DLLDB_PYTHON_EXE_RELATIVE_PATH=bin/python$lldb_python_version"
                 "-DPython3_EXECUTABLE=$lldb_python"
@@ -2179,7 +2179,10 @@ write_llvm_info() {
             )
             ;;
         lldb)
-            info+=("contents.python_runtime=packaged")
+            info+=(
+                "contents.python_runtime=packaged"
+                "contents.python_runtime.version=$PACKAGED_PYTHON_RUNTIME_VERSION"
+            )
             info+=(
                         "contents.clang_resources=$(metadata_bool_for_dirs "$PREFIX" 'lib/clang/*/include')"
             )
@@ -2217,7 +2220,12 @@ write_llvm_info() {
             )
             ;;
         clang-format)
-            [ "$has_git_clang_format" = true ] && info+=("contents.python_runtime=packaged")
+            if [ "$has_git_clang_format" = true ]; then
+                info+=(
+                    "contents.python_runtime=packaged"
+                    "contents.python_runtime.version=$PACKAGED_PYTHON_RUNTIME_VERSION"
+                )
+            fi
             info+=(
                 "$(info_required_entry entry.clang_format "$PREFIX" clang-format)"
                 "$(info_entry_if_present entry.git_clang_format "$PREFIX" git-clang-format)"
@@ -2229,7 +2237,10 @@ write_llvm_info() {
             ;;
         clang-tidy)
             if [ "$has_run_clang_tidy" = true ] || [ "$has_clang_tidy_diff" = true ]; then
-                info+=("contents.python_runtime=packaged")
+                info+=(
+                    "contents.python_runtime=packaged"
+                    "contents.python_runtime.version=$PACKAGED_PYTHON_RUNTIME_VERSION"
+                )
             fi
             info+=(
                 "$(info_required_entry entry.clang_tidy "$PREFIX" clang-tidy)"

@@ -107,6 +107,52 @@ function To-ForwardSlashPath {
     return $Path.Replace('\', '/')
 }
 
+
+function Assert-GdbPythonRuntime {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $PackageRoot,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Label
+    )
+
+    $versionLine = Get-Content (Join-Path $PackageRoot 'info.txt') |
+        Where-Object { $_ -like 'contents.python_runtime.version=*' } |
+        Select-Object -Last 1
+    if (-not $versionLine) {
+        throw "GDB package is missing Python runtime provenance: $PackageRoot\info.txt"
+    }
+    $expectedVersion = $versionLine -replace '^contents\.python_runtime\.version=', ''
+
+    $output = Invoke-NativeCapture -FilePath (Join-Path $PackageRoot 'bin\gdb.exe') -ArgumentList @(
+        '-q', '-nx', '-batch',
+        '-ex', 'set debuginfod enabled off',
+        '-ex', 'python import sys, gdb; print("python-isolated=" + str(sys.flags.isolated)); print("python-version=" + ".".join(map(str, sys.version_info[:3]))); [print("python-path=" + p) for p in sys.path]'
+    )
+
+    Assert-OutputContains -Output $output -Pattern '(?m)^python-isolated=1$'
+    Assert-OutputContains -Output $output -Pattern ("(?m)^python-version=" + [regex]::Escape($expectedVersion) + '$')
+
+    $packageFull = [IO.Path]::GetFullPath($PackageRoot).TrimEnd('\') + '\'
+    $pythonPaths = @($output | ForEach-Object { "$($_)" } | Where-Object { $_ -like 'python-path=*' })
+    if ($pythonPaths.Count -eq 0) {
+        throw "GDB Python sys.path probe produced no entries at relocation $Label"
+    }
+    foreach ($line in $pythonPaths) {
+        $path = $line -replace '^python-path=', ''
+        if ([string]::IsNullOrWhiteSpace($path)) {
+            throw "GDB Python sys.path contains an ambient empty entry at relocation $Label"
+        }
+        $full = [IO.Path]::GetFullPath($path)
+        if (-not $full.StartsWith($packageFull, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "GDB Python sys.path escaped the package at relocation ${Label}: $path"
+        }
+    }
+
+    Write-Host "python-package-owned=1 ($Label)"
+}
+
 $releaseEnv = Get-Content dist/release.env
 $packageBase = ($releaseEnv | Where-Object { $_ -like 'package_base=*' }) -replace '^package_base=', ''
 if (-not $packageBase) { throw 'package_base not found in dist/release.env' }
@@ -208,13 +254,7 @@ if (-not (Test-FeatureEnabled -Root $root -Key 'features.python') -or
     -not (Test-FeatureEnabled -Root $root -Key 'contents.uses_python')) {
     throw 'required GDB Python capability is not fully declared in info.txt'
 }
-$output = Invoke-NativeCapture -FilePath "$root\bin\gdb.exe" -ArgumentList @(
-    '-q',
-    '-batch',
-    '-ex',
-    'python import sys, gdb; print("python-ok", sys.version_info[0], sys.version_info[1])'
-)
-Assert-OutputContains -Output $output -Pattern 'python-ok'
+Assert-GdbPythonRuntime -PackageRoot $root -Label 'A'
 
 $output = Invoke-NativeCapture -FilePath "$root\bin\gdb.exe" -ArgumentList @(
     '-q',
@@ -283,11 +323,19 @@ finally {
     if (Test-Path $serverErr) { Get-Content $serverErr | ForEach-Object { Write-Host $_ } }
 }
 
-$relocationParent = Join-Path $testDir 'relocated'
+$relocationParent = Join-Path $testDir 'relocation with spaces'
 Remove-Item -Recurse -Force $relocationParent -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $relocationParent | Out-Null
 Copy-Item -Recurse -Force $root $relocationParent
 $relocatedRoot = Join-Path $relocationParent $packageBase
+if (-not (Test-Path $relocatedRoot)) {
+    throw "relocated package root was not created: $relocatedRoot"
+}
+$disabledRoot = Join-Path $testDir 'original-package-root-disabled'
+Move-Item -Force $root $disabledRoot
+if (Test-Path $root) {
+    throw "original package root remained available during relocation: $root"
+}
 Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
 Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
 $env:Path = "$relocatedRoot\bin;$env:SystemRoot\System32;$env:SystemRoot"
@@ -296,10 +344,7 @@ Invoke-Native -FilePath "$relocatedRoot\bin\gdb.exe" -ArgumentList @('--version'
 Invoke-Native -FilePath "$relocatedRoot\bin\gdbserver.exe" -ArgumentList @('--version')
 $relocatedTuiOutput = Invoke-NativeCapture -FilePath "$relocatedRoot\bin\gdb.exe" -ArgumentList @('-q', '-batch', '-ex', 'help tui')
 Assert-OutputContains -Output $relocatedTuiOutput -Pattern '(?im)text user interface|^tui\s+--'
-$output = Invoke-NativeCapture -FilePath "$relocatedRoot\bin\gdb.exe" -ArgumentList @(
-    '-q', '-batch', '-ex', 'python import sys, gdb; print("python-reloc-ok", sys.version_info[0], sys.version_info[1])'
-)
-Assert-OutputContains -Output $output -Pattern 'python-reloc-ok'
+Assert-GdbPythonRuntime -PackageRoot $relocatedRoot -Label 'B'
 $output = Invoke-NativeCapture -FilePath "$relocatedRoot\bin\gdb.exe" -ArgumentList @(
     '-q', '-batch', '-ex', "file $gdbTestExe", '-ex', 'break add', '-ex', 'run', '-ex', 'backtrace'
 )

@@ -48,6 +48,13 @@ jobs:
 
           echo "runner=$runner" >> "$GITHUB_OUTPUT"
 
+      - name: Checkout for package-contract verification
+        uses: actions/checkout@v5
+
+      - name: Verify common package contract
+        shell: bash
+        run: bash scripts/test/test-package-contract.sh
+
   build:
     needs: select
     runs-on: ${{ needs.select.outputs.runner }}
@@ -69,15 +76,6 @@ jobs:
 
       - name: Build Docker image
         run: bash scripts/workflow/build-records.sh run builder-setup docker build -f docker/toolchain-builder.Dockerfile -t cup-toolchain-builder .
-
-      - name: Verify common package contract (Linux build environment)
-        run: |
-          docker run --rm \
-            -v "$PWD:/workspace" \
-            -w /workspace \
-            cup-toolchain-builder \
-            bash scripts/workflow/build-records.sh run package-contract \
-              bash scripts/test/test-package-contract.sh
 
       - name: Build package
         run: |

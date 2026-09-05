@@ -16,7 +16,7 @@ The shared package contract is checked by:
 scripts/test/test-package-contract.sh
 ```
 
-Each GitHub workflow runs this script inside the selected build environment before the expensive upstream tool build.
+Each GitHub workflow runs this script once in its Ubuntu `select` job, before any host-specific build job starts. The synthetic fixtures therefore validate the abstract package contract in one predictable POSIX environment; finished-package checks remain native to the platform that built the tool.
 
 It checks common behavior such as:
 
@@ -59,7 +59,7 @@ Depending on host and target, the GCC package check validates capabilities such 
 - required compiler entries;
 - C and C++ compilation;
 - target-prefixed compiler/binutils entries;
-- LTO;
+- package-owned `lto-wrapper` and its adjacent LTO plugin, followed by a real LTO compile/link;
 - OpenMP;
 - pthread support;
 - native Linux sanitizer use when declared;
@@ -86,9 +86,10 @@ The GDB package check verifies:
 - `gdb` and `gdbserver` package entries;
 - required Python support;
 - GDB data-directory ownership;
-- package-owned Python identity;
+- package-owned Python identity and runtime-version provenance;
+- isolated Python search paths where the platform provides packaged path configuration;
 - declared debugger feature metadata;
-- relocation through multiple physical package roots.
+- relocation through multiple physical package roots, including paths with spaces and with the previous root unavailable.
 
 ### LLVM-family checks
 
@@ -110,7 +111,8 @@ LLD checks the selected linker frontends and their reported link formats.
 LLDB checks include:
 
 - `lldb` and optional `lldb-server` / `lldb-dap`;
-- package-owned Python interpreter/module identity;
+- package-owned Python interpreter/module identity and runtime-version provenance;
+- isolated package-owned Python search paths on Windows;
 - Clang resource-directory ownership;
 - target creation, breakpoint and symbol lookup behavior;
 - process launch where the runner permits debugger process control;

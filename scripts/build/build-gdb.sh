@@ -43,6 +43,7 @@ PACKAGE_PREFIX="$PREFIX"
 GDB_BUILD_DIR=""
 GDB_SOURCE_HIGHLIGHT_RELOCATABLE=false
 GDB_READLINE_POLICY=upstream-default
+GDB_ZLIB_POLICY=false
 
 validate_platforms() {
     case "$HOST_PLATFORM" in
@@ -130,6 +131,13 @@ gdb_configure_has_option() {
     local source_dir="$1"
     local option="$2"
     "$source_dir/configure" --help 2>/dev/null | grep -F -- "$option" >/dev/null
+}
+
+gdb_subconfigure_has_option() {
+    local source_dir="$1"
+    local option="$2"
+    [ -x "$source_dir/gdb/configure" ] || return 1
+    "$source_dir/gdb/configure" --help 2>/dev/null | grep -F -- "$option" >/dev/null
 }
 
 gdb_config_bool() {
@@ -250,9 +258,12 @@ build_gdb() {
     gdb_configure_has_option "$source_dir" --disable-werror && configure_args+=(--disable-werror)
     configure_args+=(--with-python="$python_cmd")
 
+    # Options owned by gdb/configure are not necessarily advertised by the
+    # top-level Binutils/GDB configure script. Query their real owner, while
+    # keeping top-level component-library options at the top level.
     for option in --with-python-libdir --enable-tui --with-curses --with-expat \
-                  --with-system-readline --with-system-zlib --with-lzma --with-zstd; do
-        gdb_configure_has_option "$source_dir" "$option" || continue
+                  --with-system-readline --with-lzma; do
+        gdb_subconfigure_has_option "$source_dir" "$option" || continue
         case "$option" in
             --with-python-libdir)
                 configure_args+=(--with-python-libdir="$PREFIX/lib")
@@ -266,6 +277,12 @@ build_gdb() {
                 ;;
         esac
     done
+
+    if gdb_configure_has_option "$source_dir" --with-system-zlib; then
+        configure_args+=(--with-system-zlib)
+        GDB_ZLIB_POLICY=true
+    fi
+    gdb_configure_has_option "$source_dir" --with-zstd && configure_args+=(--with-zstd)
 
     if ! is_windows_platform "$HOST_PLATFORM"; then
         mapfile -t feature_args < <(gdb_linux_feature_configure_args "$source_dir")
@@ -388,7 +405,7 @@ write_gdb_info() {
     babeltrace="$(gdb_config_bool HAVE_LIBBABELTRACE)"
     intel_pt="$(gdb_config_bool HAVE_LIBIPT)"
     expat="$(gdb_config_bool HAVE_LIBEXPAT)"
-    zlib="$(gdb_config_bool HAVE_ZLIB_H)"
+    zlib="$GDB_ZLIB_POLICY"
     lzma="$(gdb_config_bool HAVE_LIBLZMA)"
     zstd="$(gdb_config_bool HAVE_ZSTD)"
 
@@ -433,6 +450,7 @@ write_gdb_info() {
         "$(info_required_entry entry.gdbserver "$PREFIX" gdbserver)"
         "contents.uses_python=$has_python"
         "contents.python_runtime=packaged"
+        "contents.python_runtime.version=$PACKAGED_PYTHON_RUNTIME_VERSION"
         "contents.uses_readline=true"
         "contents.uses_expat=$expat"
         "contents.uses_zlib=$zlib"

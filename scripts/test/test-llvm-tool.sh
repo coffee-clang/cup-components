@@ -140,8 +140,8 @@ run_clang_driver_clean() {
     env -i \
         HOME="$clean_home" \
         PATH="$poison_dir:/usr/bin:/bin" \
-        LANG=C.UTF-8 \
-        LC_ALL=C.UTF-8 \
+        LANG=C \
+        LC_ALL=C \
         TZ=UTC \
         "$candidate/bin/$driver" "$@"
 }
@@ -315,7 +315,7 @@ run_lldb_clean() {
     shift
     local clean_home="$tmp_root/clean-home"
     mkdir -p "$clean_home"
-    env -i HOME="$clean_home" PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC \
+    env -i HOME="$clean_home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
         PYTHONDONTWRITEBYTECODE=1 "$candidate/bin/lldb" "$@"
 }
 
@@ -336,7 +336,7 @@ lldb_identity_probe() {
     [ -n "$clang_resource" ] || { echo 'LLDB Clang resource directory is missing' >&2; exit 1; }
     mkdir -p "$clean_home"
 
-    env -i HOME="$clean_home" PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC \
+    env -i HOME="$clean_home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
         PYTHONDONTWRITEBYTECODE=1 "$candidate/$python_entry" - <<'PY_ID' > "$out"
 import lldb, sys
 print('PY_PREFIX='+sys.prefix)
@@ -350,7 +350,7 @@ PY_ID
     grep -Fx 'SBDEBUGGER_VALID=True' "$out" >/dev/null
 
     run_lldb_clean "$candidate" --print-script-interpreter-info > "$json"
-    env -i HOME="$clean_home" PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC \
+    env -i HOME="$clean_home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
         "$candidate/$python_entry" - "$json" "$candidate" "$python_entry" "$python_version" <<'PY_INFO'
 import json, os, sys
 with open(sys.argv[1], encoding='utf-8') as f:

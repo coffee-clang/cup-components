@@ -201,4 +201,6 @@ This keeps version-specific corrections local to the point where the selected up
 
 Repository code cannot create build records before the repository has been checked out. A failure in a GitHub-managed action that happens before checkout therefore remains available only in the normal GitHub Actions run log.
 
-Once the repository-controlled record initialization step has run, later repository-controlled phases preserve their status and output through the build-record mechanism.
+The common package-contract check deliberately runs once in the Ubuntu `select` job after checkout and before any platform build starts. It is a repository gate rather than a per-build phase, so its output remains in the `select` job log instead of a build-record artifact.
+
+Once a platform build initializes its repository-controlled record, later repository-controlled phases preserve their status and output through the build-record mechanism.

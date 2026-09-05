@@ -163,20 +163,17 @@ build_valgrind() {
     configure_help="$("$source_dir/configure" --help)" ||
         die "could not inspect Valgrind configure options"
 
-    if printf '%s
-' "$configure_help" | grep -F -- '--enable-only64bit' >/dev/null; then
+    if printf '%s\n' "$configure_help" | grep -F -- '--enable-only64bit' >/dev/null; then
         configure_args+=(--enable-only64bit)
         policy_args+=(--enable-only64bit)
         VALGRIND_ONLY64BIT=true
     fi
-    if printf '%s
-' "$configure_help" | grep -F -- '--without-mpicc' >/dev/null; then
+    if printf '%s\n' "$configure_help" | grep -F -- '--with-mpicc' >/dev/null; then
         configure_args+=(--without-mpicc)
         policy_args+=(--without-mpicc)
         VALGRIND_MPI_DISABLED=true
     fi
-    if printf '%s
-' "$configure_help" | grep -F -- '--with-gdbscripts-dir' >/dev/null; then
+    if printf '%s\n' "$configure_help" | grep -F -- '--with-gdbscripts-dir' >/dev/null; then
         configure_args+=(--without-gdbscripts-dir)
         policy_args+=(--without-gdbscripts-dir)
         VALGRIND_GDBSCRIPTS_DISABLED=true

@@ -48,7 +48,7 @@ brew update
 brew_install_if_missing bash
 brew_install_if_missing cmake
 brew_install_if_missing ninja
-brew_install_if_missing python@3.12
+brew_install_if_missing python
 brew_install_if_missing swig
 brew_install_if_missing xz
 brew_install_if_missing zstd
@@ -61,7 +61,7 @@ brew_install_if_missing pkg-config
 cmake_prefix_path="${CMAKE_PREFIX_PATH:-}"
 pkg_config_path="${PKG_CONFIG_PATH:-}"
 
-for package in zlib xz zstd libxml2 ncurses libedit python@3.12 swig; do
+for package in zlib xz zstd libxml2 ncurses libedit python swig; do
     prefix="$(brew_prefix_if_installed "$package")"
     if [ -z "$prefix" ]; then
         continue
@@ -79,10 +79,10 @@ append_github_env PKG_CONFIG_PATH "$pkg_config_path"
 
 if [ -n "${GITHUB_PATH:-}" ]; then
     brew_bash_prefix="$(brew --prefix bash)"
-    python_prefix="$(brew --prefix python@3.12)"
+    python_prefix="$(brew --prefix python)"
     printf '%s/bin\n' "$brew_bash_prefix" >> "$GITHUB_PATH"
-    # Homebrew keeps unversioned python3/python3-config for versioned Python
-    # under libexec/bin. Make the selected 3.12 provider the command resolved
-    # by the subsequent package-contract and producer build steps.
+    # Homebrew keeps unversioned Python command aliases under libexec/bin.
+    # Make the selected provider the one resolved by the subsequent
+    # package-contract and producer build steps.
     printf '%s/libexec/bin\n' "$python_prefix" >> "$GITHUB_PATH"
 fi

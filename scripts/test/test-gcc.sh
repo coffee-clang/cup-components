@@ -122,6 +122,46 @@ require_package_owned_file() {
     printf 'package-owned file: %s -> %s\n' "$name" "${resolved#"$canonical_root"/}"
 }
 
+require_package_owned_lto_plugin() {
+    local package_root="$1"
+    local compiler="$2"
+    local wrapper
+    local wrapper_resolved
+    local plugin
+    local plugin_resolved
+    local canonical_root
+
+    wrapper="$("$compiler" -print-prog-name=lto-wrapper)"
+    [ -n "$wrapper" ] || {
+        echo 'GCC did not report lto-wrapper' >&2
+        exit 1
+    }
+    wrapper_resolved="$(realpath -e "$wrapper" 2>/dev/null || true)"
+    canonical_root="$(realpath -e "$package_root")"
+    case "$wrapper_resolved" in
+        "$canonical_root"/*) ;;
+        *)
+            echo "GCC lto-wrapper resolved outside package: $wrapper -> $wrapper_resolved" >&2
+            exit 1
+            ;;
+    esac
+
+    plugin="$(dirname "$wrapper_resolved")/liblto_plugin.so"
+    [ -f "$plugin" ] || {
+        echo "GCC LTO plugin is not adjacent to package-owned lto-wrapper: $plugin" >&2
+        exit 1
+    }
+    plugin_resolved="$(realpath -e "$plugin" 2>/dev/null || true)"
+    case "$plugin_resolved" in
+        "$canonical_root"/*) ;;
+        *)
+            echo "GCC LTO plugin resolved outside package: $plugin -> $plugin_resolved" >&2
+            exit 1
+            ;;
+    esac
+    printf 'package-owned LTO plugin: %s\n' "${plugin_resolved#"$canonical_root"/}"
+}
+
 prepare_host_tool_poison() {
     local poison="$1"
     local tool
@@ -144,13 +184,13 @@ verify_native_linux_tool_ownership() {
     require_package_owned_program "$package_root" "$package_root/bin/g++" cc1plus
     require_package_owned_program "$package_root" "$package_root/bin/gcc" collect2
     require_package_owned_program "$package_root" "$package_root/bin/gcc" lto-wrapper
+    require_package_owned_lto_plugin "$package_root" "$package_root/bin/gcc"
     require_package_owned_program "$package_root" "$package_root/bin/gcc" as
     require_package_owned_program "$package_root" "$package_root/bin/gcc" ld
 
     require_package_owned_file "$package_root" "$package_root/bin/gcc" libgcc.a
     require_package_owned_file "$package_root" "$package_root/bin/g++" libstdc++.so
     require_package_owned_file "$package_root" "$package_root/bin/gcc" libgomp.so
-    require_package_owned_file "$package_root" "$package_root/bin/gcc" liblto_plugin.so
     require_package_owned_file "$package_root" "$package_root/bin/gcc" libubsan.so
 }
 

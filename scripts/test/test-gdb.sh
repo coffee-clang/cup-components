@@ -59,13 +59,32 @@ gdb_python_identity_probe() {
     local candidate="$1"
     local label="$2"
     local out="$tmpdir/gdb-python-$label.txt"
+    local expected_version
+    local status
+
+    expected_version="$(awk -F= '$1 == "contents.python_runtime.version" { print $2; found=1 } END { if (!found) exit 1 }' "$candidate/info.txt" 2>/dev/null || true)"
+    [ -n "$expected_version" ] || {
+        echo "GDB package is missing Python runtime provenance: $candidate/info.txt" >&2
+        exit 1
+    }
+
+    set +e
     env -i HOME="$tmpdir/home-$label" PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 \
         "$candidate/bin/gdb" -q -nx -batch \
         -ex 'set debuginfod enabled off' \
-        -ex 'python import sys,gdb; print("PY_PREFIX="+sys.prefix); print("GDB_DATA="+gdb.parameter("data-directory"))' \
+        -ex 'python import sys,gdb; print("PY_PREFIX="+sys.prefix); print("PY_VERSION="+".".join(map(str, sys.version_info[:3]))); print("GDB_DATA="+gdb.parameter("data-directory"))' \
         > "$out" 2>&1
-    grep -Fx "PY_PREFIX=$candidate" "$out" >/dev/null
-    grep -Fx "GDB_DATA=$candidate/share/gdb" "$out" >/dev/null
+    status=$?
+    set -e
+
+    if [ "$status" -ne 0 ] ||
+       ! grep -Fx "PY_PREFIX=$candidate" "$out" >/dev/null ||
+       ! grep -Fx "PY_VERSION=$expected_version" "$out" >/dev/null ||
+       ! grep -Fx "GDB_DATA=$candidate/share/gdb" "$out" >/dev/null; then
+        echo "GDB package-owned Python identity probe failed at relocation $label" >&2
+        cat "$out" >&2
+        exit 1
+    fi
 }
 
 require_executable "$root/bin/gdb"

@@ -116,7 +116,7 @@ Development headers and static build material are not included simply because th
 
 ### Python
 
-Python support is a required GDB product capability in the current recipe. The selected build interpreter and its required standard library are copied into the package so GDB does not depend on a separately installed Python runtime on the destination machine.
+Python support is a required GDB product capability in the current recipe. The selected build interpreter and its required standard library are copied into the package so GDB does not depend on a separately installed Python runtime on the destination machine. `info.txt` records the version of the runtime that was actually copied. The package checks exercise Python from an isolated environment and verify that its search paths remain package-owned after relocation.
 
 ### TUI and terminal support
 
@@ -255,7 +255,7 @@ The Linux package seed additionally keeps:
 
 Other platforms apply the same product-ownership rule to their pruned staged installation before platform runtime closure.
 
-LLDB enables Python. The Python executable path is derived from the interpreter selected by the build rather than from a fixed Python major/minor version.
+LLDB enables Python. The Python executable path is derived from the interpreter selected by the build rather than from a fixed Python major/minor version, and `info.txt` records the version of the runtime that was actually copied. On POSIX, LLDB uses a package-relative Python home. On Windows, the producer explicitly avoids embedding the build-machine Python home and the packaged path configuration keeps Python module discovery inside the relocated package.
 
 If the LLDB installation does not already contain the generated Clang built-in headers it needs, the producer copies the single matching resource directory produced by that LLVM build. The path is derived from the selected build rather than assuming a fixed `lib/clang/<major>` directory.
 

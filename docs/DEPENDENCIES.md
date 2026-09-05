@@ -270,7 +270,7 @@ macOS LLVM-family builds use GitHub-hosted macOS runners and Homebrew.
 bash
 cmake
 ninja
-python@3.12
+python
 swig
 xz
 zstd

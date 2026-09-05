@@ -6,7 +6,8 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Repository-level producer interfaces are tested separately from the common
-# package mechanism that runs inside every platform build environment.
+# package contract, which is validated once in each workflow's Ubuntu select job
+# before any host-specific build job is dispatched.
 # The build scripts are producer authorities too; they must reject unsupported
 # identities before creating work directories or attempting source downloads.
 assert_build_matrix_rejected() {
@@ -69,6 +70,25 @@ for workflow in "$gcc_workflow" "$ld_workflow"; do
     inputs="$(workflow_inputs "$workflow")"
     printf '%s\n' "$inputs" | grep -Eq '^[[:space:]]+host_platform:' || { echo "cross-capable workflow lost host input: $workflow" >&2; exit 1; }
     printf '%s\n' "$inputs" | grep -Eq '^[[:space:]]+target_platform:' || { echo "cross-capable workflow lost target input: $workflow" >&2; exit 1; }
+done
+
+# The abstract package contract has one workflow owner: the Ubuntu select job.
+# Host-specific jobs test real packages instead of recreating synthetic POSIX
+# filesystem fixtures on Windows or macOS.
+for workflow in "$ROOT"/.github/workflows/build-*.yml; do
+    count="$(grep -Fc 'bash scripts/test/test-package-contract.sh' "$workflow")"
+    [ "$count" -eq 1 ] || {
+        echo "common package contract must run exactly once per workflow: $workflow ($count)" >&2
+        exit 1
+    }
+    select_line="$(grep -n '^  select:' "$workflow" | cut -d: -f1)"
+    contract_line="$(grep -nF 'bash scripts/test/test-package-contract.sh' "$workflow" | cut -d: -f1)"
+    build_line="$(grep -n '^  build:' "$workflow" | cut -d: -f1)"
+    [ -n "$select_line" ] && [ -n "$contract_line" ] && [ -n "$build_line" ] &&
+        [ "$select_line" -lt "$contract_line" ] && [ "$contract_line" -lt "$build_line" ] || {
+        echo "common package contract is not owned by the select job: $workflow" >&2
+        exit 1
+    }
 done
 
 # GCC composition is an operator selection. The revision identifies that

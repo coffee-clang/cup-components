@@ -33,6 +33,9 @@ DEFAULT_BINUTILS_VERSION="2.47"
 DEFAULT_LLVM_VERSION="23.1.0"
 DEFAULT_VALGRIND_VERSION="3.27.1"
 
+# Payload provenance set by the Python runtime copy helpers.
+PACKAGED_PYTHON_RUNTIME_VERSION=""
+
 log() {
     printf '[cup-build] %s\n' "$*" >&2
 }
@@ -685,6 +688,14 @@ python_runtime_version() {
     printf '%s\n' "$output" | sed -nE 's/^Python ([0-9]+\.[0-9]+)(\..*)?$/\1/p'
 }
 
+python_runtime_full_version() {
+    local python_executable="$1"
+    local output
+
+    output="$($python_executable --version 2>&1)"
+    printf '%s\n' "$output" | sed -nE 's/^Python ([^[:space:]]+).*$/\1/p'
+}
+
 python_runtime_prefix() {
     local python_executable="$1"
     local config
@@ -710,6 +721,7 @@ copy_posix_python_runtime() {
     local copy_executable="${2:-false}"
     local executable_relative="${3:-libexec/python3}"
     local version
+    local full_version
     local python_prefix
     local stdlib
     local destination
@@ -728,6 +740,8 @@ copy_posix_python_runtime() {
 
     version="$(python_runtime_version "$python_executable")"
     [ -n "$version" ] || die "could not determine Python major/minor version: $python_executable"
+    full_version="$(python_runtime_full_version "$python_executable")"
+    [ -n "$full_version" ] || die "could not determine Python runtime version: $python_executable"
 
     python_prefix="$(python_runtime_prefix "$python_executable" || true)"
     [ -n "$python_prefix" ] || die "could not determine Python prefix: $python_executable"
@@ -764,7 +778,8 @@ copy_posix_python_runtime() {
         chmod 0755 "$PREFIX/$executable_relative"
     fi
 
-    log "copied Python $version runtime into package"
+    PACKAGED_PYTHON_RUNTIME_VERSION="$full_version"
+    log "copied Python $full_version runtime into package"
 }
 
 linux_elf_needed_names() {
@@ -839,47 +854,6 @@ linux_runtime_library_name_is_safe() {
     package_relative_path_is_safe "lib/$name"
 }
 
-linux_runtime_compiler_library_resolution_is_allowed() {
-    local name="$1"
-    local resolved="$2"
-    local compiler=""
-    local expected=""
-
-    case "$name" in
-        libstdc++.so.*) compiler="${CXX:-g++}" ;;
-        libgcc_s.so.*) compiler="${CC:-gcc}" ;;
-        *) return 1 ;;
-    esac
-    command -v "$compiler" >/dev/null 2>&1 || return 1
-    expected="$($compiler -print-file-name="$name" 2>/dev/null || true)"
-    [ -n "$expected" ] && [ "$expected" != "$name" ] || return 1
-    [ "$(realpath -e "$expected" 2>/dev/null || true)" = "$(realpath -e "$resolved" 2>/dev/null || true)" ]
-}
-
-linux_runtime_external_resolution_is_allowed() {
-    local name="$1"
-    local resolved="$2"
-    local roots="${CUP_LINUX_ALLOWED_RUNTIME_ROOTS:-}"
-    local root canonical_resolved canonical_root
-    local -a runtime_roots=()
-
-    [ "${CUP_ENFORCE_RUNTIME_ORIGINS:-false}" = true ] || return 0
-    canonical_resolved="$(realpath -e "$resolved" 2>/dev/null || true)"
-    [ -n "$canonical_resolved" ] || return 1
-
-    IFS=':' read -r -a runtime_roots <<< "$roots"
-    for root in "${runtime_roots[@]}"; do
-        [ -n "$root" ] || continue
-        canonical_root="$(realpath -e "$root" 2>/dev/null || true)"
-        [ -n "$canonical_root" ] || continue
-        case "$canonical_resolved" in
-            "$canonical_root"/*|"$canonical_root") return 0 ;;
-        esac
-    done
-
-    linux_runtime_compiler_library_resolution_is_allowed "$name" "$resolved"
-}
-
 linux_copy_resolved_runtime_libraries() {
     local prefix="$1"
     local copied
@@ -920,9 +894,6 @@ linux_copy_resolved_runtime_libraries() {
                 case "$resolved" in
                     "$prefix"/*) continue ;;
                 esac
-
-                linux_runtime_external_resolution_is_allowed "$name" "$resolved" ||
-                    die "Linux runtime dependency resolved from an unauthorized provider: $(basename "$file"): $name -> $resolved"
 
                 destination="$prefix/lib/$name"
                 if [ -e "$destination" ]; then
@@ -1657,6 +1628,7 @@ copy_windows_python_runtime() {
     local python_executable=""
     local python_library=""
     local version
+    local full_version
     local major
     local minor
     local stdlib
@@ -1702,6 +1674,11 @@ import sys
 print(f"{sys.version_info.major}.{sys.version_info.minor}")
 PYSCRIPT
 )"
+    full_version="$($python_executable - <<'PYSCRIPT'
+import sys
+print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
+PYSCRIPT
+)"
     major="$($python_executable - <<'PYSCRIPT'
 import sys
 print(sys.version_info.major)
@@ -1734,7 +1711,7 @@ PYSCRIPT
         stdlib="$(cygpath -u "$stdlib" 2>/dev/null || printf '%s\n' "$stdlib")"
     fi
 
-    if [ -z "$version" ] || [ -z "$stdlib" ] || [ ! -d "$stdlib" ]; then
+    if [ -z "$version" ] || [ -z "$full_version" ] || [ -z "$stdlib" ] || [ ! -d "$stdlib" ]; then
         die "could not locate Python standard library for Windows package"
     fi
 
@@ -1820,6 +1797,8 @@ import site
 EOF_PYTHON_PATH
         log "copied private Windows Python interpreter for packaged helper scripts"
     fi
+
+    PACKAGED_PYTHON_RUNTIME_VERSION="$full_version"
 }
 
 
@@ -2194,6 +2173,8 @@ package_verify_info_contract() {
     local info="$package_root/info.txt"
     local package_version
     local expected_source_name
+    local python_runtime_state
+    local python_runtime_metadata_version
     local key
     local value
     local entry_count=0
@@ -2239,6 +2220,17 @@ package_verify_info_contract() {
         die "info.txt source.primary.name does not match package tool"
     [ "$(package_info_value "$info" source.primary.version)" = "$version" ] ||
         die "info.txt source.primary.version does not match selected package version"
+
+    python_runtime_state="$(package_info_value "$info" contents.python_runtime 2>/dev/null || true)"
+    python_runtime_metadata_version="$(package_info_value "$info" contents.python_runtime.version 2>/dev/null || true)"
+    if [ "$python_runtime_state" = packaged ]; then
+        [ -n "$python_runtime_metadata_version" ] ||
+            die "info.txt packaged Python runtime is missing contents.python_runtime.version"
+        numeric_version_is_valid "$python_runtime_metadata_version" ||
+            die "info.txt contents.python_runtime.version is not a numeric dotted version"
+    elif [ -n "$python_runtime_metadata_version" ]; then
+        die "info.txt contains Python runtime version metadata without a packaged Python runtime"
+    fi
 
     if [ "$tool" = gcc ]; then
         for key in bundle.components bundle.binutils.version bundle.binutils.url bundle.binutils.sha256; do

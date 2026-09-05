@@ -84,16 +84,28 @@ printf 'source corrupt-cache propagation test passed\n'
 )
 printf 'source acquisition success-path test passed\n'
 
+symlink_probe="$TMP/symlink-probe"
+mkdir -p "$symlink_probe"
+printf target > "$symlink_probe/target"
+supports_symlinks=false
+if ln -s target "$symlink_probe/link" 2>/dev/null &&
+   [ -L "$symlink_probe/link" ] &&
+   [ "$(readlink "$symlink_probe/link" 2>/dev/null || true)" = target ]; then
+    supports_symlinks=true
+fi
+
 prefix="$TMP/prefix"
 mkdir -p "$prefix/bin" "$prefix/lib" "$prefix/share/data"
 printf '#!/bin/sh\nprintf fixture\\n' > "$prefix/bin/gdb"
 chmod 0711 "$prefix/bin/gdb"
-ln -s gdb "$prefix/bin/gdb-alias"
 printf 'payload\n' > "$prefix/lib/libfixture.so.2"
-ln -s libfixture.so.2 "$prefix/lib/libfixture.so"
-ln -s libfixture.so "$prefix/lib/libfixture-current.so"
-mkdir -p "$prefix/lib/aliases"
-ln -s ../libfixture.so.2 "$prefix/lib/aliases/libfixture.so"
+if [ "$supports_symlinks" = true ]; then
+    ln -s gdb "$prefix/bin/gdb-alias"
+    ln -s libfixture.so.2 "$prefix/lib/libfixture.so"
+    ln -s libfixture.so "$prefix/lib/libfixture-current.so"
+    mkdir -p "$prefix/lib/aliases"
+    ln -s ../libfixture.so.2 "$prefix/lib/aliases/libfixture.so"
+fi
 printf 'hardlinked\n' > "$prefix/share/data/a"
 chmod 0600 "$prefix/share/data/a"
 ln "$prefix/share/data/a" "$prefix/share/data/b"
@@ -117,10 +129,14 @@ source.primary.name=gdb
 source.primary.version=1.0
 source.primary.url=https://example.invalid/gdb-1.0.tar.xz
 source.primary.sha256=0000000000000000000000000000000000000000000000000000000000000000
-entry.gdb=bin/gdb-alias
 features.fixture=true
 config.fixture=true
 EOF_INFO
+if [ "$supports_symlinks" = true ]; then
+    printf 'entry.gdb=bin/gdb-alias\n' >> "$prefix/info.txt"
+else
+    printf 'entry.gdb=bin/gdb\n' >> "$prefix/info.txt"
+fi
 
 create_packages_without_runtime_closure gdb 1.0 linux-x64 linux-x64 "" "$prefix"
 base=gdb-1.0-linux-x64-linux-x64
@@ -132,14 +148,16 @@ if package_info_value "$package_root/info.txt" package.revision >/dev/null 2>&1;
     echo 'revisionless GDB package retained package.revision metadata' >&2
     exit 1
 fi
-[ -L "$package_root/bin/gdb-alias" ] || { echo 'entry symlink was not preserved' >&2; exit 1; }
-[ "$(readlink "$package_root/bin/gdb-alias")" = gdb ] || { echo 'entry symlink target changed' >&2; exit 1; }
-[ -L "$package_root/lib/libfixture.so" ] || { echo 'symlink was not preserved' >&2; exit 1; }
-[ -L "$package_root/lib/libfixture-current.so" ] || { echo 'symlink chain was not preserved' >&2; exit 1; }
-[ -L "$package_root/lib/aliases/libfixture.so" ] || { echo 'parent-relative symlink was not preserved' >&2; exit 1; }
-[ "$(cat "$package_root/lib/libfixture-current.so")" = payload ] || { echo 'preserved symlink chain resolves to wrong bytes' >&2; exit 1; }
-link_digest="$(package_text_digest 'libfixture.so.2')"
-grep -F $'l\t-\t'"$link_digest"$'\tlib/libfixture.so' "$package_root/manifest.txt" >/dev/null
+if [ "$supports_symlinks" = true ]; then
+    [ -L "$package_root/bin/gdb-alias" ] || { echo 'entry symlink was not preserved' >&2; exit 1; }
+    [ "$(readlink "$package_root/bin/gdb-alias")" = gdb ] || { echo 'entry symlink target changed' >&2; exit 1; }
+    [ -L "$package_root/lib/libfixture.so" ] || { echo 'symlink was not preserved' >&2; exit 1; }
+    [ -L "$package_root/lib/libfixture-current.so" ] || { echo 'symlink chain was not preserved' >&2; exit 1; }
+    [ -L "$package_root/lib/aliases/libfixture.so" ] || { echo 'parent-relative symlink was not preserved' >&2; exit 1; }
+    [ "$(cat "$package_root/lib/libfixture-current.so")" = payload ] || { echo 'preserved symlink chain resolves to wrong bytes' >&2; exit 1; }
+    link_digest="$(package_text_digest 'libfixture.so.2')"
+    grep -F $'l\t-\t'"$link_digest"$'\tlib/libfixture.so' "$package_root/manifest.txt" >/dev/null
+fi
 grep -F $'f\t0644\t' "$package_root/manifest.txt" | grep -F $'\tshare/data/a' >/dev/null
 grep -F $'f\t0644\t' "$package_root/manifest.txt" | grep -F $'\tshare/data/b' >/dev/null
 find "$package_root/bin/gdb" -perm 0755 -print -quit | grep -q . || {
@@ -158,18 +176,20 @@ find "$package_root/share/data" -perm 0755 -print -quit | grep -q . || {
 tar -tf "$CUP_OUT_DIR/$base.tar.xz" >/dev/null
 tar -tf "$CUP_OUT_DIR/$base.tar.gz" >/dev/null
 unzip -tqq "$CUP_OUT_DIR/$base.zip"
-for archive in "$CUP_OUT_DIR/$base.tar.xz" "$CUP_OUT_DIR/$base.tar.gz"; do
-    tar -tvf "$archive" | grep -F 'lib/libfixture.so -> libfixture.so.2' >/dev/null || {
-        echo "tar archive did not preserve symbolic link: $archive" >&2
-        exit 1
-    }
-done
 zip_extract="$TMP/zip-extract"
 mkdir -p "$zip_extract"
 unzip -q "$CUP_OUT_DIR/$base.zip" -d "$zip_extract"
-[ -L "$zip_extract/$base/lib/libfixture.so" ] || { echo 'zip did not preserve symbolic link' >&2; exit 1; }
-[ -L "$zip_extract/$base/lib/libfixture-current.so" ] || { echo 'zip did not preserve symbolic-link chain' >&2; exit 1; }
-[ "$(cat "$zip_extract/$base/lib/libfixture-current.so")" = payload ] || { echo 'zip symlink chain resolves to wrong bytes' >&2; exit 1; }
+if [ "$supports_symlinks" = true ]; then
+    for archive in "$CUP_OUT_DIR/$base.tar.xz" "$CUP_OUT_DIR/$base.tar.gz"; do
+        tar -tvf "$archive" | grep -F 'lib/libfixture.so -> libfixture.so.2' >/dev/null || {
+            echo "tar archive did not preserve symbolic link: $archive" >&2
+            exit 1
+        }
+    done
+    [ -L "$zip_extract/$base/lib/libfixture.so" ] || { echo 'zip did not preserve symbolic link' >&2; exit 1; }
+    [ -L "$zip_extract/$base/lib/libfixture-current.so" ] || { echo 'zip did not preserve symbolic-link chain' >&2; exit 1; }
+    [ "$(cat "$zip_extract/$base/lib/libfixture-current.so")" = payload ] || { echo 'zip symlink chain resolves to wrong bytes' >&2; exit 1; }
+fi
 
 # Every advertised archive format must reconstruct the same logical package graph.
 # Recompute manifest v2 after extraction so ZIP cannot pass merely by carrying the
@@ -200,16 +220,21 @@ cmp -s "$TMP/parity-xz.manifest" "$TMP/parity-zip.manifest" || {
     exit 1
 }
 
-# Unsupported producer objects must fail before publication.
-if command -v mkfifo >/dev/null 2>&1; then
+# Unsupported producer objects must fail before publication when the host
+# filesystem can actually represent the fixture object.
+fifo_probe="$TMP/fifo-probe"
+if command -v mkfifo >/dev/null 2>&1 && mkfifo "$fifo_probe" 2>/dev/null && [ -p "$fifo_probe" ]; then
     bad_prefix="$TMP/bad-prefix"
     cp -RPp "$prefix" "$bad_prefix"
-    rm -f "$bad_prefix/lib/libfixture.so"
-    mkfifo "$bad_prefix/lib/not-a-file"
+    rm -f "$bad_prefix/lib/libfixture.so" 2>/dev/null || true
+    mv "$fifo_probe" "$bad_prefix/lib/not-a-file"
     if (create_packages_without_runtime_closure gdb 1.0 linux-x64 linux-x64 "" "$bad_prefix") >/dev/null 2>&1; then
         echo 'special object was accepted by common package finalization' >&2
         exit 1
     fi
+else
+    rm -f "$fifo_probe" 2>/dev/null || true
+    printf 'special-object FIFO rejection test skipped: host filesystem cannot represent a FIFO\n'
 fi
 
 printf 'package archive/object tests passed\n'
@@ -293,33 +318,38 @@ assert_link_rejected() {
     fi
 }
 
-assert_link_rejected absolute 'ln -s /etc/passwd "$candidate/lib/libfixture.so"'
-assert_link_rejected dangling 'ln -s missing.so "$candidate/lib/libfixture.so"'
-assert_link_rejected directory 'ln -s ../share "$candidate/lib/libfixture.so"'
-assert_link_rejected cycle 'ln -s cycle-b "$candidate/lib/libfixture.so"; ln -s libfixture.so "$candidate/lib/cycle-b"'
-assert_link_rejected newline 'ln -s "$(printf "libfixture.so.2\njunk")" "$candidate/lib/libfixture.so"'
+if [ "$supports_symlinks" = true ]; then
+    assert_link_rejected absolute 'ln -s /etc/passwd "$candidate/lib/libfixture.so"'
+    assert_link_rejected dangling 'ln -s missing.so "$candidate/lib/libfixture.so"'
+    assert_link_rejected directory 'ln -s ../share "$candidate/lib/libfixture.so"'
+    assert_link_rejected cycle 'ln -s cycle-b "$candidate/lib/libfixture.so"; ln -s libfixture.so "$candidate/lib/cycle-b"'
+    assert_link_rejected newline 'ln -s "$(printf "libfixture.so.2\njunk")" "$candidate/lib/libfixture.so"'
 
-# A finite internal chain is admitted by contract regardless of an arbitrary
-# implementation hop count. Cycle detection, not a fixed depth cap, provides
-# termination for malformed chains.
-deep_link_root="$TMP/link-deep-finite"
-cp -RPp "$prefix" "$deep_link_root"
-for i in $(seq 80 -1 1); do
-    if [ "$i" -eq 80 ]; then
-        target=libfixture.so.2
-    else
-        target=deep-$((i + 1))
+    # A finite internal chain is admitted by contract regardless of an arbitrary
+    # implementation hop count. Cycle detection, not a fixed depth cap, provides
+    # termination for malformed chains.
+    deep_link_root="$TMP/link-deep-finite"
+    cp -RPp "$prefix" "$deep_link_root"
+    for ((i=80; i>=1; i--)); do
+        if [ "$i" -eq 80 ]; then
+            target=libfixture.so.2
+        else
+            target=deep-$((i + 1))
+        fi
+        ln -s "$target" "$deep_link_root/lib/deep-$i"
+    done
+    [ "$(package_resolve_staging_link "$deep_link_root" lib/deep-1)" = lib/libfixture.so.2 ] || {
+        echo 'finite internal symbolic-link chain was rejected by an implementation depth limit' >&2
+        exit 1
+    }
+    windows_root="$TMP/windows-root"
+    if (package_normalize_root "$prefix" "$windows_root" windows-x64) >/dev/null 2>&1; then
+        echo 'Windows package normalization accepted a symbolic link' >&2
+        exit 1
     fi
-    ln -s "$target" "$deep_link_root/lib/deep-$i"
-done
-[ "$(package_resolve_staging_link "$deep_link_root" lib/deep-1)" = lib/libfixture.so.2 ] || {
-    echo 'finite internal symbolic-link chain was rejected by an implementation depth limit' >&2
-    exit 1
-}
-windows_root="$TMP/windows-root"
-if (package_normalize_root "$prefix" "$windows_root" windows-x64) >/dev/null 2>&1; then
-    echo 'Windows package normalization accepted a symbolic link' >&2
-    exit 1
+
+else
+    printf 'package link-admission tests skipped: host filesystem cannot represent symbolic links\n'
 fi
 
 printf 'package link-admission tests passed\n'
@@ -343,6 +373,8 @@ assert_package_rejected source-name-mismatch 'sed "s/^source.primary.name=gdb$/s
 assert_package_rejected source-version-mismatch 'sed "s/^source.primary.version=1.0$/source.primary.version=1.1/" "$candidate/info.txt" > "$candidate/info.txt.tmp"; mv "$candidate/info.txt.tmp" "$candidate/info.txt"'
 assert_package_rejected duplicate-field 'printf "package.tool=gdb\\n" >> "$candidate/info.txt"'
 assert_package_rejected missing-final-newline 'printf %s "$(cat "$candidate/info.txt")" > "$candidate/info.txt"'
+assert_package_rejected packaged-python-version-missing 'printf "contents.python_runtime=packaged\n" >> "$candidate/info.txt"'
+assert_package_rejected packaged-python-version-invalid 'printf "contents.python_runtime=packaged\ncontents.python_runtime.version=not-a-version\n" >> "$candidate/info.txt"'
 
 # A case-fold collision can only exist in a staging tree when the host
 # filesystem can represent names that differ by case. Probe that capability
@@ -359,10 +391,8 @@ else
     printf 'producer case-fold collision rejection test skipped: host filesystem cannot represent case-distinct paths\n'
 fi
 
-assert_package_rejected newline-path 'printf x > "$candidate/share/$(printf "bad\\nname")"'
-
-# Newlines must be rejected by the central path grammar itself, before any
-# runtime-closure mechanism is allowed to inspect the malformed staging tree.
+# Newlines must always be rejected by the central path grammar. Filesystem
+# fixtures are exercised only when the host can represent such a name.
 if package_relative_path_is_safe $'safe\nname'; then
     echo 'package path grammar truncated and accepted an embedded newline' >&2
     exit 1
@@ -371,21 +401,30 @@ if package_relative_path_is_safe 'safe/'; then
     echo 'package path grammar accepted a non-canonical trailing slash' >&2
     exit 1
 fi
-newline_stage="$TMP/staging-newline-preclosure"
-cp -RPp "$prefix" "$newline_stage"
-printf x > "$newline_stage/share/$(printf 'bad\nname')"
-closure_marker="$TMP/newline-runtime-closure-ran"
-if (
-    prepare_linux_runtime_closure() { : > "$closure_marker"; }
-    create_packages gdb 1.0 linux-x64 linux-x64 "" "$newline_stage"
-) >/dev/null 2>&1; then
-    echo 'newline-bearing staging path was accepted' >&2
-    exit 1
+newline_probe_dir="$TMP/newline-path-probe"
+newline_probe_name="$(printf 'bad\nname')"
+mkdir -p "$newline_probe_dir"
+if printf x > "$newline_probe_dir/$newline_probe_name" 2>/dev/null && [ -f "$newline_probe_dir/$newline_probe_name" ]; then
+    assert_package_rejected newline-path 'printf x > "$candidate/share/$(printf "bad\nname")"'
+
+    newline_stage="$TMP/staging-newline-preclosure"
+    cp -RPp "$prefix" "$newline_stage"
+    printf x > "$newline_stage/share/$newline_probe_name"
+    closure_marker="$TMP/newline-runtime-closure-ran"
+    if (
+        prepare_linux_runtime_closure() { : > "$closure_marker"; }
+        create_packages gdb 1.0 linux-x64 linux-x64 "" "$newline_stage"
+    ) >/dev/null 2>&1; then
+        echo 'newline-bearing staging path was accepted' >&2
+        exit 1
+    fi
+    [ ! -e "$closure_marker" ] || {
+        echo 'runtime closure ran before malformed staging path rejection' >&2
+        exit 1
+    }
+else
+    printf 'newline-path filesystem fixtures skipped: host filesystem cannot represent newline-bearing names\n'
 fi
-[ ! -e "$closure_marker" ] || {
-    echo 'runtime closure ran before malformed staging path rejection' >&2
-    exit 1
-}
 
 printf 'package metadata/path compatibility tests passed\n'
 # Version inputs and package revisions form part of package identity and must not
@@ -452,7 +491,7 @@ deep_prefix="$TMP/deep-elf-prefix"
 deep_external="$TMP/deep-elf-external"
 mkdir -p "$deep_prefix/bin" "$deep_external"
 printf tool > "$deep_prefix/bin/tool"
-for i in $(seq 1 10); do printf 'lib%s' "$i" > "$deep_external/lib$i.so"; done
+for ((i=1; i<=10; i++)); do printf 'lib%s' "$i" > "$deep_external/lib$i.so"; done
 (
     linux_dynamic_elf_files() { find "$1" -type f | LC_ALL=C sort; }
     linux_ldd_dependencies() {
@@ -705,7 +744,7 @@ deep_mac_prefix="$TMP/deep-mac-prefix"
 deep_mac_external="$TMP/deep-mac-external"
 mkdir -p "$deep_mac_prefix/bin" "$deep_mac_external"
 printf tool > "$deep_mac_prefix/bin/tool"
-for i in $(seq 1 10); do printf 'dylib%s' "$i" > "$deep_mac_external/lib$i.dylib"; done
+for ((i=1; i<=10; i++)); do printf 'dylib%s' "$i" > "$deep_mac_external/lib$i.dylib"; done
 (
     macos_macho_files() { find "$1" -type f | LC_ALL=C sort; }
     macos_macho_dependencies() {

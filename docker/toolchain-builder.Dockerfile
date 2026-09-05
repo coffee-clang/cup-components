@@ -5,12 +5,16 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
+        binutils \
         ca-certificates \
         curl \
         wget \
         file \
         flex \
+        gawk \
+        gettext \
         bison \
+        libtool \
         make \
         patch \
         patchelf \

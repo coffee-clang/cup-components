@@ -102,7 +102,7 @@ show_info_contract() {
     for key in \
         package.component package.tool package.version package.revision package.mode package.formats \
         platform.host platform.target platform.host_triple platform.target_triple \
-        source.primary.name source.primary.version build.environment build.source_policy; do
+        source.primary.name source.primary.version source.primary.sha256 build.environment build.source_policy; do
         value="$(info_value "$key")"
         if [ -n "$value" ]; then
             printf '  %-30s %s\n' "$key" "$value"
@@ -155,24 +155,47 @@ show_gcc() {
     mark_exe objdump features.binutils
     mark_exe readelf features.binutils
 
-    target_triple="$(info_value platform.target_triple)"
+    target_triple="$(info_value config.gcc_target_triple)"
+    if [ -z "$target_triple" ]; then
+        target_triple="$(info_value platform.target_triple)"
+    fi
     if [ -n "$target_triple" ]; then
         echo ""
         echo "[target-prefixed compiler driver probes: $target_triple]"
-        for exe in gcc g++ cpp gcov; do
-            mark_exe "$target_triple-$exe" features.target_prefixed_compiler_drivers
+        mark_exe "$target_triple-gcc" features.target_prefixed_compiler_drivers
+        for exe in g++ cpp gcov; do
+            mark_exe "$target_triple-$exe"
         done
 
         echo ""
         echo "[target-prefixed Binutils probes: $target_triple]"
-        for exe in as ld ar ranlib strip objdump readelf; do
-            mark_exe "$target_triple-$exe" features.target_prefixed_binutils
+        mark_exe "$target_triple-ar" features.target_prefixed_binutils
+        for exe in as ld ranlib strip objdump readelf; do
+            mark_exe "$target_triple-$exe"
         done
     fi
 
     try_version gcc --version
     try_version g++ --version
     [ -n "$target_triple" ] && try_version "$target_triple-gcc" --version
+}
+
+show_ld() {
+    local target_triple
+
+    echo ""
+    echo "[GNU ld capability probes]"
+    mark_exe ld features.link
+    mark_exe ld.bfd features.ld_bfd
+
+    if [ "$(info_value config.cross)" = "true" ]; then
+        target_triple="$(info_value platform.target_triple)"
+        if [ -n "$target_triple" ]; then
+            mark_exe "$target_triple-ld" features.target_prefixed
+        fi
+    fi
+
+    try_version ld --version
 }
 
 show_gdb() {
@@ -264,6 +287,7 @@ show_bin_summary
 
 case "$tool" in
     gcc) show_gcc ;;
+    ld) show_ld ;;
     gdb) show_gdb ;;
     clang|lld|lldb|clangd|clang-format|clang-tidy) show_llvm ;;
     valgrind) show_valgrind ;;

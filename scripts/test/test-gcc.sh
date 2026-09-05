@@ -64,6 +64,131 @@ feature_enabled() {
     [ "$(info_value "$key")" = "true" ]
 }
 
+require_package_owned_program() {
+    local package_root="$1"
+    local compiler="$2"
+    local program="$3"
+    local reported
+    local resolved
+    local canonical_root
+
+    reported="$("$compiler" -print-prog-name="$program")"
+    [ -n "$reported" ] || {
+        echo "GCC did not report a program path for: $program" >&2
+        exit 1
+    }
+    case "$reported" in
+        /*) ;;
+        *)
+            echo "GCC program is not package-anchored: $program -> $reported" >&2
+            exit 1
+            ;;
+    esac
+
+    resolved="$(realpath -e "$reported" 2>/dev/null || true)"
+    canonical_root="$(realpath -e "$package_root")"
+    case "$resolved" in
+        "$canonical_root"/*) ;;
+        *)
+            echo "GCC program resolved outside package: $program -> $reported -> $resolved" >&2
+            exit 1
+            ;;
+    esac
+    printf 'package-owned program: %s -> %s\n' "$program" "${resolved#"$canonical_root"/}"
+}
+
+require_package_owned_file() {
+    local package_root="$1"
+    local compiler="$2"
+    local name="$3"
+    local reported
+    local resolved
+    local canonical_root
+
+    reported="$("$compiler" -print-file-name="$name")"
+    [ -n "$reported" ] && [ "$reported" != "$name" ] || {
+        echo "GCC did not resolve package file: $name" >&2
+        exit 1
+    }
+    resolved="$(realpath -e "$reported" 2>/dev/null || true)"
+    canonical_root="$(realpath -e "$package_root")"
+    case "$resolved" in
+        "$canonical_root"/*) ;;
+        *)
+            echo "GCC file resolved outside package: $name -> $reported -> $resolved" >&2
+            exit 1
+            ;;
+    esac
+    printf 'package-owned file: %s -> %s\n' "$name" "${resolved#"$canonical_root"/}"
+}
+
+prepare_host_tool_poison() {
+    local poison="$1"
+    local tool
+
+    mkdir -p "$poison"
+    for tool in as ld; do
+        cat > "$poison/$tool" <<'POISON_EOF'
+#!/usr/bin/env sh
+echo "unexpected host Binutils fallback: $(basename "$0")" >&2
+exit 97
+POISON_EOF
+        chmod 0755 "$poison/$tool"
+    done
+}
+
+verify_native_linux_tool_ownership() {
+    local package_root="$1"
+
+    require_package_owned_program "$package_root" "$package_root/bin/gcc" cc1
+    require_package_owned_program "$package_root" "$package_root/bin/g++" cc1plus
+    require_package_owned_program "$package_root" "$package_root/bin/gcc" collect2
+    require_package_owned_program "$package_root" "$package_root/bin/gcc" lto-wrapper
+    require_package_owned_program "$package_root" "$package_root/bin/gcc" as
+    require_package_owned_program "$package_root" "$package_root/bin/gcc" ld
+
+    require_package_owned_file "$package_root" "$package_root/bin/gcc" libgcc.a
+    require_package_owned_file "$package_root" "$package_root/bin/g++" libstdc++.so
+    require_package_owned_file "$package_root" "$package_root/bin/gcc" libgomp.so
+    require_package_owned_file "$package_root" "$package_root/bin/gcc" liblto_plugin.so
+    require_package_owned_file "$package_root" "$package_root/bin/gcc" libubsan.so
+}
+
+run_native_linux_poison_compile() {
+    local package_root="$1"
+    local poison="$2"
+    local suffix="$3"
+    local clean_home="$tmpdir/home-$suffix"
+
+    mkdir -p "$clean_home"
+    env -i \
+        HOME="$clean_home" \
+        PATH="$poison:/usr/bin:/bin" \
+        LANG=C.UTF-8 \
+        LC_ALL=C.UTF-8 \
+        TZ=UTC \
+        "$package_root/bin/gcc" "$tmpdir/c-test.c" -o "$tmpdir/c-test-$suffix"
+    "$tmpdir/c-test-$suffix" | grep -F "hello gcc c"
+
+    env -i \
+        HOME="$clean_home" \
+        PATH="$poison:/usr/bin:/bin" \
+        LANG=C.UTF-8 \
+        LC_ALL=C.UTF-8 \
+        TZ=UTC \
+        "$package_root/bin/g++" "$tmpdir/cpp-test.cpp" -o "$tmpdir/cpp-test-$suffix"
+    "$tmpdir/cpp-test-$suffix" | grep -F "42"
+
+    env -i \
+        HOME="$clean_home" \
+        PATH="$poison:/usr/bin:/bin" \
+        LANG=C.UTF-8 \
+        LC_ALL=C.UTF-8 \
+        TZ=UTC \
+        "$package_root/bin/gcc" -flto "$tmpdir/lto-test.c" -o "$tmpdir/lto-test-$suffix"
+    "$tmpdir/lto-test-$suffix"
+}
+
 require_no_redundant_native_linux_target_layouts() {
     case "$TARGET_PLATFORM" in
         linux-x64)
@@ -122,6 +247,7 @@ if [ "$HOST_PLATFORM" = "$TARGET_PLATFORM" ] && [ "${HOST_PLATFORM#linux-}" != "
     "$root/bin/ld" --version
     "$root/bin/gcc" -print-libgcc-file-name
     "$root/bin/gcc" -print-prog-name=cc1
+    verify_native_linux_tool_ownership "$root"
 
     cat > "$tmpdir/c-test.c" <<'C_EOF'
 #include <stdio.h>
@@ -220,6 +346,10 @@ int main(void) {
 SAN_EOF
     "$root/bin/gcc" -fsanitize=undefined "$tmpdir/sanitizer-test.c" -o "$tmpdir/sanitizer-test"
     "$tmpdir/sanitizer-test" | grep -F "sanitizer 1"
+
+    poison="$tmpdir/host-binutils-poison"
+    prepare_host_tool_poison "$poison"
+    run_native_linux_poison_compile "$root" "$poison" canonical
 elif [ "$TARGET_PLATFORM" = "windows-x64" ]; then
     target_prefix="x86_64-w64-mingw32"
 
@@ -315,14 +445,28 @@ else
     exit 2
 fi
 
-# Re-run a real compile after copying the package to an unrelated path.
-reloc_root="$tmpdir/relocated-gcc"
-cp -RPp "$root" "$reloc_root"
-export PATH="$reloc_root/bin:$host_path"
+# Physical relocation: A must be unavailable before B, and A/B unavailable before C.
 if [ "$HOST_PLATFORM" = "$TARGET_PLATFORM" ] && [ "${HOST_PLATFORM#linux-}" != "$HOST_PLATFORM" ]; then
-    "$reloc_root/bin/gcc" "$tmpdir/c-test.c" -o "$tmpdir/c-test-relocated"
-    "$tmpdir/c-test-relocated" | grep -F "hello gcc c"
+    reloc_b="$tmpdir/relocation-b"
+    reloc_c_parent="$tmpdir/relocation c with spaces"
+    reloc_c="$reloc_c_parent/gcc-package"
+
+    cp -RPp "$root" "$reloc_b"
+    rm -rf "$root"
+    [ ! -e "$root" ] || { echo "previous GCC root A is still available" >&2; exit 1; }
+    verify_native_linux_tool_ownership "$reloc_b"
+    run_native_linux_poison_compile "$reloc_b" "$poison" relocation-b
+
+    mkdir -p "$reloc_c_parent"
+    mv "$reloc_b" "$reloc_c"
+    [ ! -e "$root" ] || { echo "previous GCC root A reappeared" >&2; exit 1; }
+    [ ! -e "$reloc_b" ] || { echo "previous GCC root B is still available" >&2; exit 1; }
+    verify_native_linux_tool_ownership "$reloc_c"
+    run_native_linux_poison_compile "$reloc_c" "$poison" relocation-c
 elif [ "$TARGET_PLATFORM" = "windows-x64" ]; then
+    reloc_root="$tmpdir/relocated-gcc"
+    cp -RPp "$root" "$reloc_root"
+    export PATH="$reloc_root/bin:$host_path"
     target_prefix="x86_64-w64-mingw32"
     "$reloc_root/bin/$target_prefix-gcc" "$tmpdir/windows-c-test.c" -o "$tmpdir/windows-c-test-relocated.exe"
     require_pe_file "$tmpdir/windows-c-test-relocated.exe"

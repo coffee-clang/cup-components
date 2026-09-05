@@ -1,36 +1,16 @@
-name: Build GCC
+name: Build GNU ld
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: GCC version, or stable
+        description: GNU Binutils/ld version, or stable
         required: true
         default: stable
       source_sha256:
         description: Optional SHA-256 to verify the selected source archive
         required: false
         default: ''
-      binutils_version:
-        description: Bundled Binutils version, or stable
-        required: true
-        default: stable
-      binutils_source_sha256:
-        description: Optional SHA-256 to verify the selected Binutils source archive
-        required: false
-        default: ''
-      mingw_version:
-        description: MinGW-w64 version for Windows targets, or stable
-        required: true
-        default: stable
-      mingw_source_sha256:
-        description: Optional SHA-256 to verify the selected MinGW-w64 source archive
-        required: false
-        default: ''
-      revision:
-        description: GCC package revision, or stable for the default stable composition
-        required: true
-        default: stable
       host_platform:
         description: Host platform
         required: true
@@ -71,12 +51,13 @@ jobs:
         run: |
           host_platform="${{ inputs.host_platform }}"
           target_platform="${{ inputs.target_platform }}"
+
           case "$host_platform" in
             linux-x64) runner="ubuntu-24.04" ;;
             linux-arm64) runner="ubuntu-24.04-arm" ;;
             windows-x64) runner="windows-2025" ;;
             *)
-              echo "Unsupported GCC host platform: $host_platform" >&2
+              echo "Unsupported GNU ld host platform: $host_platform" >&2
               exit 1
               ;;
           esac
@@ -84,7 +65,7 @@ jobs:
           case "$host_platform:$target_platform" in
             linux-x64:linux-x64|linux-x64:windows-x64|linux-arm64:linux-arm64|windows-x64:windows-x64) ;;
             *)
-              echo "Unsupported GCC build combination: $host_platform -> $target_platform" >&2
+              echo "Unsupported GNU ld build combination: $host_platform -> $target_platform" >&2
               exit 1
               ;;
           esac
@@ -105,14 +86,9 @@ jobs:
         shell: bash
         env:
           CUP_SOURCE_SHA256: ${{ inputs.source_sha256 }}
-          CUP_GCC_BINUTILS_VERSION: ${{ inputs.binutils_version }}
-          CUP_BINUTILS_SOURCE_SHA256: ${{ inputs.binutils_source_sha256 }}
-          CUP_GCC_MINGW_VERSION: ${{ inputs.mingw_version }}
-          CUP_MINGW_SOURCE_SHA256: ${{ inputs.mingw_source_sha256 }}
-          CUP_GCC_REVISION: ${{ inputs.revision }}
         run: |
           bash scripts/workflow/build-records.sh init \
-            gcc \
+            ld \
             "${{ inputs.version }}" \
             "${{ needs.select.outputs.host_platform }}" \
             "${{ needs.select.outputs.target_platform }}"
@@ -137,21 +113,16 @@ jobs:
           docker run --rm \
             -e CUP_BUILD_ENVIRONMENT=docker-toolchain \
             -e CUP_SOURCE_SHA256="${{ inputs.source_sha256 }}" \
-            -e CUP_GCC_BINUTILS_VERSION="${{ inputs.binutils_version }}" \
-            -e CUP_BINUTILS_SOURCE_SHA256="${{ inputs.binutils_source_sha256 }}" \
-            -e CUP_GCC_MINGW_VERSION="${{ inputs.mingw_version }}" \
-            -e CUP_MINGW_SOURCE_SHA256="${{ inputs.mingw_source_sha256 }}" \
-            -e CUP_GCC_REVISION="${{ inputs.revision }}" \
             -v "$PWD:/workspace" \
             -w /workspace \
             cup-toolchain-builder \
             bash scripts/workflow/build-records.sh run build \
-              bash scripts/build/build-gcc.sh \
+              bash scripts/build/build-ld.sh \
                 "${{ inputs.version }}" \
                 "${{ needs.select.outputs.host_platform }}" \
                 "${{ needs.select.outputs.target_platform }}"
 
-      - name: Test packaged GCC (Linux)
+      - name: Test packaged GNU ld (Linux)
         if: ${{ startsWith(needs.select.outputs.host_platform, 'linux-') }}
         run: |
           docker run --rm \
@@ -159,7 +130,7 @@ jobs:
             -w /workspace \
             cup-toolchain-builder \
             bash scripts/workflow/build-records.sh run product-test \
-              bash scripts/test/test-gcc.sh \
+              bash scripts/test/test-ld.sh \
                 "${{ needs.select.outputs.host_platform }}" \
                 "${{ needs.select.outputs.target_platform }}"
 
@@ -186,21 +157,16 @@ jobs:
         run: |
           export CUP_BUILD_ENVIRONMENT=msys2-ucrt64
           export CUP_SOURCE_SHA256="${{ inputs.source_sha256 }}"
-          export CUP_GCC_BINUTILS_VERSION="${{ inputs.binutils_version }}"
-          export CUP_BINUTILS_SOURCE_SHA256="${{ inputs.binutils_source_sha256 }}"
-          export CUP_GCC_MINGW_VERSION="${{ inputs.mingw_version }}"
-          export CUP_MINGW_SOURCE_SHA256="${{ inputs.mingw_source_sha256 }}"
-          export CUP_GCC_REVISION="${{ inputs.revision }}"
           bash scripts/workflow/build-records.sh run build \
-            bash scripts/build/build-gcc.sh \
+            bash scripts/build/build-ld.sh \
               "${{ inputs.version }}" \
               "${{ needs.select.outputs.host_platform }}" \
               "${{ needs.select.outputs.target_platform }}"
 
-      - name: Test packaged GCC (Windows)
+      - name: Test packaged GNU ld (Windows)
         if: ${{ startsWith(needs.select.outputs.host_platform, 'windows-') }}
         shell: pwsh
-        run: scripts/workflow/build-records-windows.ps1 -Phase product-test -Script scripts/test/test-gcc-windows.ps1
+        run: scripts/workflow/build-records-windows.ps1 -Phase product-test -Script scripts/test/test-ld-windows.ps1
 
       - name: Load release metadata
         id: release

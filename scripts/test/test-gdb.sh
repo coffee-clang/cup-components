@@ -8,6 +8,7 @@ mkdir -p dist/package-test
 tar -xJf "dist/$package_base.tar.xz" -C dist/package-test
 
 root="dist/package-test/$package_base"
+root="$(cd "$root" && pwd)"
 unset PYTHONHOME PYTHONPATH || true
 
 bash scripts/test/package-capabilities.sh "$root" gdb
@@ -40,7 +41,44 @@ require_executable() {
     fi
 }
 
+assert_no_gdb_development_payload() {
+    local path
+    for path in include lib/cmake lib64/cmake; do
+        if [ -e "$root/$path" ] || [ -L "$root/$path" ]; then
+            echo "GDB development payload leaked into package: $path" >&2
+            exit 1
+        fi
+    done
+    if find "$root" -type f \( -name '*.a' -o -name '*.la' \) -print -quit | grep . >/dev/null; then
+        echo 'GDB static/libtool development payload leaked into package' >&2
+        exit 1
+    fi
+}
+
+gdb_python_identity_probe() {
+    local candidate="$1"
+    local label="$2"
+    local out="$tmpdir/gdb-python-$label.txt"
+    env -i HOME="$tmpdir/home-$label" PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+        "$candidate/bin/gdb" -q -nx -batch \
+        -ex 'set debuginfod enabled off' \
+        -ex 'python import sys,gdb; print("PY_PREFIX="+sys.prefix); print("GDB_DATA="+gdb.parameter("data-directory"))' \
+        > "$out" 2>&1
+    grep -Fx "PY_PREFIX=$candidate" "$out" >/dev/null
+    grep -Fx "GDB_DATA=$candidate/share/gdb" "$out" >/dev/null
+}
+
 require_executable "$root/bin/gdb"
+require_executable "$root/bin/gdbserver"
+if feature_enabled "contents.inproctrace"; then
+    [ -f "$root/lib/libinproctrace.so" ] || { echo 'declared GDB in-process agent is missing' >&2; exit 1; }
+fi
+[ -d "$root/share/gdb" ] || { echo 'missing GDB data directory' >&2; exit 1; }
+assert_no_gdb_development_payload
+if feature_enabled "features.source_highlight"; then
+    [ -f "$root/share/gdb/source-highlight/lang.map" ] || { echo 'missing GDB Source Highlight runtime data' >&2; exit 1; }
+fi
+gdb_python_identity_probe "$root" A
 "$root/bin/gdb" --version
 "$root/bin/gdb" --configuration
 
@@ -85,21 +123,27 @@ grep -F '$1 = 20' "$tmpdir/gdb-output.txt"
 grep -F '$2 = 22' "$tmpdir/gdb-output.txt"
 grep -F "#0" "$tmpdir/gdb-output.txt"
 
-# Relocation is part of the producer contract: repeat Python and debugger probes
-# from a package copy under an unrelated temporary path.
-reloc_root="$tmpdir/relocated-gdb"
-cp -RPp "$root" "$reloc_root"
-unset PYTHONHOME PYTHONPATH || true
-"$reloc_root/bin/gdb" --version
-"$reloc_root/bin/gdb" -q -batch \
-    -ex "python import sys, gdb; print(\"python-reloc-ok\", sys.version_info[0], sys.version_info[1])" \
-    | tee "$tmpdir/gdb-reloc-python-output.txt"
-grep -F "python-reloc-ok" "$tmpdir/gdb-reloc-python-output.txt"
-"$reloc_root/bin/gdb" -q -batch \
-    -ex "set debuginfod enabled off" \
+# Relocation requires the previous exact root to be physically unavailable.
+reloc_b="$tmpdir/relocated-gdb-b"
+reloc_c="$tmpdir/relocation c with spaces"
+cp -RPp "$root" "$reloc_b"
+mv "$root" "$tmpdir/original-gdb-root-disabled"
+[ ! -e "$root" ] || { echo 'GDB relocation A root is still available' >&2; exit 1; }
+
+gdb_python_identity_probe "$reloc_b" B
+"$reloc_b/bin/gdb" -q -nx -batch \
+    -ex 'set debuginfod enabled off' \
     -ex "file $tmpdir/gdb-test" \
-    -ex "break add" \
-    -ex "run" \
-    -ex "backtrace" \
-    | tee "$tmpdir/gdb-reloc-output.txt"
-grep -F "#0" "$tmpdir/gdb-reloc-output.txt"
+    -ex 'break add' -ex run -ex backtrace \
+    | tee "$tmpdir/gdb-reloc-b-output.txt"
+grep -F '#0' "$tmpdir/gdb-reloc-b-output.txt"
+
+mv "$reloc_b" "$reloc_c"
+[ ! -e "$reloc_b" ] || { echo 'GDB relocation B root is still available' >&2; exit 1; }
+gdb_python_identity_probe "$reloc_c" C
+"$reloc_c/bin/gdb" -q -nx -batch \
+    -ex 'set debuginfod enabled off' \
+    -ex "file $tmpdir/gdb-test" \
+    -ex 'break add' -ex run -ex backtrace \
+    | tee "$tmpdir/gdb-reloc-c-output.txt"
+grep -F '#0' "$tmpdir/gdb-reloc-c-output.txt"

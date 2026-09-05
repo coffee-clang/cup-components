@@ -8,22 +8,22 @@ source "$REPO_ROOT/scripts/package/package-common.sh"
 usage() {
     cat <<USAGE
 Usage:
-  $0 <version|stable> <host_platform> <target_platform>
+  $0 <version|stable> <platform>
 
 Examples:
-  $0 stable linux-x64 linux-x64
-  $0 stable windows-x64 windows-x64
+  $0 stable linux-x64
+  $0 stable windows-x64
 USAGE
 }
 
-if [ "$#" -ne 3 ]; then
+if [ "$#" -ne 2 ]; then
     usage >&2
     exit 2
 fi
 
 REQUESTED_VERSION="$1"
 HOST_PLATFORM="$2"
-TARGET_PLATFORM="$3"
+TARGET_PLATFORM="$2"
 REVISION=""
 
 TOOL="gdb"
@@ -39,11 +39,15 @@ BUILD_ENVIRONMENT="${CUP_BUILD_ENVIRONMENT:-manual}"
 SOURCE_POLICY="source-release"
 PREFIX="$CUP_STAGE_DIR/$(package_base_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
 SOURCE_URL="$(source_url_gdb "$VERSION")"
+PACKAGE_PREFIX="$PREFIX"
+GDB_BUILD_DIR=""
+GDB_SOURCE_HIGHLIGHT_RELOCATABLE=false
+GDB_READLINE_POLICY=upstream-default
 
 validate_platforms() {
-    case "$HOST_PLATFORM:$TARGET_PLATFORM" in
-        linux-x64:linux-x64|linux-arm64:linux-arm64|windows-x64:windows-x64) ;;
-        *) die "unsupported GDB build combination: $HOST_PLATFORM -> $TARGET_PLATFORM" ;;
+    case "$HOST_PLATFORM" in
+        linux-x64|linux-arm64|windows-x64) ;;
+        *) die "unsupported GDB platform: $HOST_PLATFORM" ;;
     esac
 }
 
@@ -76,17 +80,87 @@ need_common_tools() {
     fi
 }
 
-gdb_linux_feature_configure_args() {
-    printf '%s\n' \
-        --with-debuginfod \
-        --enable-source-highlight \
-        --with-xxhash \
-        --with-babeltrace
 
-    if [ "$HOST_PLATFORM" = "linux-x64" ] && [ "$TARGET_PLATFORM" = "linux-x64" ]; then
-        printf '%s\n' --with-intel-pt
+relocate_gdb_source_highlight_data() {
+    local source_dir="$1"
+    local target="$source_dir/gdb/source-cache.c"
+    local tmp="${target}.cup-relocate.$$"
+    local add_defs=1
+
+    GDB_SOURCE_HIGHLIGHT_RELOCATABLE=false
+    is_linux_platform "$HOST_PLATFORM" || return 0
+    [ -f "$target" ] || return 0
+
+    if grep -F 'Settings::setGlobalDataDir' "$target" >/dev/null &&
+       grep -F 'gdb_datadir' "$target" >/dev/null; then
+        GDB_SOURCE_HIGHLIGHT_RELOCATABLE=true
+        return 0
+    fi
+
+    # Versions without GNU Source Highlight integration need no adaptation.
+    grep -F 'srchilite::SourceHighlight' "$target" >/dev/null || return 0
+
+    grep -F '#include "defs.h"' "$target" >/dev/null && add_defs=0
+
+    if awk -v add_defs="$add_defs" '
+        add_defs && $0 == "#include \"source-cache.h\"" {
+            print "#include \"defs.h\""
+            add_defs = 0
+        }
+        /new[[:space:]]+srchilite::SourceHighlight[[:space:]]*\(/ && !inserted {
+            print "\t  /* Keep GNU Source Highlight data under the relocatable GDB data root.  */"
+            print "\t  srchilite::Settings::setGlobalDataDir"
+            print "\t    (gdb_datadir + SLASH_STRING + \"source-highlight\");"
+            print ""
+            inserted = 1
+        }
+        { print }
+        END { if (add_defs || inserted != 1) exit 1 }
+    ' "$target" > "$tmp"; then
+        chmod --reference="$target" "$tmp"
+        mv "$tmp" "$target"
+        GDB_SOURCE_HIGHLIGHT_RELOCATABLE=true
     else
-        printf '%s\n' --without-intel-pt
+        rm -f "$tmp"
+        log "GDB $VERSION Source Highlight integration is not recognized; building without that optional feature"
+    fi
+}
+
+gdb_configure_has_option() {
+    local source_dir="$1"
+    local option="$2"
+    "$source_dir/configure" --help 2>/dev/null | grep -F -- "$option" >/dev/null
+}
+
+gdb_config_bool() {
+    local macro="$1"
+    local header="${GDB_BUILD_DIR:-}/gdb/config.h"
+    if [ -f "$header" ] && grep -Eq "^#define[[:space:]]+$macro[[:space:]]+1([[:space:]]|$)" "$header"; then
+        printf '%s\n' true
+    else
+        printf '%s\n' false
+    fi
+}
+
+gdb_linux_feature_configure_args() {
+    local source_dir="$1"
+
+    gdb_configure_has_option "$source_dir" --with-debuginfod && printf '%s\n' --with-debuginfod
+    if gdb_configure_has_option "$source_dir" --enable-source-highlight; then
+        if [ "$GDB_SOURCE_HIGHLIGHT_RELOCATABLE" = true ]; then
+            printf '%s\n' --enable-source-highlight
+        else
+            printf '%s\n' --disable-source-highlight
+        fi
+    fi
+    gdb_configure_has_option "$source_dir" --with-xxhash && printf '%s\n' --with-xxhash
+    gdb_configure_has_option "$source_dir" --with-babeltrace && printf '%s\n' --with-babeltrace
+    if gdb_configure_has_option "$source_dir" --with-intel-pt; then
+        if [ "$HOST_PLATFORM" = linux-x64 ]; then
+            printf '%s\n' --with-intel-pt
+        else
+            printf '%s\n' --without-intel-pt
+        fi
     fi
 }
 
@@ -143,21 +217,59 @@ validate_gdb_required_features() {
     fi
 }
 
+
+package_gdb_source_highlight_data() {
+    local source_dir=/usr/share/source-highlight
+
+    is_linux_platform "$HOST_PLATFORM" || return 0
+    [ "$(gdb_config_bool HAVE_SOURCE_HIGHLIGHT)" = true ] || return 0
+    [ "$GDB_SOURCE_HIGHLIGHT_RELOCATABLE" = true ] ||
+        die "GDB was built with Source Highlight but its package data path is not relocatable"
+
+    [ -d "$source_dir" ] || die "GDB Source Highlight runtime data missing: $source_dir"
+    [ -f "$source_dir/lang.map" ] || die "GDB Source Highlight lang.map missing: $source_dir"
+
+    mkdir -p "$PREFIX/share/gdb/source-highlight"
+    cp -RPp "$source_dir/." "$PREFIX/share/gdb/source-highlight/"
+}
+
 build_gdb() {
     local source_dir="$1"
     local build_dir="$CUP_BUILD_DIR/gdb-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
     local python_cmd
+    local configure_args=(--prefix="$PREFIX")
     local feature_args=()
-    local python_args=()
+
+    GDB_BUILD_DIR="$build_dir"
 
     if is_cross_build "$HOST_PLATFORM" "$TARGET_PLATFORM"; then
         die "cross GDB is not supported by this build recipe yet: $HOST_PLATFORM -> $TARGET_PLATFORM"
     fi
 
     python_cmd="$(python_command)"
+    gdb_configure_has_option "$source_dir" --disable-werror && configure_args+=(--disable-werror)
+    configure_args+=(--with-python="$python_cmd")
+
+    for option in --with-python-libdir --enable-tui --with-curses --with-expat \
+                  --with-system-readline --with-system-zlib --with-lzma --with-zstd; do
+        gdb_configure_has_option "$source_dir" "$option" || continue
+        case "$option" in
+            --with-python-libdir)
+                configure_args+=(--with-python-libdir="$PREFIX/lib")
+                ;;
+            --with-system-readline)
+                configure_args+=("$option")
+                GDB_READLINE_POLICY=system
+                ;;
+            *)
+                configure_args+=("$option")
+                ;;
+        esac
+    done
+
     if ! is_windows_platform "$HOST_PLATFORM"; then
-        mapfile -t feature_args < <(gdb_linux_feature_configure_args)
-        python_args+=(--with-python-libdir="$PREFIX/lib")
+        mapfile -t feature_args < <(gdb_linux_feature_configure_args "$source_dir")
+        configure_args+=("${feature_args[@]}")
     fi
 
     log "building GDB $VERSION for $HOST_PLATFORM"
@@ -167,19 +279,7 @@ build_gdb() {
 
     (
         cd "$build_dir"
-        "$source_dir/configure" \
-            --prefix="$PREFIX" \
-            --disable-werror \
-            --with-python="$python_cmd" \
-            "${python_args[@]}" \
-            --enable-tui \
-            --with-curses \
-            --with-expat \
-            --with-system-readline \
-            --with-system-zlib \
-            --with-lzma \
-            --with-zstd \
-            "${feature_args[@]}"
+        "$source_dir/configure" "${configure_args[@]}"
         make -j"$CUP_JOBS"
         make install
     )
@@ -195,32 +295,102 @@ build_gdb() {
         copy_windows_runtime_dlls "$PREFIX/bin"
         verify_windows_runtime_dlls "$PREFIX/bin"
     else
+        package_gdb_source_highlight_data
         copy_posix_python_runtime "$python_cmd"
     fi
 
     validate_gdb_required_features
 }
 
+
+copy_path_into_seed() {
+    local relative="$1"
+    local source="$PREFIX/$relative"
+    local destination="$PACKAGE_PREFIX/$relative"
+
+    [ -e "$source" ] || [ -L "$source" ] || return 0
+    mkdir -p "$(dirname "$destination")"
+    cp -RPp "$source" "$destination"
+}
+
+prepare_gdb_package_seed() {
+    local locale_file
+    local python_dir
+    local runtime_file
+    local relative
+
+    PACKAGE_PREFIX="$CUP_STAGE_DIR/${PACKAGE_VERSION}-gdb-$HOST_PLATFORM-package-seed"
+    rm -rf "$PACKAGE_PREFIX"
+    mkdir -p "$PACKAGE_PREFIX/bin" "$PACKAGE_PREFIX/lib" "$PACKAGE_PREFIX/share"
+
+    if is_windows_platform "$HOST_PLATFORM"; then
+        copy_path_into_seed bin/gdb.exe
+        copy_path_into_seed bin/gdbserver.exe
+
+        # Windows runtime closure has already converged in PREFIX/bin. Preserve
+        # those closed DLL edges and Python path configuration in the minimal seed.
+        while IFS= read -r -d '' runtime_file; do
+            relative="${runtime_file#"$PREFIX/"}"
+            mkdir -p "$PACKAGE_PREFIX/$(dirname "$relative")"
+            cp -p "$runtime_file" "$PACKAGE_PREFIX/$relative"
+        done < <(find "$PREFIX/bin" -maxdepth 1 -type f \
+            \( -iname '*.dll' -o -iname '*._pth' \) -print0)
+    else
+        copy_path_into_seed bin/gdb
+        copy_path_into_seed bin/gdbserver
+        copy_path_into_seed lib/libinproctrace.so
+    fi
+
+    copy_path_into_seed share/gdb
+    copy_path_into_seed info.txt
+
+    while IFS= read -r -d '' locale_file; do
+        relative="${locale_file#"$PREFIX/"}"
+        mkdir -p "$PACKAGE_PREFIX/$(dirname "$relative")"
+        cp -p "$locale_file" "$PACKAGE_PREFIX/$relative"
+    done < <(find "$PREFIX/share/locale" -type f -path '*/LC_MESSAGES/gdb.mo' -print0 2>/dev/null || true)
+
+    for python_dir in "$PREFIX"/lib/python[0-9]*; do
+        [ -d "$python_dir" ] || continue
+        copy_path_into_seed "lib/$(basename "$python_dir")"
+    done
+
+    if is_windows_platform "$HOST_PLATFORM"; then
+        [ -x "$PACKAGE_PREFIX/bin/gdb.exe" ] || die "GDB package seed is missing bin/gdb.exe"
+        [ -x "$PACKAGE_PREFIX/bin/gdbserver.exe" ] || die "GDB package seed is missing bin/gdbserver.exe"
+    else
+        [ -x "$PACKAGE_PREFIX/bin/gdb" ] || die "GDB package seed is missing bin/gdb"
+        [ -x "$PACKAGE_PREFIX/bin/gdbserver" ] || die "GDB package seed is missing bin/gdbserver"
+    fi
+    [ -f "$PACKAGE_PREFIX/info.txt" ] || die "GDB package seed is missing info.txt"
+    [ -d "$PACKAGE_PREFIX/share/gdb" ] || die "GDB package seed is missing share/gdb"
+}
+
+
 write_gdb_info() {
-    local debuginfod=false
-    local source_highlight=false
-    local xxhash=false
-    local babeltrace=false
-    local intel_pt=false
+    local debuginfod
+    local source_highlight
+    local xxhash
+    local babeltrace
+    local intel_pt
+    local expat
+    local zlib
+    local lzma
+    local zstd
     local has_gdb
     local has_gdbserver
     local has_python
     local has_tui
 
-    if ! is_windows_platform "$HOST_PLATFORM"; then
-        debuginfod=true
-        source_highlight=true
-        xxhash=true
-        babeltrace=true
-        if [ "$HOST_PLATFORM" = "linux-x64" ] && [ "$TARGET_PLATFORM" = "linux-x64" ]; then
-            intel_pt=true
-        fi
-    fi
+    debuginfod="$(gdb_config_bool HAVE_LIBDEBUGINFOD)"
+    source_highlight="$(gdb_config_bool HAVE_SOURCE_HIGHLIGHT)"
+    xxhash="$(gdb_config_bool HAVE_LIBXXHASH)"
+    babeltrace="$(gdb_config_bool HAVE_LIBBABELTRACE)"
+    intel_pt="$(gdb_config_bool HAVE_LIBIPT)"
+    expat="$(gdb_config_bool HAVE_LIBEXPAT)"
+    zlib="$(gdb_config_bool HAVE_ZLIB_H)"
+    lzma="$(gdb_config_bool HAVE_LIBLZMA)"
+    zstd="$(gdb_config_bool HAVE_ZSTD)"
 
     has_gdb="$(metadata_bool_for_executable "$PREFIX" gdb)"
     has_gdbserver="$(metadata_bool_for_executable "$PREFIX" gdbserver)"
@@ -245,33 +415,35 @@ write_gdb_info() {
         "source.primary.name=gdb"
         "source.primary.version=$VERSION"
         "source.primary.url=$SOURCE_URL"
+        "source.primary.sha256=$(source_archive_sha256 "$SOURCE_URL" "gdb-$VERSION.tar.xz")"
         "config.cross=false"
         "config.python=$has_python"
         "config.tui=$has_tui"
-        "config.readline=system"
-        "config.expat=true"
-        "config.zlib=true"
-        "config.lzma=true"
-        "config.zstd=true"
+        "config.readline=$GDB_READLINE_POLICY"
+        "config.expat=$expat"
+        "config.zlib=$zlib"
+        "config.lzma=$lzma"
+        "config.zstd=$zstd"
         "config.debuginfod=$debuginfod"
         "config.source_highlight=$source_highlight"
         "config.xxhash=$xxhash"
         "config.babeltrace=$babeltrace"
         "config.intel_pt=$intel_pt"
         "$(info_required_entry entry.gdb "$PREFIX" gdb)"
-        "$(info_entry_if_present entry.gdbserver "$PREFIX" gdbserver)"
+        "$(info_required_entry entry.gdbserver "$PREFIX" gdbserver)"
         "contents.uses_python=$has_python"
         "contents.python_runtime=packaged"
         "contents.uses_readline=true"
-        "contents.uses_expat=true"
-        "contents.uses_zlib=true"
-        "contents.uses_lzma=true"
-        "contents.uses_zstd=true"
+        "contents.uses_expat=$expat"
+        "contents.uses_zlib=$zlib"
+        "contents.uses_lzma=$lzma"
+        "contents.uses_zstd=$zstd"
         "contents.uses_debuginfod=$debuginfod"
         "contents.uses_source_highlight=$source_highlight"
         "contents.uses_xxhash=$xxhash"
         "contents.uses_babeltrace=$babeltrace"
         "contents.uses_intel_pt=$intel_pt"
+        "contents.inproctrace=$(metadata_bool_for_files "$PREFIX" 'lib/libinproctrace.so')"
         "features.debug_native=$has_gdb"
         "features.breakpoints=$has_gdb"
         "features.backtrace=$has_gdb"
@@ -295,11 +467,15 @@ main() {
     mkdir -p "$PREFIX"
 
     local source_dir
-    source_dir="$(prepare_source_tree gdb "$VERSION" "$SOURCE_URL" "gdb-$VERSION.tar.xz")"
+    source_dir="$(prepare_source_tree gdb "$VERSION" "$SOURCE_URL" "gdb-$VERSION.tar.xz" "${CUP_SOURCE_SHA256:-}")"
+    if is_linux_platform "$HOST_PLATFORM"; then
+        relocate_gdb_source_highlight_data "$source_dir"
+    fi
 
     build_gdb "$source_dir"
     write_gdb_info
-    create_packages "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION" "$PREFIX"
+    prepare_gdb_package_seed
+    create_packages "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION" "$PACKAGE_PREFIX"
 }
 
 main "$@"

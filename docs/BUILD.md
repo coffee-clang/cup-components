@@ -1,56 +1,107 @@
 # Build
 
-`cup-components` can be driven through GitHub Actions or through the repository builder scripts in an already prepared build environment. Both paths use the same tool-specific builders and common package finalization code.
+`cup-components` can build packages through GitHub Actions or by invoking the repository builder scripts directly inside a prepared platform environment.
 
-For supported identities and platform combinations, see [Specification](SPECIFICATION.md). For the concrete tools installed into each builder environment, see [Dependencies](DEPENDENCIES.md).
+Both entry points use the same tool-family builders and the same common package finalizer.
+
+For supported tool/platform identities, see [Specification](SPECIFICATION.md). For installed builder dependencies, see [Dependencies](DEPENDENCIES.md). For package validation, see [Testing](TESTING.md).
 
 ## Build flow
 
-A package build follows this sequence:
+A normal build follows this sequence:
 
 ```text
-select tool/version/host/target
-acquire upstream source
-configure
-build
+select tool, version and platform
+        ↓
+prepare the platform build environment
+        ↓
+validate common package mechanics
+        ↓
+obtain the selected upstream source
+        ↓
+configure and build
+        ↓
 install into staging
-close host runtime dependencies
-normalize package tree
-write and verify metadata/manifest
+        ↓
+select the tool-specific package roots
+        ↓
+close required host runtime dependencies
+        ↓
+normalize the package tree
+        ↓
+write and verify info.txt and manifest.txt
+        ↓
 create tar.xz, tar.gz and zip
+        ↓
 write and verify SHA256SUMS
-run package capability tests
-publish only when requested
+        ↓
+validate the completed tool package
+        ↓
+optionally publish the finished archives
 ```
 
-Tool-specific builders own configure/build/install behavior. `scripts/package/package-common.sh` owns shared source acquisition and package finalization.
+Tool-family builders own configure/build/install and tool-specific package selection. `scripts/package/package-common.sh` owns common source handling, metadata rules, manifest generation, runtime closure and archive finalization.
 
 ## GitHub Actions workflows
 
-The repository exposes four manual workflows:
+The repository contains five manually started workflows:
 
-| Workflow | Purpose |
-| --- | --- |
-| `Build GCC` | GCC packages, including Linux-to-Windows GCC |
-| `Build GDB` | GDB packages |
-| `Build LLVM tool` | Clang, clang-format, clang-tidy, clangd, LLD and LLDB packages |
-| `Build Valgrind` | Linux Valgrind packages |
+| Workflow | File | Purpose |
+| --- | --- | --- |
+| `Build GCC` | `build-gcc.yml` | GCC packages, including Linux x64 to Windows x64 |
+| `Build GNU ld` | `build-ld.yml` | Standalone GNU ld packages, including Linux x64 to Windows x64 |
+| `Build GDB` | `build-gdb.yml` | Native GDB packages |
+| `Build LLVM tool` | `build-llvm.yml` | Clang, clang-format, clang-tidy, clangd, LLD and LLDB packages |
+| `Build Valgrind` | `build-valgrind.yml` | Native Linux Valgrind packages |
 
-### Common inputs
+The workflows first select the required GitHub runner and then prepare the platform build environment:
 
-The workflows use an explicit tool version or `stable`, the relevant host/target selection and a Boolean `publish` input. The version is selected by the operator for each build. `stable` only resolves to the repository's current default; it does not restrict builds to that version.
+- Linux uses repository Docker images;
+- Windows uses MSYS2;
+- macOS uses a GitHub-hosted macOS runner with Homebrew dependencies.
 
-Because the selected version is part of the package identity, different successfully published versions of the same tool are separate package publications and may coexist. `publish=false` builds and tests the package without mutating the GitHub Release publication. `publish=true` authorizes publication of the selected logical package identity.
+The common package validation is run inside the actual selected build environment before the expensive tool build begins. See [Testing](TESTING.md#common-package-validation).
 
-### GCC revision input
+## Workflow inputs
 
-Only the GCC workflow exposes a `revision` input. The current default is `1`.
+Every workflow accepts:
 
-The revision identifies the selected internal GCC package composition; it is not a build sequence number. Changing producer scripts or re-publishing the same package identity does not increment it.
+- `version` — `stable` or an explicit dotted numeric version;
+- `source_sha256` — optional SHA-256 for the selected main source archive;
+- `publish` — whether the completed package should be published as a GitHub Release.
 
-### LLVM tool selection
+The GCC workflow additionally accepts the composition of the GCC package:
 
-The LLVM workflow selects one of:
+- `binutils_version` — bundled Binutils version, `stable` or an explicit dotted numeric version;
+- `binutils_source_sha256` — optional SHA-256 for that Binutils archive;
+- `mingw_version` — MinGW-w64 version used by Windows-target GCC packages, `stable` or an explicit dotted numeric version;
+- `mingw_source_sha256` — optional SHA-256 for that MinGW-w64 archive;
+- `revision` — GCC package revision. `stable` selects the configured revision only when the resolved GCC package composition equals the configured default composition; any different GCC, Binutils or MinGW-w64 composition requires an explicit positive revision.
+
+GCC, bundled Binutils and MinGW-w64 are independent selections. Choosing a GCC release does not force a particular Binutils release. The default bundled Binutils used by GCC is also independent of the Binutils default used by the standalone GNU ld package.
+
+### Platform inputs
+
+GCC and GNU ld expose:
+
+```text
+host_platform
+target_platform
+```
+
+because they support both native packages and the Linux x64 to Windows x64 cross-target configuration.
+
+GDB, LLVM-family tools and Valgrind expose only:
+
+```text
+platform
+```
+
+because they are native-only in the current repository. Internally that one value becomes both host and target. This prevents unsupported host/target combinations from being represented by the workflow interface.
+
+### LLVM tool input
+
+The LLVM workflow also accepts one tool name:
 
 ```text
 clang
@@ -61,55 +112,88 @@ lld
 lldb
 ```
 
-LLVM-family packages are native host/target builds in the current producer matrix.
+### Version behavior
 
-## Direct builder interfaces
+`stable` resolves to the current default configured in `scripts/package/package-common.sh`.
 
-The same builders can be invoked directly when their platform build dependencies are already available.
+An explicit numeric version is not replaced by the stable version and is not rejected merely because the repository does not already contain a digest for it. The family builder constructs the corresponding upstream source URL and attempts the normal family recipe.
+
+A selected upstream version can still require a repository change if that release changed its source layout, build-system options or installed package layout in a way the general recipe does not yet handle. Build records are saved specifically so the first failing phase and the available configuration state can be inspected. See [Build records](BUILD_RECORDS.md).
+
+## Direct builder commands
+
+The same family builders can be run directly when the required platform dependencies are already installed.
 
 ### GCC
 
 ```text
-scripts/build/build-gcc.sh <version|stable> <host_platform> <target_platform> <revision>
+scripts/build/build-gcc.sh <version|stable> <host_platform> <target_platform>
 ```
 
 Examples:
 
 ```text
-scripts/build/build-gcc.sh stable linux-x64 linux-x64 1
-scripts/build/build-gcc.sh stable linux-x64 windows-x64 1
-scripts/build/build-gcc.sh stable windows-x64 windows-x64 1
+scripts/build/build-gcc.sh stable linux-x64 linux-x64
+scripts/build/build-gcc.sh stable linux-x64 windows-x64
+scripts/build/build-gcc.sh stable windows-x64 windows-x64
+```
+
+The direct builder keeps the same short command line. Alternate GCC compositions are selected through the same environment values used by the workflow:
+
+```text
+CUP_GCC_BINUTILS_VERSION=<version|stable>
+CUP_GCC_MINGW_VERSION=<version|stable>
+CUP_GCC_REVISION=<positive-integer|stable>
+CUP_BINUTILS_SOURCE_SHA256=<optional-sha256>
+CUP_MINGW_SOURCE_SHA256=<optional-sha256>
+```
+
+`CUP_GCC_MINGW_VERSION` and `CUP_MINGW_SOURCE_SHA256` apply only to Windows targets. A non-default composition must use an explicit revision so it cannot silently inherit the revision of the configured stable composition.
+
+### GNU ld
+
+```text
+scripts/build/build-ld.sh <version|stable> <host_platform> <target_platform>
+```
+
+Examples:
+
+```text
+scripts/build/build-ld.sh stable linux-x64 linux-x64
+scripts/build/build-ld.sh stable linux-x64 windows-x64
+scripts/build/build-ld.sh stable windows-x64 windows-x64
 ```
 
 ### GDB
 
 ```text
-scripts/build/build-gdb.sh <version|stable> <host_platform> <target_platform>
+scripts/build/build-gdb.sh <version|stable> <platform>
 ```
 
 Examples:
 
 ```text
-scripts/build/build-gdb.sh stable linux-x64 linux-x64
-scripts/build/build-gdb.sh stable windows-x64 windows-x64
+scripts/build/build-gdb.sh stable linux-x64
+scripts/build/build-gdb.sh stable windows-x64
 ```
 
-### LLVM tool
+### LLVM-family tool
 
 ```text
-scripts/build/build-llvm-tool.sh <tool> <version|stable> <host_platform> <target_platform>
+scripts/build/build-llvm-tool.sh <tool> <version|stable> <platform>
 ```
 
-Example:
+Examples:
 
 ```text
-scripts/build/build-llvm-tool.sh clang stable linux-x64 linux-x64
+scripts/build/build-llvm-tool.sh clang stable linux-x64
+scripts/build/build-llvm-tool.sh lldb stable macos-arm64
 ```
 
 ### Valgrind
 
 ```text
-scripts/build/build-valgrind.sh <version|stable> <host_platform>
+scripts/build/build-valgrind.sh <version|stable> <platform>
 ```
 
 Examples:
@@ -119,37 +203,45 @@ scripts/build/build-valgrind.sh stable linux-x64
 scripts/build/build-valgrind.sh stable linux-arm64
 ```
 
-The builders validate unsupported platform combinations before the expensive build path.
+Each builder validates its supported platform combination before the expensive source build.
 
 ## Builder environments
 
 ### Linux
 
-Linux workflows build inside repository Docker images based on Ubuntu 24.04:
+Linux workflows build inside Ubuntu 24.04 Docker images defined by the repository:
 
-- `docker/toolchain-builder.Dockerfile` for GCC, GDB and Valgrind;
-- `docker/llvm-builder.Dockerfile` for LLVM-family tools.
+- `docker/toolchain-builder.Dockerfile` — GCC, GNU ld, GDB and Valgrind;
+- `docker/llvm-builder.Dockerfile` — LLVM-family tools.
 
-The images provide compilers, build tools and the platform utilities required by package finalization and capability tests.
+The images provide the compiler, build utilities, development headers and package-finalization tools required by those families.
 
 ### Windows
 
 Windows workflows use MSYS2:
 
-- `UCRT64` for GCC and GDB;
-- `CLANG64` for LLVM-family tools.
+- `UCRT64` — GCC, GNU ld and GDB;
+- `CLANG64` — LLVM-family tools.
 
-The package lists under `scripts/setup/` define the installed MSYS2 dependencies.
+`scripts/setup/setup-windows-msys2.sh` installs the package list selected from `scripts/setup/msys2-ucrt64-packages.txt` or `scripts/setup/msys2-clang64-packages.txt`.
+
+The Windows tool-specific package checks run through PowerShell after the MSYS2 build has produced the package.
 
 ### macOS
 
-macOS LLVM builds run on GitHub-hosted macOS runners. `scripts/setup/setup-macos-builder.sh` installs the required Homebrew dependencies and exports the prefixes consumed by CMake and `pkg-config`.
+macOS currently builds only LLVM-family packages.
 
-The LLVM builder uses the active SDK through `xcrun`. The default deployment target is macOS 15.0.
+`scripts/setup/setup-macos-builder.sh` installs the Homebrew dependencies required by the selected LLVM build and exports the paths used by CMake and `pkg-config`.
+
+The setup deliberately selects Homebrew `python@3.12` for the current build environment because Python can become package-owned runtime content for LLDB and LLVM Python helper commands. The packaged Python version is still derived from the interpreter actually used by the build rather than hard-coded into the package layout.
+
+The active macOS SDK is selected through `xcrun`. The current deployment target is macOS 15.0.
+
+The exact dependency lists are documented in [Dependencies](DEPENDENCIES.md).
 
 ## Working directories
 
-The common package code uses:
+The common code uses these directories:
 
 ```text
 CUP_ROOT       repository root
@@ -160,52 +252,83 @@ CUP_STAGE_DIR  .cup-build/stage
 CUP_OUT_DIR    dist
 ```
 
-Downloaded source archives are cached under `.cup-build/src`. Configure/build trees live under `.cup-build/build`, staged installs under `.cup-build/stage`, and temporary normalized package roots under `.cup-build/package-root`.
+Their roles are:
 
-Final archives, `SHA256SUMS` and `release.env` are written to `dist/`.
+| Path | Purpose |
+| --- | --- |
+| `.cup-build/src` | downloaded source archives and extracted source trees |
+| `.cup-build/build` | configure/CMake/Ninja/Make build trees |
+| `.cup-build/stage` | temporary upstream installations and selected package staging |
+| `.cup-build/package-root` | normalized package trees used for final archives |
+| `.cup-build/build-records` | workflow run information, logs and configuration files |
+| `dist` | finished archives, `SHA256SUMS` and `release.env` |
+
+`.cup-build/build-records` is not package content. See [Build records](BUILD_RECORDS.md).
 
 ## Source acquisition
 
-The common helper resolves the selected upstream version, downloads the configured source archive when it is not already cached, and extracts it into the working source area.
+The common source layer performs these steps:
 
-A failed download or failed extraction stops the build. Source identity/trust semantics are part of the producer contract and are described in [Specification](SPECIFICATION.md#source-acquisition-boundary).
+1. resolve `stable` or preserve the explicit numeric version;
+2. construct the upstream source URL for the selected family;
+3. choose a deterministic local archive name;
+4. reuse the cached archive if it already exists, otherwise download it;
+5. calculate its SHA-256;
+6. verify the digest when the repository knows the selected stable digest or when `source_sha256` was supplied;
+7. extract the archive into `.cup-build/src`;
+8. record the actual source digest used by the package.
+
+The current stable source digests are stored directly in `scripts/package/package-common.sh` for:
+
+```text
+GCC
+Binutils
+MinGW-w64
+GDB
+LLVM project
+Valgrind
+```
+
+For an explicit version without a known digest, the build still calculates and records the actual SHA-256. Supplying `source_sha256` changes that build from recorded-only to verified source identity: a mismatch stops the build before extraction.
+
+The repository does not maintain a separate version database that must be extended before another numeric release can be attempted.
+
+## Tool build and staging
+
+Each family builder owns its own configure/build/install logic:
+
+```text
+scripts/build/build-gcc.sh
+scripts/build/build-ld.sh
+scripts/build/build-gdb.sh
+scripts/build/build-llvm-tool.sh
+scripts/build/build-valgrind.sh
+```
+
+The upstream install goes into a temporary staging location. The builder then keeps the files that belong to that tool package and removes development or unrelated upstream payload according to [Tool packages](TOOLS.md).
+
+This separation matters because the upstream install tree can be much larger than the command-line package distributed by `cup`.
 
 ## Package finalization
 
-After a tool installs into staging, common finalization:
+After the tool-specific package tree has been selected, common finalization performs:
 
-1. validates staging paths and object types;
-2. closes supported non-system host runtime dependencies, materializing a pathname only when a path-specific runtime rewrite requires independent bytes;
-3. normalizes the package root representation and file modes;
-4. validates `info.txt`;
-5. writes and verifies `manifest.txt`;
-6. creates all three archive formats;
-7. generates and verifies `SHA256SUMS`;
-8. writes `release.env` with the package base and release tag.
+1. staging object and path validation;
+2. removal of non-relocatable libtool metadata that still contains temporary build paths;
+3. host runtime closure for the selected platform;
+4. package-root normalization;
+5. `info.txt` contract validation;
+6. `manifest.txt` generation and independent regeneration check;
+7. timestamp normalization where supported by the package path;
+8. creation of `tar.xz`, `tar.gz` and `zip`;
+9. creation and verification of `SHA256SUMS`;
+10. creation of `release.env` for later workflow steps.
 
-The package format and runtime rules are documented in [Packages](PACKAGES.md).
-
-## Tests
-
-Each workflow runs package tests after the package is created.
-
-The test surface includes:
-
-- package identity and metadata checks;
-- exact manifest/object-model checks;
-- archive/checksum validation, including a deliberate tampering failure;
-- package relocation/runtime-dependency checks;
-- compiler compile/link capability checks;
-- OpenMP, pthread, LTO and sanitizer checks where the tool contract requires them;
-- GDB/LLDB startup and Python/debugger checks;
-- LLVM frontend/helper checks;
-- Valgrind execution and relocation checks.
-
-POSIX package tests use shell. Windows package tests use PowerShell.
+The common finalizer does not decide which public commands belong to GDB, Clang, Valgrind or another family. That decision remains in the corresponding tool builder.
 
 ## Build output
 
-For one package identity, `dist/` contains:
+For one completed package identity, `dist/` contains:
 
 ```text
 <package-base>.tar.xz
@@ -215,19 +338,39 @@ SHA256SUMS
 release.env
 ```
 
-`release.env` contains the package base and release tag for workflow steps. Published releases contain the three archives and `SHA256SUMS`; `release.env` is workflow plumbing rather than a package asset.
+`release.env` contains:
+
+```text
+release_tag=<package-base>
+package_base=<package-base>
+```
+
+It is used by later workflow steps and is not itself a package archive or published package asset.
+
+When `publish=false`, GitHub Actions uploads the build output as a workflow artifact so the package can be downloaded without changing release state.
 
 ## Publication
 
 The release tag is the package base name.
 
-When `publish=false`, publication is not mutated.
+When `publish=false`:
 
-When `publish=true`, the operator explicitly authorizes the current package identity to become the publication for that tag. Different tool versions have different package identities and therefore different release tags, so their published assets can coexist. If a release already exists for the same logical identity, the workflow replaces the existing release/tag and uploads the complete current asset set. If only a stale standalone tag exists, that tag is removed before the release is created.
+- no GitHub Release or tag is modified;
+- the package output is uploaded only as a workflow artifact.
 
-Remote state is determined before the first publication mutation. A lookup error is not treated as “not found”.
+When `publish=true`:
 
-Re-publishing the same logical identity does not increment package revision. The recreated tag targets the source commit used by the workflow, and the published asset set contains only:
+1. the workflow determines whether a release already exists for that exact package identity;
+2. if it exists, that release and its tag are removed;
+3. if no release exists but the same standalone tag exists, the stale tag is removed;
+4. a new release is created for the current source commit;
+5. the three archives and `SHA256SUMS` are uploaded as the complete asset set.
+
+A failure while checking remote release/tag state is not treated as “not found”; publication stops instead of guessing.
+
+Different tool versions use different package identities and therefore different release tags. Re-publishing one identity does not remove other versions.
+
+The published asset set is exactly:
 
 ```text
 <package-base>.tar.xz

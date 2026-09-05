@@ -8,12 +8,11 @@ source "$REPO_ROOT/scripts/package/package-common.sh"
 usage() {
     cat <<USAGE
 Usage:
-  $0 <version|stable> <host_platform>
+  $0 <version|stable> <platform>
 
 Examples:
   $0 stable linux-x64
   $0 stable linux-arm64
-  $0 3.27.0 linux-arm64
 USAGE
 }
 
@@ -40,6 +39,10 @@ BUILD_ENVIRONMENT="${CUP_BUILD_ENVIRONMENT:-manual}"
 SOURCE_POLICY="source-release"
 SOURCE_URL="$(source_url_valgrind "$VERSION")"
 PREFIX="$CUP_STAGE_DIR/$(package_base_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
+VALGRIND_ONLY64BIT=false
+VALGRIND_MPI_DISABLED=false
+VALGRIND_GDBSCRIPTS_DISABLED=false
+VALGRIND_CONFIGURE_POLICY=default
 
 need_valgrind_tools() {
     need curl
@@ -129,6 +132,16 @@ elif [ -d "$prefix/lib/valgrind" ]; then
     VALGRIND_LIB="$prefix/lib/valgrind"
 fi
 
+# Valgrind propagates runtime preload paths through LD_PRELOAD.  The Linux
+# dynamic loader treats whitespace and ':' as entry separators and offers no
+# escaping, so expose a separator-free process-local alias only when needed.
+case "$VALGRIND_LIB" in
+    *[[:space:]]*|*:*)
+        exec 9<"$VALGRIND_LIB"
+        VALGRIND_LIB=/proc/self/fd/9
+        ;;
+esac
+
 export VALGRIND_LIB
 exec "$bin_dir/valgrind.bin" "$@"
 WRAPPER
@@ -144,18 +157,33 @@ build_valgrind() {
     local source_dir="$1"
     local build_dir="$CUP_BUILD_DIR/valgrind-$VERSION-$HOST_PLATFORM-$TARGET_PLATFORM"
     local configure_help
+    local configure_args=(--prefix="$PREFIX")
+    local policy_args=()
 
     configure_help="$("$source_dir/configure" --help)" ||
         die "could not inspect Valgrind configure options"
-    printf '%s\n' "$configure_help" | grep -F -- '--with-gdbscripts-dir' >/dev/null ||
-        die "Valgrind configure does not expose gdbscripts-dir control"
 
-    local configure_args=(
-        --prefix="$PREFIX"
-        --enable-only64bit
-        --without-mpicc
-        --without-gdbscripts-dir
-    )
+    if printf '%s
+' "$configure_help" | grep -F -- '--enable-only64bit' >/dev/null; then
+        configure_args+=(--enable-only64bit)
+        policy_args+=(--enable-only64bit)
+        VALGRIND_ONLY64BIT=true
+    fi
+    if printf '%s
+' "$configure_help" | grep -F -- '--without-mpicc' >/dev/null; then
+        configure_args+=(--without-mpicc)
+        policy_args+=(--without-mpicc)
+        VALGRIND_MPI_DISABLED=true
+    fi
+    if printf '%s
+' "$configure_help" | grep -F -- '--with-gdbscripts-dir' >/dev/null; then
+        configure_args+=(--without-gdbscripts-dir)
+        policy_args+=(--without-gdbscripts-dir)
+        VALGRIND_GDBSCRIPTS_DISABLED=true
+    fi
+    if [ "${#policy_args[@]}" -gt 0 ]; then
+        VALGRIND_CONFIGURE_POLICY="$(IFS=';'; printf '%s' "${policy_args[*]}")"
+    fi
 
     log "building Valgrind $VERSION for $HOST_PLATFORM -> $TARGET_PLATFORM"
 
@@ -170,8 +198,42 @@ build_valgrind() {
     )
 
     make_valgrind_relocatable
+    prune_valgrind_tool_development_sdk
     make_valgrind_pkgconfig_relocatable
 }
+
+prune_valgrind_tool_development_sdk() {
+    local include_dir="$PREFIX/include/valgrind"
+
+    # Keep the public client-request headers used by Valgrind-aware programs,
+    # but exclude the separate SDK for developing new Valgrind tools.
+    if [ -d "$include_dir" ]; then
+        rm -f "$include_dir/config.h"
+        find "$include_dir" -maxdepth 1 -type f \
+            \( -name 'libvex*.h' -o -name 'pub_tool_*.h' \) -delete
+        rm -rf "$include_dir/vki"
+    fi
+
+    # These archives are link-time inputs for developing Valgrind tools; they
+    # are not used by the installed runtime tool suite.
+    find "$PREFIX" -type f \
+        \( -name 'libcoregrind-*.a' \
+        -o -name 'libgcc-sup-*.a' \
+        -o -name 'libreplacemalloc_toolpreload-*.a' \
+        -o -name 'libvex-*.a' \
+        -o -name 'libvexmultiarch-*.a' \) -delete
+
+    # The optional GDB Python monitor is not part of the relocatable core package.
+    # Some Valgrind releases can suppress it at configure time; remove it here
+    # as well so older layouts keep the same package contract.
+    find "$PREFIX" -type f -name 'valgrind-monitor.py' -delete
+
+    # The SDK archives are the only upstream payload installed under lib/valgrind
+    # when the runtime itself lives in libexec/valgrind. Remove only the empty
+    # residue; a real/nonempty runtime layout is deliberately left untouched.
+    rmdir "$PREFIX/lib/valgrind" 2>/dev/null || true
+}
+
 
 make_valgrind_pkgconfig_relocatable() {
     local pc_file="$PREFIX/lib/pkgconfig/valgrind.pc"
@@ -180,6 +242,7 @@ make_valgrind_pkgconfig_relocatable() {
 
     awk '
         /^prefix=/ { print "prefix=${pcfiledir}/../.."; next }
+        /^includedir=/ { print "includedir=${prefix}/include"; next }
         { print }
     ' "$pc_file" > "$pc_file.tmp"
     mv "$pc_file.tmp" "$pc_file"
@@ -189,10 +252,42 @@ write_valgrind_info() {
     local runtime_dir
     local has_valgrind
     local has_vgdb
+    local has_memcheck
+    local has_cachegrind
+    local has_callgrind
+    local has_massif
+    local has_helgrind
+    local has_drd
+    local has_dhat
+    local has_lackey
+    local has_exp_bbv
+    local tools=()
+    local tools_csv
 
     runtime_dir="$(find_valgrind_runtime_dir)"
     has_valgrind="$(metadata_bool_for_executable "$PREFIX" valgrind)"
     has_vgdb="$(metadata_bool_for_executable "$PREFIX" vgdb)"
+    has_memcheck="$(metadata_bool_for_files "$PREFIX" 'memcheck-*' 'vgpreload_*memcheck*')"
+    has_cachegrind="$(metadata_bool_for_files "$PREFIX" 'cachegrind-*' 'vgpreload_*cachegrind*')"
+    has_callgrind="$(metadata_bool_for_files "$PREFIX" 'callgrind-*' 'vgpreload_*callgrind*')"
+    has_massif="$(metadata_bool_for_files "$PREFIX" 'massif-*' 'vgpreload_*massif*')"
+    has_helgrind="$(metadata_bool_for_files "$PREFIX" 'helgrind-*' 'vgpreload_*helgrind*')"
+    has_drd="$(metadata_bool_for_files "$PREFIX" 'drd-*' 'vgpreload_*drd*')"
+    has_dhat="$(metadata_bool_for_files "$PREFIX" 'dhat-*' 'vgpreload_*dhat*')"
+    has_lackey="$(metadata_bool_for_files "$PREFIX" 'lackey-*')"
+    has_exp_bbv="$(metadata_bool_for_files "$PREFIX" 'exp-bbv-*')"
+
+    [ "$has_memcheck" = true ] && tools+=(memcheck)
+    [ "$has_cachegrind" = true ] && tools+=(cachegrind)
+    [ "$has_callgrind" = true ] && tools+=(callgrind)
+    [ "$has_massif" = true ] && tools+=(massif)
+    [ "$has_helgrind" = true ] && tools+=(helgrind)
+    [ "$has_drd" = true ] && tools+=(drd)
+    [ "$has_dhat" = true ] && tools+=(dhat)
+    [ "$has_lackey" = true ] && tools+=(lackey)
+    tools_csv="$(IFS=,; printf '%s' "${tools[*]}")"
+    [ "$has_memcheck" = true ] || die "Valgrind package is missing the core Memcheck runtime"
+    [ -n "$tools_csv" ] || die "Valgrind package has no realized runtime tools"
 
     local info=(
         "package.component=$COMPONENT"
@@ -212,29 +307,34 @@ write_valgrind_info() {
         "source.primary.name=valgrind"
         "source.primary.version=$VERSION"
         "source.primary.url=$SOURCE_URL"
-        "config.configure=--enable-only64bit;--without-mpicc;--without-gdbscripts-dir"
-        "config.only64bit=true"
-        "config.mpi=false"
+        "source.primary.sha256=$(source_archive_sha256 "$SOURCE_URL" "valgrind-$VERSION.tar.bz2")"
+        "config.configure=$VALGRIND_CONFIGURE_POLICY"
+        "config.only64bit=$VALGRIND_ONLY64BIT"
+        "config.mpi_disabled=$VALGRIND_MPI_DISABLED"
+        "config.gdbscripts_disabled=$VALGRIND_GDBSCRIPTS_DISABLED"
         "$(info_required_entry entry.valgrind "$PREFIX" valgrind)"
         "contents.relocatable_wrapper=true"
         "contents.runtime_dir=${runtime_dir#$PREFIX/}"
-        "contents.tools=memcheck,cachegrind,callgrind,massif,helgrind,drd,dhat,lackey"
-        "contents.experimental_tools=exp-bbv"
+        "contents.tools=$tools_csv"
         "contents.mpi=false"
         "contents.vgdb=$has_vgdb"
-        "features.memcheck=$has_valgrind"
-        "features.cachegrind=$(metadata_bool_for_files "$PREFIX" 'cachegrind-*' 'vgpreload_*cachegrind*')"
-        "features.callgrind=$(metadata_bool_for_files "$PREFIX" 'callgrind-*' 'vgpreload_*callgrind*')"
-        "features.massif=$(metadata_bool_for_files "$PREFIX" 'massif-*' 'vgpreload_*massif*')"
-        "features.helgrind=$(metadata_bool_for_files "$PREFIX" 'helgrind-*' 'vgpreload_*helgrind*')"
-        "features.drd=$(metadata_bool_for_files "$PREFIX" 'drd-*' 'vgpreload_*drd*')"
-        "features.dhat=$(metadata_bool_for_files "$PREFIX" 'dhat-*' 'vgpreload_*dhat*')"
-        "features.lackey=$(metadata_bool_for_files "$PREFIX" 'lackey-*')"
-        "features.exp_bbv=$(metadata_bool_for_files "$PREFIX" 'exp-bbv-*')"
+        "features.memcheck=$has_memcheck"
+        "features.cachegrind=$has_cachegrind"
+        "features.callgrind=$has_callgrind"
+        "features.massif=$has_massif"
+        "features.helgrind=$has_helgrind"
+        "features.drd=$has_drd"
+        "features.dhat=$has_dhat"
+        "features.lackey=$has_lackey"
+        "features.exp_bbv=$has_exp_bbv"
         "features.mpiwrap=false"
         "features.gdbserver=$has_vgdb"
         "features.gdb_python_frontend=false"
     )
+
+    if [ "$has_exp_bbv" = true ]; then
+        info+=("contents.experimental_tools=exp-bbv")
+    fi
 
     write_info_file "$PREFIX" "${info[@]}"
 }
@@ -249,7 +349,7 @@ main() {
     mkdir -p "$PREFIX"
 
     local source_dir
-    source_dir="$(prepare_source_tree valgrind "$VERSION" "$SOURCE_URL" "valgrind-$VERSION.tar.bz2")"
+    source_dir="$(prepare_source_tree valgrind "$VERSION" "$SOURCE_URL" "valgrind-$VERSION.tar.bz2" "${CUP_SOURCE_SHA256:-}")"
 
     build_valgrind "$source_dir"
     write_valgrind_info

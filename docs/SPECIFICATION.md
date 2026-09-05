@@ -1,43 +1,75 @@
 # Specification
 
-`cup-components` is the producer repository for the development-tool packages installed by `cup`. It builds selected upstream tools, turns each completed install tree into a package with a stable identity and validates the result before it is exposed to the consumer repository.
+`cup-components` is the repository that creates the development-tool packages installed by `cup`.
 
-This document defines the producer contract. Detailed package representation is documented in [Packages](PACKAGES.md), build operation in [Build](BUILD.md), and concrete builder inputs in [Dependencies](DEPENDENCIES.md).
+Its responsibility ends at the finished package archives and their publication. The `cup` application is responsible for choosing, downloading, validating and installing those packages on the user's machine.
+
+For the physical package format, see [Packages](PACKAGES.md). For the contents of each tool family, see [Tool packages](TOOLS.md). For build operation, see [Build](BUILD.md).
 
 ## Scope
 
 `cup-components` is responsible for:
 
-- selecting supported tool, host and target combinations;
-- acquiring supported upstream source releases;
-- building tools in controlled platform-specific environments;
-- staging and normalizing package roots;
-- packaging required non-system host runtime dependencies;
-- writing package metadata and the exact package manifest;
+- accepting a supported tool, version and platform selection;
+- obtaining the selected upstream source release;
+- building the tool in the correct platform environment;
+- selecting the files that belong to the distributed package;
+- adding required non-system host runtime dependencies;
+- making the package relocatable;
+- writing semantic metadata and the exact package manifest;
 - producing equivalent `tar.xz`, `tar.gz` and `zip` archives;
-- validating package capabilities and archive checksums;
+- validating the completed package and archive checksums;
 - publishing package assets when explicitly requested.
 
-It does not install packages on end-user machines or manage `~/.cup`. Installation, local state and user-facing package selection belong to `cup`.
+It does not:
 
-## Tools and version selection
+- install packages into `~/.cup`;
+- manage user configuration or installed-package state;
+- choose a user's default tool;
+- modify a user's `PATH`.
 
-The producer supports tool families rather than a closed catalog of tool versions. For each build, the operator selects either an explicit dotted numeric upstream version or `stable`.
+Those responsibilities belong to `cup`.
 
-`stable` is a convenience selector that resolves to the repository's current configured default:
+## Tools and versions
 
-| Tool or component | Current `stable` default |
+The supported package families are:
+
+```text
+GCC
+GNU ld
+GDB
+Clang
+clang-format
+clang-tidy
+clangd
+LLD
+LLDB
+Valgrind
+```
+
+A build accepts either:
+
+- `stable`, which resolves to the repository's configured default for that family; or
+- an explicit dotted numeric version such as `17.2`, `23.1.0` or `3.27.1`.
+
+The current defaults are:
+
+| Tool or component | `stable` |
 | --- | --- |
-| GCC | 16.1.0 |
-| Binutils | 2.46.0 |
-| MinGW-w64 | 14.0.0 |
-| GDB | 17.1 |
-| LLVM family | 22.1.5 |
-| Valgrind | 3.27.0 |
+| GCC | 16.2.0 |
+| Binutils bundled in the default GCC composition | 2.47 |
+| MinGW-w64 bundled in the default Windows-target GCC composition | 14.0.0 |
+| Default GCC package revision | 1 |
+| GNU ld / standalone Binutils package | 2.47 |
+| GDB | 17.2 |
+| LLVM family | 23.1.0 |
+| Valgrind | 3.27.1 |
 
-These values are defaults, not an exhaustive list of versions that may be built or distributed. An explicit version becomes part of the package identity, so multiple successfully built and published versions of the same tool can coexist as separate package publications. A selected version becomes downloadable when its package assets are successfully published.
+These values are defaults, not a closed version list. An explicit numeric version is passed through the general builder for its family. A different upstream release can require a family-specific adaptation if its configure options, CMake options, installed layout or runtime requirements differ from the versions already handled by the repository.
 
-The LLVM family contains the packages `clang`, `clang-format`, `clang-tidy`, `clangd`, `lld` and `lldb` from the same selected LLVM project release. Other symbolic aliases such as `latest` are not part of the producer contract.
+The symbolic version `latest` is intentionally not part of the interface. `stable` is the only symbolic selector, so the resolved version is deterministic from the repository state.
+
+All LLVM-family packages use the same selected LLVM project release. For example, selecting LLVM `23.1.0` means that Clang, LLD, LLDB, clangd, clang-format and clang-tidy are built from LLVM project `23.1.0` when those packages are requested.
 
 ## Platforms
 
@@ -51,32 +83,40 @@ macos-x64
 macos-arm64
 ```
 
-Windows arm64 is not part of the current producer matrix. The current minimum supported macOS deployment target is 15.0 for both macOS architectures.
+Windows arm64 is not part of the current matrix.
+
+The current macOS deployment target is 15.0 for both macOS architectures.
 
 ### Host and target
 
-The **host** is the platform on which a packaged tool runs. The **target** is the platform for which that tool produces, links or otherwise operates on code.
+The **host platform** is where the packaged tool runs.
 
-Most packages are native, so host and target are the same. GCC also supports a Linux-hosted Windows target package. For example:
+The **target platform** is the platform for which a compiler or linker produces code.
 
-```text
-gcc-16.1.0-rev1-linux-x64-windows-x64
-```
+Most packages are native, so host and target are the same. Their workflows therefore expose a single `platform` input. GCC and GNU ld also support a Linux x64 package that targets Windows x64, so those two workflows expose separate `host_platform` and `target_platform` inputs.
 
-means:
-
-- the packaged GCC runs on Linux x64;
-- it produces code for Windows x64.
-
-The platform-to-triple mapping is:
+Example:
 
 ```text
-linux-x64    -> x86_64-linux-gnu
-linux-arm64  -> aarch64-linux-gnu
-windows-x64  -> x86_64-w64-mingw32
-macos-x64    -> x86_64-apple-darwin
-macos-arm64  -> arm64-apple-darwin
+gcc-16.2.0-rev1-linux-x64-windows-x64
 ```
+
+This package:
+
+- runs on Linux x64;
+- produces Windows x64 programs.
+
+The package platform identifiers map to conventional toolchain triples as follows:
+
+| Platform | Triple |
+| --- | --- |
+| `linux-x64` | `x86_64-linux-gnu` |
+| `linux-arm64` | `aarch64-linux-gnu` |
+| `windows-x64` | `x86_64-w64-mingw32` |
+| `macos-x64` | `x86_64-apple-darwin` |
+| `macos-arm64` | `arm64-apple-darwin` |
+
+A tool can internally use a more specific upstream triple. That internal name does not create a second package platform.
 
 ## Supported combinations
 
@@ -86,6 +126,10 @@ macos-arm64  -> arm64-apple-darwin
 | GCC | `linux-arm64` | `linux-arm64` |
 | GCC | `linux-x64` | `windows-x64` |
 | GCC | `windows-x64` | `windows-x64` |
+| GNU ld | `linux-x64` | `linux-x64` |
+| GNU ld | `linux-arm64` | `linux-arm64` |
+| GNU ld | `linux-x64` | `windows-x64` |
+| GNU ld | `windows-x64` | `windows-x64` |
 | GDB | `linux-x64` | `linux-x64` |
 | GDB | `linux-arm64` | `linux-arm64` |
 | GDB | `windows-x64` | `windows-x64` |
@@ -97,17 +141,11 @@ macos-arm64  -> arm64-apple-darwin
 | Valgrind | `linux-x64` | `linux-x64` |
 | Valgrind | `linux-arm64` | `linux-arm64` |
 
-LLVM-family and GDB packages are native host/target packages. Valgrind is Linux-only.
+GDB, LLVM-family tools and Valgrind are native-only in the current repository. GNU ld is not produced for macOS. Valgrind is Linux-only.
 
 ## Package identity
 
-A package identity tells `cup` exactly which tool distribution it refers to. It combines the tool, main upstream version, host and target. A revision is present only when a package deliberately combines independently versioned internal components whose selected versions can change without changing the main tool version.
-
-Revision-bearing packages use:
-
-```text
-<tool>-<version>-revN-<host>-<target>
-```
+Every package has a base name that identifies the tool, main upstream version, host and target.
 
 Revisionless packages use:
 
@@ -115,107 +153,127 @@ Revisionless packages use:
 <tool>-<version>-<host>-<target>
 ```
 
-Examples using the current `stable` defaults are:
+GCC packages use:
 
 ```text
-gcc-16.1.0-rev1-linux-x64-linux-x64
-gcc-16.1.0-rev1-linux-x64-windows-x64
-gdb-17.1-linux-x64-linux-x64
-clang-22.1.5-macos-arm64-macos-arm64
-valgrind-3.27.0-linux-arm64-linux-arm64
+<tool>-<version>-revN-<host>-<target>
 ```
 
-### Revision semantics
+Examples:
 
-GCC is revision-bearing because its logical package composition includes independently versioned Binutils and, for Windows targets, MinGW-w64 components. With the current `stable` defaults, GCC 16.1.0 uses Binutils 2.46.0 and MinGW-w64 14.0.0 where applicable, and that composition is `rev1`. A different GCC main version is a different package identity; revision distinguishes compositions only within the same main version.
+```text
+gcc-16.2.0-rev1-linux-x64-linux-x64
+gcc-16.2.0-rev1-linux-x64-windows-x64
+ld-2.47-linux-x64-linux-x64
+gdb-17.2-linux-x64-linux-x64
+clang-23.1.0-macos-arm64-macos-arm64
+valgrind-3.27.1-linux-arm64-linux-arm64
+```
 
-GDB, the LLVM-family packages and Valgrind are revisionless in the current model.
+Different main tool versions therefore have different identities and can coexist as separate published packages.
 
-A package revision is **not** a build number, publication generation, source-fix counter or packaging-script version. Producer fixes, runtime-closure changes, archive changes and re-publication do not increment revision by themselves.
+### GCC composition revision
 
-Runtime libraries discovered during packaging and ordinary builder dependencies do not become revision-driving components merely because they have versions.
+GCC uses a revision because one logical GCC package deliberately contains independently versioned components:
+
+- GCC itself;
+- Binutils;
+- MinGW-w64 for Windows targets.
+
+The versions of those components are selected independently. There is no repository mapping from a GCC release to a Binutils or MinGW-w64 release. The configured defaults are listed in [Tools and versions](#tools-and-versions); the default GCC composition currently uses `rev1` and has its own bundled Binutils default, independent of the standalone GNU ld/Binutils default.
+
+These are defaults, not compatibility bindings. A build may combine an explicit GCC release with an older or newer explicit Binutils release, and a Windows-target build may independently select its MinGW-w64 release.
+
+The revision is selected with the composition. It does not choose component versions. If the same GCC version is published with a different Binutils or MinGW-w64 composition, the maintainer assigns a different revision such as `rev2` or `rev3`. The configured `stable` revision is accepted only when the resolved GCC version and all applicable bundled component versions equal the configured default GCC composition; any different composition therefore requires an explicit revision.
+
+GNU ld, GDB, LLVM-family packages and Valgrind are revisionless in the current model. Their ordinary runtime dependencies and builder packages do not create package revisions.
+
+A package revision is not a build counter and does not change merely because the packaging scripts, runtime closure or publication process changes.
 
 ## Package contract
 
-A package is the complete archive-level result consumed by `cup`. Each archive has one top-level directory whose name is the package identity and contains at least:
+Each archive contains exactly one top-level package directory. That directory contains at least:
 
 ```text
 info.txt
 manifest.txt
 ```
 
-`info.txt` describes semantic package identity, platform, entry points, capabilities, build configuration and source provenance. `manifest.txt` inventories the finalized package tree.
+`info.txt` describes the package's identity and capabilities.
 
-On POSIX hosts the package object model admits directories, regular files and safe relative internal symbolic links whose finite chain ends at a regular file. Windows packages contain directories and regular files only. Hardlink inode sharing is not logical package semantics, special filesystem objects are rejected, and the three archive formats represent the same logical object graph without requiring identical inode topology.
+`manifest.txt` describes the exact finalized file tree.
 
-The complete representation and validation rules are defined in [Packages](PACKAGES.md).
+The package can also contain executables, libraries, runtime data, target runtimes, helper programs and other files required by that specific tool.
+
+The common representation rules are documented in [Packages](PACKAGES.md). Tool-specific contents are documented in [Tool packages](TOOLS.md).
 
 ## Self-contained and relocatable packages
 
-A package is **self-contained** for the non-base runtime dependencies of the packaged host process. This does not mean embedding the operating system.
+A package is **self-contained** when every required host runtime dependency that is not deliberately provided by the operating system is included in the package.
 
-The deliberate external base is:
+The operating-system-provided runtime boundary is:
 
-- glibc/loader facilities on Linux;
-- Apple system libraries on macOS;
-- Windows system DLLs on Windows.
+- Linux: glibc and loader facilities;
+- macOS: Apple system libraries under `/usr/lib` and `/System/Library`;
+- Windows: Windows system DLLs.
 
-Other required host runtime dependencies are packaged when necessary. Target sysroots and target runtimes are separate tool-specific payloads; for example, a Windows-target GCC package carries the MinGW-w64 target layout because the compiler needs it to produce Windows programs.
+A package is **relocatable** when it continues to work after extraction to a different directory. It must not require the temporary build or staging path.
 
-A package is **relocatable** when it remains usable after being extracted below the location chosen by `cup`, rather than depending on the CI staging path. Linux, macOS and Windows require different runtime-dependency mechanisms; see [Runtime dependencies](PACKAGES.md#runtime-dependencies).
+Target runtimes are separate from host runtime dependencies. For example, a Linux-hosted GCC package targeting Windows contains the MinGW-w64 target headers and runtime because they are part of the compiler toolchain it distributes.
 
-## Integrity
+## Source selection and verification
 
-The producer creates:
+Source releases are downloaded from the configured versioned upstream HTTPS locations or reused from the local source cache.
 
-```text
-<package-base>.tar.xz
-<package-base>.tar.gz
-<package-base>.zip
-SHA256SUMS
-```
+The repository contains known SHA-256 values for the current `stable` source releases. Those source archives are verified before extraction, including when an already cached archive is reused.
 
-The exact package tree is recorded in `manifest.txt`. `SHA256SUMS` covers the finished archive bytes and contains one SHA-256 digest for each archive.
+For another explicit numeric version, the build can proceed without a repository-known digest. The optional `source_sha256` workflow input, forwarded as `CUP_SOURCE_SHA256`, can be supplied when exact source verification is desired for that version.
 
-Archive checksums protect package transport and cache integrity. They are not upstream-source authentication.
+Every completed package records the SHA-256 of the source archive that was actually used. Build records also keep the resolved source URL, expected digest when one was supplied or known, actual digest and source-acquisition status. See [Build records](BUILD_RECORDS.md).
 
-## Source acquisition boundary
-
-Source releases are obtained from configured official versioned HTTPS locations or an existing local source cache. The selected source version is deterministic, but the repository does not maintain a per-version digest/signature table for every accepted upstream source archive.
-
-The builder TLS/platform trust store and the configured source location therefore remain part of the source-acquisition trust boundary. Final package checksums apply only after the package has been built.
-
-Concrete source families and builder requirements are listed in [Dependencies](DEPENDENCIES.md).
+`SHA256SUMS` has a different purpose: it contains checksums for the finished package archives, not the upstream source archive.
 
 ## Publication identity
 
-The package basename is also the logical publication identity. Different tool versions therefore use different publication identities and may coexist as separate releases. Publishing the same logical package identity again is an explicit operator action that replaces only that identity's previous release/tag and asset set. It does not create a new package revision.
+The package base name is also the release tag used by the workflows.
 
-When publication is disabled, the workflow does not mutate the GitHub Release publication. Operational details are documented in [Build](BUILD.md#publication).
+Publishing the same logical package identity again replaces that identity's existing release and assets. Publishing a different tool version creates a different release identity, so versions can coexist.
 
-## Repository scripting and Python
+Re-publishing the same identity does not change the GCC composition revision.
 
-Repository automation uses the existing shell, PowerShell, YAML and Dockerfile surfaces. Python is not a repository scripting dependency.
+See [Build](BUILD.md#publication) for the workflow behavior.
 
-Python can still be part of an upstream tool runtime. GDB and LLDB deliberately provide Python support, so their packages may contain a Python interpreter, standard library and related runtime files. That runtime relationship is described in [Packages](PACKAGES.md#python-runtime).
+## Repository implementation languages
+
+Repository automation is implemented with:
+
+```text
+POSIX shell / Bash
+PowerShell
+YAML
+Dockerfiles
+```
+
+Python is not used as a standalone repository automation layer. It is nevertheless a legitimate upstream build dependency and can be part of the final runtime of tools such as GDB, LLDB and LLVM helper commands.
 
 ## Relation to cup
 
-The repository boundary is:
+The boundary between the two repositories is:
 
 ```text
 cup-components
-  builds and packages tools
-  defines package metadata and physical package representation
-  produces archives and SHA256SUMS
-  can publish package assets
+  builds the selected tool
+  creates the final package tree
+  writes info.txt and manifest.txt
+  creates archives and SHA256SUMS
+  optionally publishes the archives
 
 cup
-  resolves package choices
-  downloads package assets
-  verifies downloaded archives
-  validates and installs packages
-  owns local installation state
+  selects available package identities
+  downloads an archive
+  validates the package
+  installs it into the user-owned CUP directory
+  manages local installation and configuration state
 ```
 
-The repositories share the package contract but have different responsibilities.
+They share the same package format, but they have different responsibilities.

@@ -87,7 +87,7 @@ function Show-InfoContract {
     foreach ($key in @(
         'package.component','package.tool','package.version','package.revision','package.mode','package.formats',
         'platform.host','platform.target','platform.host_triple','platform.target_triple',
-        'source.primary.name','source.primary.version','build.environment','build.source_policy'
+        'source.primary.name','source.primary.version','source.primary.sha256','build.environment','build.source_policy'
     )) {
         $value = Get-InfoValue $key
         if ($value) { Write-Host ("  {0,-30} {1}" -f $key, $value) }
@@ -131,18 +131,28 @@ switch ($Tool) {
         Show-Executable 'gcov.exe' 'features.gcov'
         Show-Executable 'lto-dump.exe' 'features.lto_dump'
         foreach ($exe in @('as.exe','ld.exe','ar.exe','ranlib.exe','strip.exe','objdump.exe','readelf.exe')) { Show-Executable $exe 'features.binutils' }
-        $triple = Get-InfoValue 'platform.target_triple'
+        $triple = Get-InfoValue 'config.gcc_target_triple'
+        if (-not $triple) { $triple = Get-InfoValue 'platform.target_triple' }
         if ($triple) {
             Write-Host ""
             Write-Host "[target-prefixed compiler driver probes: $triple]"
-            foreach ($exe in @('gcc','g++','cpp','gcov')) { Show-Executable "$triple-$exe.exe" 'features.target_prefixed_compiler_drivers' }
+            Show-Executable "$triple-gcc.exe" 'features.target_prefixed_compiler_drivers'
+            foreach ($exe in @('g++','cpp','gcov')) { Show-Executable "$triple-$exe.exe" }
             Write-Host ""
             Write-Host "[target-prefixed Binutils probes: $triple]"
-            foreach ($exe in @('as','ld','ar','ranlib','strip','objdump','readelf')) { Show-Executable "$triple-$exe.exe" 'features.target_prefixed_binutils' }
+            Show-Executable "$triple-ar.exe" 'features.target_prefixed_binutils'
+            foreach ($exe in @('as','ld','ranlib','strip','objdump','readelf')) { Show-Executable "$triple-$exe.exe" }
         }
         Show-Version 'gcc.exe'
         Show-Version 'g++.exe'
         if ($triple) { Show-Version "$triple-gcc.exe" }
+    }
+    'ld' {
+        Write-Host ""
+        Write-Host '[GNU ld capability probes]'
+        Show-Executable 'ld.exe' 'features.link'
+        Show-Executable 'ld.bfd.exe' 'features.ld_bfd'
+        Show-Version 'ld.exe'
     }
     'gdb' {
         Write-Host ""

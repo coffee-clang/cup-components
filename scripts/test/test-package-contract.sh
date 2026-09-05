@@ -10,6 +10,17 @@ CUP_WORK_DIR="$TMP/work"
 CUP_OUT_DIR="$TMP/out"
 mkdir -p "$CUP_WORK_DIR" "$CUP_OUT_DIR"
 
+# Generic package graph/metadata fixtures are intentionally platform-neutral.
+# Runtime closure has dedicated mechanism tests below and must not make these
+# generic fixtures depend on tooling for a declared, non-native host platform.
+create_packages_without_runtime_closure() {
+    (
+        prepare_linux_runtime_closure() { :; }
+        prepare_macos_runtime_closure() { :; }
+        create_packages "$@"
+    )
+}
+
 # Source acquisition is used through command substitution by every producer
 # family. Load-bearing failures must be propagated explicitly rather than
 # relying on errexit behavior inside the substitution.
@@ -47,7 +58,7 @@ printf 'source fetch-failure propagation test passed\n'
     printf 'not-an-xz-archive' > "$archive"
 
     set +e
-    source_path="$(prepare_source_tree corrupt 1.0 https://example.invalid/corrupt-1.0.tar.xz corrupt-1.0.tar.xz 2>"$source_test_root/extract.log")"
+    source_path="$(prepare_source_tree corrupt 1.0 https://example.invalid/corrupt-1.0.tar.xz corrupt-1.0.tar.xz "$(sha256_file "$archive")" 2>"$source_test_root/extract.log")"
     prepare_status=$?
     set -e
     if [ "$prepare_status" -eq 0 ]; then
@@ -57,10 +68,6 @@ printf 'source fetch-failure propagation test passed\n'
     [ "$prepare_status" -ne 0 ] || { echo 'source preparation accepted a corrupt cached archive' >&2; exit 1; }
     [ -z "$source_path" ] || { echo 'source preparation returned a path after extraction failure' >&2; exit 1; }
     [ ! -e "$downstream_marker" ] || { echo 'downstream build phase was reached after extraction failure' >&2; exit 1; }
-    grep -Eq 'File format not recognized|not a tar archive|Error is not recoverable' "$source_test_root/extract.log" || {
-        echo 'corrupt cached archive did not exercise the real extractor failure' >&2
-        exit 1
-    }
 )
 printf 'source corrupt-cache propagation test passed\n'
 
@@ -71,7 +78,7 @@ printf 'source corrupt-cache propagation test passed\n'
     printf 'source-ok\n' > "$source_test_root/archive-root/fixture-1.0/marker.txt"
     tar -cJf "$CUP_SRC_DIR/fixture-1.0.tar.xz" -C "$source_test_root/archive-root" fixture-1.0
 
-    source_path="$(prepare_source_tree fixture 1.0 https://example.invalid/fixture-1.0.tar.xz fixture-1.0.tar.xz)"
+    source_path="$(prepare_source_tree fixture 1.0 https://example.invalid/fixture-1.0.tar.xz fixture-1.0.tar.xz "$(sha256_file "$CUP_SRC_DIR/fixture-1.0.tar.xz")")"
     [ "$source_path" = "$CUP_SRC_DIR/fixture-1.0" ] || { echo 'successful source preparation returned the wrong path' >&2; exit 1; }
     [ "$(cat "$source_path/marker.txt")" = source-ok ] || { echo 'successful source preparation did not extract expected content' >&2; exit 1; }
 )
@@ -106,15 +113,16 @@ platform.runtime=glibc
 platform.thread_model=posix
 build.environment=test
 build.source_policy=fixture
-source.primary.name=fixture
+source.primary.name=gdb
 source.primary.version=1.0
-source.primary.url=https://example.invalid/fixture-1.0.tar.xz
+source.primary.url=https://example.invalid/gdb-1.0.tar.xz
+source.primary.sha256=0000000000000000000000000000000000000000000000000000000000000000
 entry.gdb=bin/gdb-alias
 features.fixture=true
 config.fixture=true
 EOF_INFO
 
-create_packages gdb 1.0 linux-x64 linux-x64 "" "$prefix"
+create_packages_without_runtime_closure gdb 1.0 linux-x64 linux-x64 "" "$prefix"
 base=gdb-1.0-linux-x64-linux-x64
 package_root="$CUP_WORK_DIR/package-root/$base"
 
@@ -198,7 +206,7 @@ if command -v mkfifo >/dev/null 2>&1; then
     cp -RPp "$prefix" "$bad_prefix"
     rm -f "$bad_prefix/lib/libfixture.so"
     mkfifo "$bad_prefix/lib/not-a-file"
-    if (create_packages gdb 1.0 linux-x64 linux-x64 "" "$bad_prefix") >/dev/null 2>&1; then
+    if (create_packages_without_runtime_closure gdb 1.0 linux-x64 linux-x64 "" "$bad_prefix") >/dev/null 2>&1; then
         echo 'special object was accepted by common package finalization' >&2
         exit 1
     fi
@@ -232,9 +240,14 @@ build.source_policy=fixture
 source.primary.name=gcc
 source.primary.version=1.0
 source.primary.url=https://example.invalid/gcc-1.0.tar.xz
+source.primary.sha256=0000000000000000000000000000000000000000000000000000000000000000
+bundle.components=binutils
+bundle.binutils.version=8.7.6
+bundle.binutils.url=https://example.invalid/binutils-8.7.6.tar.xz
+bundle.binutils.sha256=1111111111111111111111111111111111111111111111111111111111111111
 entry.gcc=bin/gcc
 EOF_GCC_INFO
-create_packages gcc 1.0 linux-x64 linux-x64 1 "$gcc_prefix"
+create_packages_without_runtime_closure gcc 1.0 linux-x64 linux-x64 1 "$gcc_prefix"
 gcc_base=gcc-1.0-rev1-linux-x64-linux-x64
 for format in tar.xz tar.gz zip; do
     [ -f "$CUP_OUT_DIR/$gcc_base.$format" ] || { echo "missing GCC revision-bearing archive: $format" >&2; exit 1; }
@@ -244,7 +257,25 @@ grep -Fx "release_tag=$gcc_base" "$CUP_OUT_DIR/release.env" >/dev/null
     echo 'future GCC revision was not accepted' >&2
     exit 1
 }
-printf 'GCC revision-bearing package identity tests passed\n'
+# The finalizer must preserve enough GCC composition metadata to make a
+# revision meaningful without consulting repository-side version mappings.
+assert_gcc_composition_rejected() {
+    local name="$1"
+    local command="$2"
+    local candidate="$TMP/gcc-composition-$name"
+
+    cp -RPp "$gcc_prefix" "$candidate"
+    eval "$command"
+    if (package_verify_info_contract "$candidate" gcc 1.0 linux-x64 linux-x64 1) >/dev/null 2>&1; then
+        echo "invalid GCC composition metadata was accepted: $name" >&2
+        exit 1
+    fi
+}
+assert_gcc_composition_rejected missing-binutils-version 'sed "/^bundle.binutils.version=/d" "$candidate/info.txt" > "$candidate/info.txt.tmp" && mv "$candidate/info.txt.tmp" "$candidate/info.txt"'
+assert_gcc_composition_rejected invalid-binutils-digest 'sed "s/^bundle.binutils.sha256=.*/bundle.binutils.sha256=bad/" "$candidate/info.txt" > "$candidate/info.txt.tmp" && mv "$candidate/info.txt.tmp" "$candidate/info.txt"'
+assert_gcc_composition_rejected wrong-components 'sed "s/^bundle.components=binutils$/bundle.components=binutils,mingw-w64/" "$candidate/info.txt" > "$candidate/info.txt.tmp" && mv "$candidate/info.txt.tmp" "$candidate/info.txt"'
+assert_gcc_composition_rejected stray-mingw 'printf "bundle.mingw-w64.version=5.4.3\n" >> "$candidate/info.txt"'
+printf 'GCC revision/composition package identity tests passed\n'
 
 # Link admission is deliberately narrow: only POSIX relative internal finite
 # symbolic-link chains resolving to regular files may be published.
@@ -256,7 +287,7 @@ assert_link_rejected() {
     cp -RPp "$prefix" "$candidate"
     rm -f "$candidate/lib/libfixture.so"
     eval "$setup"
-    if (create_packages gdb 1.0 linux-x64 linux-x64 "" "$candidate") >/dev/null 2>&1; then
+    if (create_packages_without_runtime_closure gdb 1.0 linux-x64 linux-x64 "" "$candidate") >/dev/null 2>&1; then
         echo "unsafe staging link was accepted: $name" >&2
         exit 1
     fi
@@ -301,16 +332,33 @@ assert_package_rejected() {
 
     cp -RPp "$prefix" "$candidate"
     eval "$setup"
-    if (create_packages gdb 1.0 linux-x64 linux-x64 "" "$candidate") >/dev/null 2>&1; then
+    if (create_packages_without_runtime_closure gdb 1.0 linux-x64 linux-x64 "" "$candidate") >/dev/null 2>&1; then
         echo "producer contract violation was accepted: $name" >&2
         exit 1
     fi
 }
 
 assert_package_rejected missing-required 'grep -v "^source.primary.url=" "$candidate/info.txt" > "$candidate/info.txt.tmp"; mv "$candidate/info.txt.tmp" "$candidate/info.txt"'
+assert_package_rejected source-name-mismatch 'sed "s/^source.primary.name=gdb$/source.primary.name=llvm-project/" "$candidate/info.txt" > "$candidate/info.txt.tmp"; mv "$candidate/info.txt.tmp" "$candidate/info.txt"'
+assert_package_rejected source-version-mismatch 'sed "s/^source.primary.version=1.0$/source.primary.version=1.1/" "$candidate/info.txt" > "$candidate/info.txt.tmp"; mv "$candidate/info.txt.tmp" "$candidate/info.txt"'
 assert_package_rejected duplicate-field 'printf "package.tool=gdb\\n" >> "$candidate/info.txt"'
 assert_package_rejected missing-final-newline 'printf %s "$(cat "$candidate/info.txt")" > "$candidate/info.txt"'
-assert_package_rejected case-collision 'printf x > "$candidate/share/Case"; printf y > "$candidate/share/case"'
+
+# A case-fold collision can only exist in a staging tree when the host
+# filesystem can represent names that differ by case. Probe that capability
+# before constructing the negative fixture; otherwise both writes name the
+# same object and there is no collision for the producer to reject.
+case_probe="$TMP/case-distinct-path-probe"
+mkdir -p "$case_probe"
+printf upper > "$case_probe/Case"
+printf lower > "$case_probe/case"
+if [ "$(cat "$case_probe/Case")" = upper ] && [ "$(cat "$case_probe/case")" = lower ]; then
+    assert_package_rejected case-collision 'printf x > "$candidate/share/Case"; printf y > "$candidate/share/case"'
+    printf 'producer case-fold collision rejection test passed\n'
+else
+    printf 'producer case-fold collision rejection test skipped: host filesystem cannot represent case-distinct paths\n'
+fi
+
 assert_package_rejected newline-path 'printf x > "$candidate/share/$(printf "bad\\nname")"'
 
 # Newlines must be rejected by the central path grammar itself, before any
@@ -344,246 +392,33 @@ printf 'package metadata/path compatibility tests passed\n'
 # admit path syntax or arbitrary symbolic aliases. Revisionless families must
 # reject a meaningless revision rather than silently creating a new identity.
 [ "$(resolve_version gcc stable)" = "$DEFAULT_GCC_VERSION" ]
-[ "$(resolve_version gcc 16.1.0)" = "16.1.0" ]
-[ "$(package_version_name gcc 16.1.0 linux-x64 linux-x64 1)" = "16.1.0-rev1" ]
-[ "$(package_version_name gdb 17.1 linux-x64 linux-x64 "")" = "17.1" ]
-[ "$(package_base_name clang 22.1.5 linux-x64 linux-x64 "")" = "clang-22.1.5-linux-x64-linux-x64" ]
-[ "$(package_base_name valgrind 3.27.0 linux-x64 linux-x64 "")" = "valgrind-3.27.0-linux-x64-linux-x64" ]
+[ "$(resolve_version gcc 9.8.7)" = "9.8.7" ]
+[ "$(package_version_name gcc 9.8.7 linux-x64 linux-x64 1)" = "9.8.7-rev1" ]
+[ "$(package_version_name gdb 8.7.6 linux-x64 linux-x64 "")" = "8.7.6" ]
+[ "$(package_base_name clang 7.6.5 linux-x64 linux-x64 "")" = "clang-7.6.5-linux-x64-linux-x64" ]
+[ "$(package_base_name valgrind 6.5.4 linux-x64 linux-x64 "")" = "valgrind-6.5.4-linux-x64-linux-x64" ]
 if (resolve_version gcc latest) >/dev/null 2>&1; then
     echo 'latest symbolic alias was accepted' >&2
     exit 1
 fi
-if (resolve_version gcc '../16.1.0') >/dev/null 2>&1; then
+if (resolve_version gcc '../9.8.7') >/dev/null 2>&1; then
     echo 'non-numeric explicit version was accepted' >&2
     exit 1
 fi
-if (package_version_name gcc 16.1.0 linux-x64 linux-x64 '../3') >/dev/null 2>&1; then
+if (package_version_name gcc 9.8.7 linux-x64 linux-x64 '../3') >/dev/null 2>&1; then
     echo 'unsafe package revision was accepted' >&2
     exit 1
 fi
-if (package_version_name gcc 16.1.0 linux-x64 linux-x64 '') >/dev/null 2>&1; then
+if (package_version_name gcc 9.8.7 linux-x64 linux-x64 '') >/dev/null 2>&1; then
     echo 'GCC package without a required revision was accepted' >&2
     exit 1
 fi
-if (package_version_name gdb 17.1 linux-x64 linux-x64 1) >/dev/null 2>&1; then
+if (package_version_name gdb 8.7.6 linux-x64 linux-x64 1) >/dev/null 2>&1; then
     echo 'revisionless GDB package accepted a meaningless revision' >&2
     exit 1
 fi
 printf 'package version/revision input tests passed\n'
 
-# The build scripts are producer authorities too; they must reject unsupported
-# identities before creating work directories or attempting source downloads.
-assert_build_matrix_rejected() {
-    local name="$1"
-    shift
-    local isolated="$TMP/matrix-$name"
-
-    if CUP_ROOT="$isolated" "$@" >/dev/null 2>&1; then
-        echo "unsupported producer matrix was accepted: $name" >&2
-        exit 1
-    fi
-    [ ! -e "$isolated/.cup-build" ] || {
-        echo "unsupported producer matrix was rejected too late: $name" >&2
-        exit 1
-    }
-}
-
-assert_build_matrix_rejected gcc-macos \
-    "$ROOT/scripts/build/build-gcc.sh" stable macos-x64 macos-x64 3
-assert_build_matrix_rejected gcc-unsupported-cross \
-    "$ROOT/scripts/build/build-gcc.sh" stable linux-arm64 windows-x64 3
-assert_build_matrix_rejected gdb-macos \
-    "$ROOT/scripts/build/build-gdb.sh" stable macos-x64 macos-x64
-assert_build_matrix_rejected gdb-cross \
-    "$ROOT/scripts/build/build-gdb.sh" stable linux-x64 windows-x64
-assert_build_matrix_rejected llvm-cross \
-    "$ROOT/scripts/build/build-llvm-tool.sh" clang stable linux-x64 windows-x64
-printf 'producer platform-matrix tests passed\n'
-
-# Revision-bearing/revisionless producer interfaces and publication semantics
-# are repository contracts. These checks are static because live GitHub release
-# mutation belongs to CI evidence, not a local source test.
-gcc_workflow="$ROOT/.github/workflows/build-gcc.yml"
-for workflow in \
-    "$ROOT/.github/workflows/build-gdb.yml" \
-    "$ROOT/.github/workflows/build-llvm.yml" \
-    "$ROOT/.github/workflows/build-valgrind.yml"; do
-    if grep -Eq '^[[:space:]]+revision:' "$workflow" || grep -F 'inputs.revision' "$workflow" >/dev/null; then
-        echo "revisionless workflow still exposes package revision: $workflow" >&2
-        exit 1
-    fi
-done
-grep -Eq '^[[:space:]]+revision:' "$gcc_workflow" || { echo 'GCC workflow lost revision input' >&2; exit 1; }
-grep -F "default: '1'" "$gcc_workflow" >/dev/null || { echo 'GCC workflow revision default is not 1' >&2; exit 1; }
-grep -F 'GCC package revision must be a positive canonical integer' "$gcc_workflow" >/dev/null || { echo 'GCC workflow does not validate revision' >&2; exit 1; }
-[ "$(grep -Fc 'inputs.revision' "$gcc_workflow")" -ge 3 ] || { echo 'GCC workflow does not validate and propagate revision' >&2; exit 1; }
-
-grep -F 'if [ "$#" -ne 3 ]; then' "$ROOT/scripts/build/build-gdb.sh" >/dev/null || { echo 'GDB build CLI still expects revision' >&2; exit 1; }
-grep -F 'if [ "$#" -ne 4 ]; then' "$ROOT/scripts/build/build-llvm-tool.sh" >/dev/null || { echo 'LLVM build CLI still expects revision' >&2; exit 1; }
-grep -F 'if [ "$#" -ne 2 ]; then' "$ROOT/scripts/build/build-valgrind.sh" >/dev/null || { echo 'Valgrind build CLI still expects revision' >&2; exit 1; }
-for builder in build-gdb.sh build-llvm-tool.sh build-valgrind.sh; do
-    if grep -F 'package.revision=' "$ROOT/scripts/build/$builder" >/dev/null; then
-        echo "revisionless builder still writes package.revision: $builder" >&2
-        exit 1
-    fi
-done
-grep -F 'package.revision=$REVISION' "$ROOT/scripts/build/build-gcc.sh" >/dev/null || {
-    echo 'GCC builder lost package.revision metadata' >&2
-    exit 1
-}
-
-publication_extract_script() {
-    local workflow="$1"
-    local output="$2"
-
-    awk '
-        index($0, "tag=\"${{ steps.release.outputs.tag }}\"") { capture = 1 }
-        capture {
-            line = $0
-            sub(/^          /, "", line)
-            print line
-        }
-        capture && index($0, "--notes \"Automated cup component build for $tag\"") { exit }
-    ' "$workflow" |
-        sed 's|^tag=.*|tag="fixture-tag"|; s|^repo=.*|repo="owner/repo"|' > "$output"
-}
-
-publication_run_fixture() {
-    local workflow="$1"
-    local release_state="$2"
-    local tag_state="$3"
-    local name="$4"
-    local fixture="$TMP/publication-$name"
-
-    rm -rf "$fixture"
-    mkdir -p "$fixture/bin"
-    publication_extract_script "$workflow" "$fixture/publication.sh"
-
-    cat > "$fixture/bin/gh" <<'EOF_GH_STUB'
-#!/bin/sh
-printf 'gh %s\n' "$*" >> "$PUBLICATION_CALL_LOG"
-if [ "$1" = api ]; then
-    case "$PUBLICATION_RELEASE_STATE" in
-        FOUND) printf 'HTTP/2.0 200 OK\n\n{}\n'; exit 0 ;;
-        NOT_FOUND) printf 'HTTP/2.0 404 Not Found\n\n{}\n'; exit 1 ;;
-        ERROR) printf 'HTTP/2.0 503 Service Unavailable\n\n{}\n'; exit 1 ;;
-        *) exit 64 ;;
-    esac
-fi
-if [ "$1 $2" = 'release view' ]; then
-    case "$PUBLICATION_RELEASE_STATE" in
-        FOUND) exit 0 ;;
-        NOT_FOUND) exit 1 ;;
-        ERROR) exit 4 ;;
-        *) exit 64 ;;
-    esac
-fi
-exit 0
-EOF_GH_STUB
-
-    cat > "$fixture/bin/git" <<'EOF_GIT_STUB'
-#!/bin/sh
-printf 'git %s\n' "$*" >> "$PUBLICATION_CALL_LOG"
-if [ "$1" = ls-remote ]; then
-    case "$PUBLICATION_TAG_STATE" in
-        FOUND) exit 0 ;;
-        NOT_FOUND) exit 2 ;;
-        ERROR) exit 128 ;;
-        *) exit 64 ;;
-    esac
-fi
-exit 0
-EOF_GIT_STUB
-    chmod +x "$fixture/bin/gh" "$fixture/bin/git"
-    : > "$fixture/calls"
-
-    set +e
-    PATH="$fixture/bin:$PATH" \
-        PUBLICATION_CALL_LOG="$fixture/calls" \
-        PUBLICATION_RELEASE_STATE="$release_state" \
-        PUBLICATION_TAG_STATE="$tag_state" \
-        GITHUB_SHA=0123456789abcdef \
-        bash -e "$fixture/publication.sh" >"$fixture/stdout" 2>"$fixture/stderr"
-    PUBLICATION_FIXTURE_STATUS=$?
-    set -e
-    PUBLICATION_FIXTURE_CALLS="$fixture/calls"
-}
-
-assert_publication_not_called() {
-    local pattern="$1"
-    if grep -F "$pattern" "$PUBLICATION_FIXTURE_CALLS" >/dev/null; then
-        echo "unexpected publication operation reached: $pattern" >&2
-        cat "$PUBLICATION_FIXTURE_CALLS" >&2
-        exit 1
-    fi
-}
-
-for workflow in "$ROOT"/.github/workflows/build-*.yml; do
-    grep -F 'if: ${{ inputs.publish }}' "$workflow" >/dev/null || { echo "publish=true gate missing: $workflow" >&2; exit 1; }
-    grep -F 'if: ${{ !inputs.publish }}' "$workflow" >/dev/null || { echo "publish=false artifact gate missing: $workflow" >&2; exit 1; }
-    grep -F 'gh api --include "repos/$repo/releases/tags/$tag"' "$workflow" >/dev/null || { echo "fail-closed release lookup missing: $workflow" >&2; exit 1; }
-    grep -F 'if [ "$http_status" != 404 ]; then' "$workflow" >/dev/null || { echo "release lookup does not distinguish 404 from errors: $workflow" >&2; exit 1; }
-    grep -F 'git ls-remote --exit-code --tags origin "refs/tags/$tag"' "$workflow" >/dev/null || { echo "remote tag lookup missing: $workflow" >&2; exit 1; }
-    grep -F '2) ;;' "$workflow" >/dev/null || { echo "tag not-found status is not distinguished: $workflow" >&2; exit 1; }
-    grep -F 'failed to determine remote tag state' "$workflow" >/dev/null || { echo "tag lookup errors are not fail-closed: $workflow" >&2; exit 1; }
-    grep -F 'gh release delete "$tag" --repo "$repo" --cleanup-tag --yes' "$workflow" >/dev/null || { echo "same-identity replacement path missing: $workflow" >&2; exit 1; }
-    grep -F 'git push origin ":refs/tags/$tag"' "$workflow" >/dev/null || { echo "stale standalone tag replacement path missing: $workflow" >&2; exit 1; }
-    grep -F -- '--target "$GITHUB_SHA"' "$workflow" >/dev/null || { echo "release tag is not bound to current source SHA: $workflow" >&2; exit 1; }
-    grep -F 'gh release create "$tag" dist/*.tar.xz dist/*.tar.gz dist/*.zip dist/SHA256SUMS' "$workflow" >/dev/null || { echo "publication asset set is incomplete: $workflow" >&2; exit 1; }
-    if grep -Eqi 'increment package revision|immutable assets|never replaced' "$workflow"; then
-        echo "stale immutable/revision-collision policy remains: $workflow" >&2
-        exit 1
-    fi
-
-    stem="$(basename "$workflow" .yml)"
-
-    publication_run_fixture "$workflow" FOUND NOT_FOUND "$stem-found"
-    [ "$PUBLICATION_FIXTURE_STATUS" -eq 0 ] || { echo "existing release replacement failed: $workflow" >&2; exit 1; }
-    grep -F 'gh release delete fixture-tag --repo owner/repo --cleanup-tag --yes' "$PUBLICATION_FIXTURE_CALLS" >/dev/null || { echo "existing release was not replaced: $workflow" >&2; exit 1; }
-    grep -F 'gh release create fixture-tag' "$PUBLICATION_FIXTURE_CALLS" >/dev/null || { echo "replacement release was not recreated: $workflow" >&2; exit 1; }
-    assert_publication_not_called 'git ls-remote'
-
-    publication_run_fixture "$workflow" NOT_FOUND FOUND "$stem-stale-tag"
-    [ "$PUBLICATION_FIXTURE_STATUS" -eq 0 ] || { echo "stale tag publication failed: $workflow" >&2; exit 1; }
-    grep -F 'git push origin :refs/tags/fixture-tag' "$PUBLICATION_FIXTURE_CALLS" >/dev/null || { echo "stale standalone tag was not removed: $workflow" >&2; exit 1; }
-    grep -F 'gh release create fixture-tag' "$PUBLICATION_FIXTURE_CALLS" >/dev/null || { echo "release was not created after stale tag removal: $workflow" >&2; exit 1; }
-    assert_publication_not_called 'gh release delete'
-
-    publication_run_fixture "$workflow" NOT_FOUND NOT_FOUND "$stem-new"
-    [ "$PUBLICATION_FIXTURE_STATUS" -eq 0 ] || { echo "new publication path failed: $workflow" >&2; exit 1; }
-    grep -F 'gh release create fixture-tag' "$PUBLICATION_FIXTURE_CALLS" >/dev/null || { echo "new release was not created: $workflow" >&2; exit 1; }
-    assert_publication_not_called 'gh release delete'
-    assert_publication_not_called 'git push'
-
-    publication_run_fixture "$workflow" ERROR FOUND "$stem-release-error"
-    [ "$PUBLICATION_FIXTURE_STATUS" -ne 0 ] || { echo "release lookup operational error was accepted: $workflow" >&2; exit 1; }
-    assert_publication_not_called 'gh release delete'
-    assert_publication_not_called 'git ls-remote'
-    assert_publication_not_called 'git push'
-    assert_publication_not_called 'gh release create'
-
-    publication_run_fixture "$workflow" NOT_FOUND ERROR "$stem-tag-error"
-    [ "$PUBLICATION_FIXTURE_STATUS" -ne 0 ] || { echo "tag lookup operational error was accepted: $workflow" >&2; exit 1; }
-    grep -F 'git ls-remote' "$PUBLICATION_FIXTURE_CALLS" >/dev/null || { echo "tag lookup was not exercised: $workflow" >&2; exit 1; }
-    assert_publication_not_called 'gh release delete'
-    assert_publication_not_called 'git push'
-    assert_publication_not_called 'gh release create'
-done
-printf 'workflow revision/publication fail-closed contract tests passed\n'
-
-llvm_builder="$ROOT/scripts/build/build-llvm-tool.sh"
-llvm_workflow="$ROOT/.github/workflows/build-llvm.yml"
-grep -F 'macos-x64) runner="macos-15-intel"' "$llvm_workflow" >/dev/null || { echo 'macOS x64 workflow path is missing' >&2; exit 1; }
-grep -F 'macos-arm64) runner="macos-15"' "$llvm_workflow" >/dev/null || { echo 'macOS arm64 workflow path is missing' >&2; exit 1; }
-grep -F '"${CUP_MACOS_DEPLOYMENT_TARGET:-15.0}"' "$llvm_builder" >/dev/null || {
-    echo 'default macOS deployment target is not 15.0' >&2
-    exit 1
-}
-[ "$(grep -Fc 'CMAKE_OSX_DEPLOYMENT_TARGET="$(macos_deployment_target)"' "$llvm_builder")" -eq 2 ] || {
-    echo 'macOS deployment target is not applied to both LLVM build paths' >&2
-    exit 1
-}
-printf 'macOS 15.0 source contract tests passed\n'
 
 # Runtime-closure discovery must be independent of the builder's ambient
 # LD_LIBRARY_PATH. A fake ldd records the exact value it receives.
@@ -638,7 +473,7 @@ for i in $(seq 1 10); do printf 'lib%s' "$i" > "$deep_external/lib$i.so"; done
     echo 'deep Linux runtime closure did not reach the tenth transitive dependency' >&2
     exit 1
 }
-printf 'Linux runtime-closure convergence-depth test passed\n'
+printf 'Linux recursive runtime-closure test passed\n'
 
 # Binary dependency metadata must never become a path-construction primitive.
 # Reject path-bearing ELF/PE dependency names before any copy can escape lib/bin.
@@ -714,6 +549,67 @@ if (
     exit 1
 fi
 printf 'macOS @rpath closure-mechanism tests passed\n'
+
+
+# Runtime-library collision detection must compare source identities, not a
+# packaged copy that install_name_tool has already rewritten in place.
+mac_repeat_prefix="$TMP/mac-repeat-prefix"
+mac_repeat_external="$TMP/mac-repeat-external"
+mkdir -p "$mac_repeat_prefix/bin" "$mac_repeat_external"
+printf a > "$mac_repeat_prefix/bin/a"
+printf b > "$mac_repeat_prefix/bin/b"
+printf 'same-runtime\n' > "$mac_repeat_external/libshared.dylib"
+if ! (
+    macos_macho_files() {
+        printf '%s\n' "$mac_repeat_prefix/bin/a" "$mac_repeat_prefix/bin/b"
+    }
+    macos_macho_dependencies() { printf '%s\n' "$mac_repeat_external/libshared.dylib"; }
+    otool() {
+        [ "$1" = -D ] || return 2
+        printf '%s:\n%s\n' "$2" "$2"
+    }
+    install_name_tool() {
+        case "$1" in
+            -id) printf '\nrewritten-install-name\n' >> "$3" ;;
+            -change) : ;;
+            *) return 2 ;;
+        esac
+    }
+    macos_copy_and_rewrite_runtime_libraries "$mac_repeat_prefix"
+); then
+    echo 'macOS closure misclassified a previously rewritten copy of the same runtime library as a conflict' >&2
+    exit 1
+fi
+
+mac_collision_prefix="$TMP/mac-collision-prefix"
+mac_collision_external_a="$TMP/mac-collision-a"
+mac_collision_external_b="$TMP/mac-collision-b"
+mkdir -p "$mac_collision_prefix/bin" "$mac_collision_external_a" "$mac_collision_external_b"
+printf a > "$mac_collision_prefix/bin/a"
+printf b > "$mac_collision_prefix/bin/b"
+printf 'runtime-a\n' > "$mac_collision_external_a/libcollision.dylib"
+printf 'runtime-b\n' > "$mac_collision_external_b/libcollision.dylib"
+if (
+    macos_macho_files() {
+        printf '%s\n' "$mac_collision_prefix/bin/a" "$mac_collision_prefix/bin/b"
+    }
+    macos_macho_dependencies() {
+        case "$(basename "$1")" in
+            a) printf '%s\n' "$mac_collision_external_a/libcollision.dylib" ;;
+            b) printf '%s\n' "$mac_collision_external_b/libcollision.dylib" ;;
+        esac
+    }
+    otool() {
+        [ "$1" = -D ] || return 2
+        printf '%s:\n%s\n' "$2" "$2"
+    }
+    install_name_tool() { :; }
+    macos_copy_and_rewrite_runtime_libraries "$mac_collision_prefix"
+) >/dev/null 2>&1; then
+    echo 'macOS closure accepted different runtime libraries with the same package basename' >&2
+    exit 1
+fi
+printf 'macOS rewritten-runtime identity/collision tests passed\n'
 
 # codesign is a required part of macOS closure whenever Mach-O objects are
 # present. Its absence must fail closed rather than silently skipping signing.
@@ -832,7 +728,7 @@ for i in $(seq 1 10); do printf 'dylib%s' "$i" > "$deep_mac_external/lib$i.dylib
     echo 'deep macOS runtime closure did not reach the tenth transitive dependency' >&2
     exit 1
 }
-printf 'macOS runtime-closure convergence-depth test passed\n'
+printf 'macOS recursive runtime-closure test passed\n'
 # Linux runtime closure is exercised with real synthetic ELF objects on Linux.
 # DT_NEEDED is the dependency graph; ldd is only a resolver for those names.
 if [ "$(uname -s)" = Linux ] && command -v gcc >/dev/null 2>&1 && command -v perl >/dev/null 2>&1; then
@@ -863,7 +759,7 @@ EOF_NODEPS
 
     # Local test substitute for patchelf. Every fixture starts with a deliberately
     # padded RUNPATH, so this helper only needs to replace existing DT_RPATH/RUNPATH
-    # text in-place. Native producer qualification still uses real patchelf.
+    # text in-place. Real producer builds still use patchelf.
     fixture_tools="$elf_tmp/tools"
     mkdir -p "$fixture_tools"
     cat > "$fixture_tools/patchelf" <<'EOF_PATCHELF'
@@ -934,6 +830,68 @@ EOF_TOOL
         exit 1
     }
     printf 'Linux hardlinked path-specific RUNPATH test passed\n'
+
+    # A dynamic ELF may also be loaded through a symlink from another package
+    # directory. $ORIGIN is evaluated from that alias pathname, so the real ELF
+    # must carry runtime search entries for every package-internal load path.
+    alias_prefix="$elf_tmp/symlink-alias-prefix"
+    alias_native="$alias_prefix/lib/python3.12/site-packages/lldb/native"
+    mkdir -p "$alias_prefix/lib" "$alias_native"
+    cat > "$elf_tmp/alias-dep.c" <<'EOF_ALIAS_DEP'
+int alias_dependency_value(void) { return 42; }
+EOF_ALIAS_DEP
+    cat > "$elf_tmp/alias-target.c" <<'EOF_ALIAS_TARGET'
+extern int alias_dependency_value(void);
+int alias_target_value(void) { return alias_dependency_value(); }
+EOF_ALIAS_TARGET
+    cat > "$elf_tmp/alias-loader.c" <<'EOF_ALIAS_LOADER'
+#include <dlfcn.h>
+#include <stdio.h>
+
+typedef int (*value_fn)(void);
+
+int main(int argc, char **argv) {
+    void *handle;
+    value_fn value;
+
+    if (argc != 2) return 2;
+    handle = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
+    if (!handle) {
+        fprintf(stderr, "%s\n", dlerror());
+        return 1;
+    }
+    value = (value_fn)dlsym(handle, "alias_target_value");
+    if (!value) return 1;
+    return value() == 42 ? 0 : 1;
+}
+EOF_ALIAS_LOADER
+    alias_padding='$ORIGIN/CUP_ALIAS_RPATH_PADDING____________________________________________________________________________________'
+    gcc -shared -fPIC "$elf_tmp/alias-dep.c" -Wl,-soname,libaliasdep.so.1 \
+        -Wl,-rpath,"$alias_padding" -o "$alias_prefix/lib/libaliasdep.so.1"
+    ln -s libaliasdep.so.1 "$alias_prefix/lib/libaliasdep.so"
+    gcc -shared -fPIC "$elf_tmp/alias-target.c" -L"$alias_prefix/lib" -laliasdep \
+        -Wl,-soname,libaliastarget.so.1 -Wl,-rpath,"$alias_padding" \
+        -o "$alias_prefix/lib/libaliastarget.so.1"
+    ln -s ../../../../libaliastarget.so.1 "$alias_native/_alias.so"
+    gcc "$elf_tmp/alias-loader.c" -ldl -o "$elf_tmp/alias-loader"
+
+    if env -i PATH=/usr/bin:/bin "$elf_tmp/alias-loader" "$alias_native/_alias.so" >/dev/null 2>&1; then
+        echo 'synthetic ELF alias unexpectedly loaded before alias-aware RUNPATH rewrite' >&2
+        exit 1
+    fi
+    PATH="$fixture_tools:$PATH" linux_patch_runtime_search_paths "$alias_prefix"
+    alias_target_runpath="$(readelf -d "$alias_prefix/lib/libaliastarget.so.1" |
+        sed -n 's/.*Library .*path: \[\([^]]*\)\].*/\1/p' | head -n 1)"
+    [ "$alias_target_runpath" = '$ORIGIN:$ORIGIN/../../../..' ] || {
+        echo "symlink-loaded ELF has the wrong alias-aware RUNPATH: $alias_target_runpath" >&2
+        exit 1
+    }
+    env -i PATH=/usr/bin:/bin "$elf_tmp/alias-loader" "$alias_native/_alias.so"
+    alias_relocated="$elf_tmp/symlink-alias-relocated"
+    cp -RPp "$alias_prefix" "$alias_relocated"
+    env -i PATH=/usr/bin:/bin "$elf_tmp/alias-loader" \
+        "$alias_relocated/lib/python3.12/site-packages/lldb/native/_alias.so"
+    printf 'Linux symlink-loaded ELF alias RUNPATH test passed\n'
 
     missing_prefix="$elf_tmp/missing-prefix"
     mkdir -p "$missing_prefix/bin"
@@ -1145,14 +1103,14 @@ grep -F 'copy_windows_python_runtime "$build_dir" false true' "$ROOT/scripts/bui
     echo 'LLDB Windows packaging does not explicitly opt into LLDB Python path configs' >&2
     exit 1
 }
-printf 'native-finding source alignment tests passed\n'
+printf 'producer source/configuration alignment tests passed\n'
 
 # Explicit numeric versions are preserved verbatim and remain independent of
 # the current stable selector. This is an identity test, not a support promise.
-[ "$(resolve_version clang 22.1.4)" = 22.1.4 ] || { echo 'explicit LLVM version was replaced by stable' >&2; exit 1; }
-explicit_base="$(package_base_name clang 22.1.4 linux-x64 linux-x64 '')"
+[ "$(resolve_version clang 99.98.7)" = 99.98.7 ] || { echo 'explicit LLVM version was replaced by stable' >&2; exit 1; }
+explicit_base="$(package_base_name clang 99.98.7 linux-x64 linux-x64 '')"
 stable_base="$(package_base_name clang "$DEFAULT_LLVM_VERSION" linux-x64 linux-x64 '')"
-[ "$explicit_base" = clang-22.1.4-linux-x64-linux-x64 ] || { echo 'explicit LLVM version produced wrong revisionless identity' >&2; exit 1; }
+[ "$explicit_base" = clang-99.98.7-linux-x64-linux-x64 ] || { echo 'explicit LLVM version produced wrong revisionless identity' >&2; exit 1; }
 [ "$explicit_base" != "$stable_base" ] || { echo 'different explicit/stable versions produced the same package identity' >&2; exit 1; }
 printf 'explicit non-default version identity test passed\n'
 

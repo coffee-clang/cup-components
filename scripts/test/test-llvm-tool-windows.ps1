@@ -202,7 +202,12 @@ Expand-Archive -Force "dist/$packageBase.zip" dist/package-test
 $root = Join-Path (Resolve-Path dist/package-test) $packageBase
 Get-Content "$root\info.txt"
 
-pwsh scripts/test/package-capabilities-windows.ps1 -Root $root -Tool $Tool
+$pwsh = (Get-Command pwsh -ErrorAction Stop).Source
+Invoke-Native -FilePath $pwsh -ArgumentList @(
+    'scripts/test/package-capabilities-windows.ps1',
+    '-Root', $root,
+    '-Tool', $Tool
+)
 Assert-NoLlvmDevelopmentPayload
 
 # Capture build-runner compilers before isolating PATH. They are used only to
@@ -337,7 +342,7 @@ int main(void) {
         Invoke-OptionalNative -FilePath "$root\bin\ld64.lld.exe" -ArgumentList @('--version')
 
         if (-not $runnerClang) {
-            throw 'runner clang.exe is required to produce an independent COFF object for lld-link qualification'
+            throw 'runner clang.exe is required to produce an independent COFF object for the lld-link test'
         }
         $lldSource = Join-Path $testDir 'lld-link-test.c'
         $lldObject = Join-Path $testDir 'lld-link-test.obj'
@@ -372,7 +377,7 @@ int main(void) {
         } elseif ($runnerClang) {
             $lldbFixtureCompiler = $runnerClang.Source
         } else {
-            throw 'runner C compiler is required for LLDB functional qualification'
+            throw 'runner C compiler is required for the LLDB functional test'
         }
 
         $source = Join-Path $testDir 'lldb-test.c'
@@ -486,7 +491,23 @@ return 0;
     }
 
     'clang-tidy' {
+        foreach ($required in @(
+            "$root\bin\clang-tidy.exe",
+            "$root\bin\clang-apply-replacements.exe",
+            "$root\bin\run-clang-tidy.bat",
+            "$root\bin\clang-tidy-diff.bat",
+            "$root\bin\cup-python3.exe",
+            "$root\libexec\llvm-python-scripts\run-clang-tidy.py",
+            "$root\libexec\llvm-python-scripts\clang-tidy-diff.py"
+        )) {
+            if (-not (Test-Path $required)) { throw "required clang-tidy package path missing: $required" }
+        }
+        if (Test-Path "$root\share\clang") { throw 'non-deliberate share/clang payload leaked into clang-tidy package' }
+
         Invoke-Native -FilePath "$root\bin\clang-tidy.exe" -ArgumentList @('--version')
+        Invoke-Native -FilePath "$root\bin\clang-apply-replacements.exe" -ArgumentList @('--version')
+        Invoke-Native -FilePath "$root\bin\run-clang-tidy.bat" -ArgumentList @('--help')
+        Invoke-Native -FilePath "$root\bin\clang-tidy-diff.bat" -ArgumentList @('--help')
 
         $checksOutput = Invoke-NativeCapture -FilePath "$root\bin\clang-tidy.exe" -ArgumentList @(
             '--list-checks',
@@ -495,7 +516,10 @@ return 0;
         Assert-OutputContains -Output $checksOutput -Pattern 'clang-analyzer-core'
 
         $source = Join-Path $testDir 'tidy-test.c'
-        'int main(void) { return 0; }' | Set-Content $source
+        @'
+#include <stddef.h>
+int main(void) { return (int)sizeof(size_t); }
+'@ | Set-Content $source
         Invoke-Native -FilePath "$root\bin\clang-tidy.exe" -ArgumentList @(
             '--checks=clang-analyzer-*',
             $source,
@@ -579,5 +603,8 @@ switch ($Tool) {
         Invoke-Native -FilePath "$relocatedRoot\bin\clang-tidy.exe" -ArgumentList @(
             '--checks=clang-analyzer-*', $source, '--', '-std=c11'
         )
+        Invoke-Native -FilePath "$relocatedRoot\bin\clang-apply-replacements.exe" -ArgumentList @('--version')
+        Invoke-Native -FilePath "$relocatedRoot\bin\run-clang-tidy.bat" -ArgumentList @('--help')
+        Invoke-Native -FilePath "$relocatedRoot\bin\clang-tidy-diff.bat" -ArgumentList @('--help')
     }
 }

@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+export HOST_PLATFORM=linux-x64
+export TARGET_PLATFORM=linux-x64
+export CUP_ROOT="$TMP/root"
+export CUP_WORK_DIR="$TMP/work"
+export PREFIX="$TMP/package"
+mkdir -p "$CUP_ROOT" "$CUP_WORK_DIR" "$PREFIX"
+
+# shellcheck source=/dev/null
+source "$ROOT/scripts/package/package-common.sh"
+
+PY_PREFIX="$TMP/python"
+PY_BIN="$PY_PREFIX/bin/python3.12"
+PY_CFG="$PY_PREFIX/bin/python3.12-config"
+STDLIB="$PY_PREFIX/lib/python3.12"
+mkdir -p \
+    "$PY_PREFIX/bin" \
+    "$STDLIB/config-3.12-x86_64-linux-gnu" \
+    "$STDLIB/config-3.12d-x86_64-linux-gnu" \
+    "$STDLIB/site-packages" \
+    "$TMP/host-python-site" \
+    "$PREFIX/lib/python3.12/site-packages"
+
+cat > "$PY_BIN" <<'PYEOF'
+#!/usr/bin/env sh
+if [ "${1:-}" = "--version" ]; then
+    echo 'Python 3.12.3'
+    exit 0
+fi
+exit 2
+PYEOF
+chmod 0755 "$PY_BIN"
+cat > "$PY_CFG" <<EOF2
+#!/usr/bin/env sh
+[ "\${1:-}" = "--prefix" ] || exit 2
+printf '%s\\n' '$PY_PREFIX'
+EOF2
+chmod 0755 "$PY_CFG"
+
+printf 'runtime\n' > "$STDLIB/json.py"
+printf 'native-runtime\n' > "$STDLIB/_sysconfigdata_test.py"
+printf 'internal-target\n' > "$STDLIB/_sysconfigdata__x86_64-linux-gnu.py"
+ln -s '_sysconfigdata__x86_64-linux-gnu.py' \
+    "$STDLIB/_sysconfigdata__linux_x86_64-linux-gnu.py"
+printf 'host-site-customization\n' > "$TMP/host-python-site/sitecustomize.py"
+ln -s "$TMP/host-python-site/sitecustomize.py" "$STDLIB/sitecustomize.py"
+printf 'dev-archive\n' > "$STDLIB/config-3.12-x86_64-linux-gnu/libpython3.12.a"
+printf 'dev-object\n' > "$STDLIB/config-3.12d-x86_64-linux-gnu/python.o"
+printf 'source-site-package\n' > "$STDLIB/site-packages/should-not-copy.py"
+printf 'preserved-lldb-module\n' > "$PREFIX/lib/python3.12/site-packages/lldb.py"
+
+copy_posix_python_runtime "$PY_BIN" true "bin/python3.12"
+
+[ -f "$PREFIX/lib/python3.12/json.py" ] || {
+    echo 'missing runtime stdlib entry' >&2
+    exit 1
+}
+[ -f "$PREFIX/lib/python3.12/_sysconfigdata_test.py" ] || {
+    echo 'missing runtime sysconfig data' >&2
+    exit 1
+}
+[ -L "$PREFIX/lib/python3.12/_sysconfigdata__linux_x86_64-linux-gnu.py" ] || {
+    echo 'package-internal Python alias was not preserved as a symlink' >&2
+    exit 1
+}
+[ "$(readlink "$PREFIX/lib/python3.12/_sysconfigdata__linux_x86_64-linux-gnu.py")" = \
+    '_sysconfigdata__x86_64-linux-gnu.py' ] || {
+    echo 'package-internal Python alias target changed' >&2
+    exit 1
+}
+[ -f "$PREFIX/lib/python3.12/_sysconfigdata__linux_x86_64-linux-gnu.py" ] || {
+    echo 'package-internal Python alias does not resolve to its copied target' >&2
+    exit 1
+}
+[ ! -e "$PREFIX/lib/python3.12/sitecustomize.py" ] && \
+    [ ! -L "$PREFIX/lib/python3.12/sitecustomize.py" ] || {
+    echo 'host sitecustomize leaked into package runtime' >&2
+    exit 1
+}
+[ -f "$PREFIX/lib/python3.12/site-packages/lldb.py" ] || {
+    echo 'pre-existing package module was not preserved' >&2
+    exit 1
+}
+[ ! -e "$PREFIX/lib/python3.12/site-packages/should-not-copy.py" ] || {
+    echo 'source site-packages leaked into package runtime' >&2
+    exit 1
+}
+[ ! -e "$PREFIX/lib/python3.12/config-3.12-x86_64-linux-gnu" ] || {
+    echo 'CPython development config directory leaked into package runtime' >&2
+    exit 1
+}
+[ ! -e "$PREFIX/lib/python3.12/config-3.12d-x86_64-linux-gnu" ] || {
+    echo 'debug-CPython development config directory leaked into package runtime' >&2
+    exit 1
+}
+[ -x "$PREFIX/bin/python3.12" ] || {
+    echo 'requested package-owned Python executable was not copied' >&2
+    exit 1
+}
+
+package_verify_staging_links "$PREFIX" "$HOST_PLATFORM" >/dev/null || {
+    echo 'corrected Python runtime failed staging-link verification' >&2
+    exit 1
+}
+
+# A load-bearing enumeration failure must not be hidden by a process substitution.
+if (
+    find() { return 37; }
+    copy_posix_python_runtime "$PY_BIN"
+); then
+    echo 'Python runtime enumeration failure was incorrectly accepted' >&2
+    exit 1
+fi
+
+echo 'PYTHON_RUNTIME_DEVELOPMENT_EXCLUSION=PASS'
+echo 'PYTHON_RUNTIME_SITECUSTOMIZE_EXCLUSION=PASS'
+echo 'PYTHON_RUNTIME_INTERNAL_ALIAS_PRESERVATION=PASS'
+echo 'PYTHON_RUNTIME_STAGING_LINK_VERIFY=PASS'
+echo 'PYTHON_RUNTIME_ENUMERATION_FAILURE_PROPAGATION=PASS'

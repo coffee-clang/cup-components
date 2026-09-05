@@ -1,8 +1,8 @@
 # Packages
 
-A `cup-components` package is the complete tool distribution consumed by `cup`. It combines the built tool, the runtime files it needs on its host platform, semantic metadata, an exact physical manifest and three equivalent archive representations.
+A `cup-components` package is the complete directory tree that `cup` downloads and installs for one tool identity.
 
-For package identity and supported host/target combinations, see [Specification](SPECIFICATION.md).
+This document describes the rules shared by every package. The files and capabilities specific to GCC, GNU ld, GDB, the LLVM-family tools and Valgrind are documented in [Tool packages](TOOLS.md).
 
 ## Package root
 
@@ -15,7 +15,7 @@ Every archive contains one top-level directory named after the package identity:
   ... tool payload ...
 ```
 
-Tool payload commonly uses directories such as:
+Typical payload directories include:
 
 ```text
 bin/
@@ -26,34 +26,100 @@ share/
 <target-specific directories>/
 ```
 
-The exact tree depends on the tool. A package is a usable tool distribution, not a requirement to reproduce every development file installed by an upstream monorepo.
+Not every package uses every directory.
 
-## Object model
+The final package is selected from the upstream installation according to the responsibilities of the requested tool. Files are not included merely because an upstream `make install` or CMake install step produced them.
 
-The physical object model is platform-specific.
+## What can be included
 
-POSIX packages may contain:
+A file or directory belongs in the final package when it has a concrete package responsibility, for example:
+
+- a public executable;
+- a helper required by a public executable;
+- a required non-system runtime library;
+- runtime data used by the tool;
+- a target sysroot or target runtime that is part of the toolchain;
+- public headers deliberately distributed by the tool package;
+- package metadata.
+
+Build-only material is removed when it is not required by the distributed tool. Examples can include development CMake files, static development archives, internal headers and build-tree metadata.
+
+## Filesystem object model
+
+The admitted filesystem objects depend on the host platform.
+
+POSIX packages can contain:
 
 - directories;
 - regular files;
-- relative internal symbolic links whose finite resolution chain stays inside the package and ends at a regular file.
+- relative symbolic links that stay inside the package and eventually resolve to a regular file.
 
-Windows packages may contain:
+Windows packages contain:
 
 - directories;
 - regular files.
 
-POSIX symbolic links are rejected if they are absolute, escape the package, are dangling, are cyclic or resolve to a directory. Link-target text must also satisfy the shared package path grammar.
+A POSIX symbolic link is rejected if it:
 
-Hardlink inode identity is not part of the logical package contract. Hardlinked pathnames are represented as regular-file paths, and packaging or archive formats may preserve or materialize inode sharing. When a required pathname-specific transformation needs independent bytes, the producer may materialize only that pathname before applying the transformation. FIFOs, sockets, device nodes and other special filesystem objects are rejected.
+- is absolute;
+- escapes the package root;
+- is dangling;
+- forms a cycle;
+- resolves to a directory;
+- uses a path that violates the shared package path grammar.
 
-Before the manifest is written, directory and executable-file modes are normalized to `0755`; non-executable regular files are normalized to `0644`.
+Hardlink inode sharing is not part of package identity. Two package paths can contain the same bytes regardless of whether the temporary staging tree happened to store them in one inode. If a pathname needs a different runtime rewrite, the packager can materialize that pathname as an independent regular file before changing it.
 
-## Semantic metadata
+FIFOs, sockets, device nodes and other special filesystem objects are rejected.
 
-`info.txt` uses strict `key=value` records. It describes what the package is and what capabilities it exposes; it is not the physical file inventory.
+Before archive creation:
 
-Required common fields are:
+- directories use mode `0755`;
+- executable regular files use mode `0755`;
+- non-executable regular files use mode `0644`.
+
+## Package paths
+
+Every path stored inside a package is relative to the package root and must satisfy one cross-platform grammar. This prevents an archive produced on one operating system from containing names that are unsafe or ambiguous on another.
+
+A package path:
+
+- cannot be absolute;
+- cannot end with `/`;
+- cannot contain empty, `.` or `..` path segments;
+- cannot contain newlines, backslashes, colons or Windows-reserved punctuation such as `*`, `?`, `"`, `<`, `>` or `|`;
+- cannot use a segment ending in `.`;
+- cannot use Windows reserved device names such as `CON`, `PRN`, `AUX`, `NUL`, `COM1` or `LPT1`;
+- uses printable ASCII package-name characters without whitespace inside each segment;
+- must be shorter than the shared CUP package-path limit of 1024 bytes.
+
+The final package also rejects case-insensitive path collisions. For example, `bin/Tool` and `bin/tool` cannot both exist even if the current build filesystem would allow them.
+
+The directory in which `cup` installs the package is not subject to this internal-path rule. The package root itself can therefore be relocated below a parent path that contains spaces; only the relative paths stored inside the package follow the package grammar.
+
+## `info.txt`
+
+`info.txt` contains semantic package metadata as strict `key=value` records.
+
+It answers questions such as:
+
+- Which tool is this?
+- Which version is it?
+- On which platform does it run?
+- Which platform does it target?
+- Which public commands exist?
+- Which capabilities were included?
+- Which source archive was built?
+
+Each metadata line contains exactly one non-empty value in the form:
+
+```text
+key=value
+```
+
+Keys can contain letters, digits, `_`, `.`, `+` and `-`. Empty values and duplicate keys are rejected.
+
+The common required fields are:
 
 ```text
 package.component
@@ -73,11 +139,30 @@ build.source_policy
 source.primary.name
 source.primary.version
 source.primary.url
+source.primary.sha256
 ```
 
-`package.revision` is required for revision-bearing GCC packages and absent from revisionless packages.
+GCC also carries `package.revision` because GCC is revision-bearing. Revisionless packages do not write that key.
 
-At least one executable entry is described with `entry.*`. Other tool-specific metadata is grouped under:
+A GCC package must also record the composition identified by that revision. Native GCC packages require `bundle.components=binutils` plus `bundle.binutils.version`, `bundle.binutils.url` and `bundle.binutils.sha256`. Windows-target GCC packages require `bundle.components=binutils,mingw-w64` and the corresponding `bundle.mingw-w64.*` fields as well. Component versions are numeric dotted versions and component digests are lowercase SHA-256 values. This metadata records the composition actually selected for the build; it is not reconstructed from the GCC version.
+
+`package.mode` must be `self-contained`, `package.formats` must match the archive formats produced for the host, and `source.primary.sha256` must be a lowercase 64-character SHA-256 value.
+
+The primary source metadata is also bound to the package being finalized. `source.primary.name` must identify the upstream project for the selected tool, and `source.primary.version` must equal the selected main package version. GCC therefore records the GCC source version without the package `revN` suffix; GNU ld records Binutils; every LLVM-family package records `llvm-project`.
+
+`package.component` is derived from the tool:
+
+| Tool | Component |
+| --- | --- |
+| GCC, Clang | `compiler` |
+| GDB, LLDB | `debugger` |
+| GNU ld, LLD | `linker` |
+| clang-format | `formatter` |
+| clang-tidy | `linter` |
+| clangd | `language-server` |
+| Valgrind | `analyzer` |
+
+Tool-specific metadata uses these namespaces:
 
 ```text
 entry.*
@@ -86,21 +171,28 @@ contents.*
 config.*
 ```
 
-### Entries
+### Entry metadata
 
-`entry.*` maps a public command to a path relative to the package root. Examples include:
+`entry.*` maps a public command name to a path relative to the package root.
+
+Examples:
 
 ```text
 entry.gcc=bin/gcc
 entry.g++=bin/g++
 entry.clang=bin/clang
+entry.ld=bin/ld
 entry.lld=bin/ld.lld
 entry.gdb=bin/gdb
 ```
 
-### Features
+At least one executable entry is required. Every declared `entry.*` path must satisfy the package path grammar and point to a real package command. On POSIX it must also be executable; an admitted symbolic-link command is allowed only when its complete internal link chain resolves safely to a regular file.
 
-`features.*` describes capabilities that were built and detected in the staged package, for example:
+### Capability metadata
+
+`features.*` records capabilities exposed by the completed package. The exact keys depend on the tool.
+
+Examples include:
 
 ```text
 features.c=true
@@ -112,30 +204,17 @@ features.link_coff=true
 features.background_index=true
 ```
 
-### Contents and configuration
+### Content and configuration metadata
 
-`contents.*` describes notable payload groups or runtime characteristics, while `config.*` records relevant build choices. These fields remain semantic summaries; `manifest.txt` is the exact physical inventory.
+`contents.*` summarizes important payload groups. `config.*` describes build choices that are useful for interpreting the package.
 
-Examples include:
+These fields are summaries. The exact physical inventory is always `manifest.txt`.
 
-```text
-contents.includes_lld=true
-contents.includes_mingw=true
-contents.libstdcxx=true
-contents.runtime_dir=libexec/valgrind
+## `manifest.txt`
 
-config.languages=c,c++,lto
-config.multilib=false
-config.nls=false
-config.llvm_projects=clang;lld
-config.llvm_targets=X86
-```
+`manifest.txt` is generated only after the package tree and `info.txt` have reached their final form.
 
-## Exact manifest
-
-`manifest.txt` is written after the package tree and `info.txt` are final.
-
-The current format is:
+The current format is `2`:
 
 ```text
 format=2
@@ -145,19 +224,23 @@ f\t0755\t<lowercase-sha256>\t<relative-path>
 l\t-\t<lowercase-sha256-of-link-target-text>\t<relative-path>
 ```
 
-Records are sorted by bytewise relative path and inventory every descendant except `manifest.txt` itself.
+The record types are:
 
-- `d` records a directory and its normalized mode.
-- `f` records a regular file, normalized mode and SHA-256 digest.
-- `l` records an admitted symbolic link and the SHA-256 digest of its exact link-target text.
+- `d` — directory and normalized mode;
+- `f` — regular file, normalized mode and SHA-256 of its bytes;
+- `l` — admitted symbolic link and SHA-256 of the exact link-target text.
 
-The regular file reached by a symbolic link is present as its own manifest record. Package paths are constrained by the shared CUP path grammar, including collision checks. The producer regenerates and verifies the manifest before archive creation.
+Records are sorted by relative path. Every descendant of the package root is listed except `manifest.txt` itself, because a file cannot include its own final digest without becoming self-referential.
 
-The manifest is the package's exact local ownership/drift baseline. It does not claim protection against a process with the same user permissions that can rewrite both payload and metadata.
+A symbolic link's final regular-file target has its own separate manifest record.
+
+The producer writes the manifest twice from the finalized tree and compares the results before archive creation. Package validation later extracts each archive and independently regenerates the manifest from the extracted tree. This checks that the archive really represents the same package object graph described by `manifest.txt`.
+
+The manifest is therefore the exact reference inventory for the installed package tree and can be used to detect missing, changed or unexpected package paths. It does not make the package immutable to a process that already has permission to rewrite both the payload and its metadata.
 
 ## Archive formats
 
-Every package is emitted as:
+Every package is emitted in three formats:
 
 ```text
 <package-base>.tar.xz
@@ -165,146 +248,111 @@ Every package is emitted as:
 <package-base>.zip
 ```
 
-All three archives represent the same logical object graph: path set, object semantics, regular-file contents, relevant modes, symbolic-link semantics and manifest agreement. Hardlink inode sharing is not part of archive parity.
+The three archives must represent the same logical package:
 
-POSIX ZIP creation preserves admitted symbolic links rather than dereferencing them. Windows packages contain no symbolic links, so the Windows object graph is directory/regular-file only in every format.
+- the same relative paths;
+- the same directory/file/link semantics;
+- the same regular-file bytes;
+- the same relevant file modes;
+- the same symbolic-link targets on POSIX;
+- the same `manifest.txt` result.
 
-The finalizer generates `SHA256SUMS` after all three archives exist. The file contains exactly one digest for each archive and is verified before upload or publication.
+Hardlink inode sharing does not have to be identical between formats.
 
-## Self-contained packages
+POSIX ZIP packages preserve admitted symbolic links instead of replacing them with the target bytes. Windows packages do not contain symbolic links.
 
-`self-contained` describes the host-process runtime boundary.
+After all three archives are created, the finalizer writes `SHA256SUMS` with exactly one SHA-256 entry for each archive and verifies that file before the build continues.
 
-A package includes non-base host runtime dependencies needed by its tool, while deliberately relying on the platform's base/system ABI. It does **not** mean that every operating-system library or every possible target sysroot is embedded.
+## Self-contained package boundary
 
-The external base is:
+Self-contained means that the packaged host process does not require undeclared non-system runtime files from the build machine.
 
-| Host | Deliberate external base |
+The operating system still supplies its normal base runtime:
+
+| Host | Operating-system-provided runtime |
 | --- | --- |
 | Linux | glibc and loader facilities |
-| macOS | Apple system libraries under `/usr/lib` and `/System/Library` |
+| macOS | Apple system libraries in `/usr/lib` and `/System/Library` |
 | Windows | Windows system DLLs |
 
-Target runtimes are a separate concern. GCC targeting Windows, for example, carries the MinGW-w64 target layout because that is compiler payload, not because Windows is the Linux host's runtime environment.
+A required runtime dependency outside that base must either:
+
+- already belong to the selected package tree;
+- be copied into the package by runtime closure; or
+- be removed from the runtime graph by the tool-specific build/package design.
+
+Target runtimes are a separate concept. For example, a GCC package that runs on Linux and targets Windows carries MinGW-w64 target files because those files belong to the compiler's target toolchain.
 
 ## Relocatability
 
-Build and staging paths are temporary. A finished package must remain usable after extraction below the component root selected by `cup`.
+A completed package must work after `cup` extracts it below the installation directory chosen for that package.
 
-Relocatability therefore requires both:
+The temporary source, build and staging paths must therefore not become runtime requirements.
 
-1. package-internal paths that do not encode the CI staging root;
-2. host runtime dependencies that resolve from the relocated package or from the deliberate system/base ABI.
+Relocatability has two parts:
 
-The exact mechanism differs by executable format.
+1. internal configuration and data paths must refer to the package itself rather than the temporary build tree;
+2. runtime libraries must resolve either from package-owned paths or from the operating-system-provided runtime boundary.
 
-## Runtime dependencies
+The implementation differs by executable format.
 
-Runtime closure starts from the dynamic objects inside the package, follows their host-process dependencies recursively, packages non-base dependencies and verifies the resulting graph.
+## Runtime closure
 
-### Linux
+Runtime closure starts from the executable and library objects that already belong to the selected package. It follows their dynamic runtime dependencies recursively and adds only required non-system dependencies.
 
-Dynamic ELF files are inspected recursively. `DT_NEEDED` entries define the dependency graph; `ldd` is used only to resolve those dependency names. A dynamic ELF with no `DT_NEEDED` entries therefore has an empty dependency set rather than a diagnostic-text dependency.
+The closure does not decide what the product is. Tool-specific package-selection roots are selected first; closure only makes those roots complete.
 
-Glibc and loader facilities remain external. A required non-base dependency that is external to the package is copied into package `lib/`. A dependency already supplied by the upstream package layout stays in that layout rather than being moved or duplicated merely to fit the closure implementation.
+### Linux ELF
 
-For each dynamic ELF, the producer derives the package-owned directories that contain its required non-base dependencies and replaces build/staging search paths with equivalent package-relative `$ORIGIN` RUNPATH entries. This preserves upstream runtime layouts such as a tool-provided `lib64` when they are actually needed. If hardlinked pathnames require different RUNPATH bytes, the producer materializes only the pathname being rewritten. The dependency walk is then repeated and every non-base dependency accepted as package-owned during discovery must still resolve inside the package after rewriting.
+Linux executables and shared libraries use the ELF format.
 
-Dependency discovery ignores ambient builder `LD_LIBRARY_PATH`, so a library available only because of the build environment cannot make an incomplete package appear valid.
+For each dynamic ELF object, `DT_NEEDED` entries define the direct dependency names. `ldd` is used only to resolve those names to files on the current build host. A dynamic ELF with no `DT_NEEDED` entries therefore has no dynamic-library edges to follow.
 
-Packaging uses tools such as `readelf`, `ldd`, `realpath` and `patchelf`; these are builder dependencies, not package revision inputs.
+The closure:
 
-### macOS
+1. reads the required dependency names;
+2. resolves them without relying on an ambient `LD_LIBRARY_PATH`;
+3. leaves glibc/loader dependencies to the operating system;
+4. keeps dependencies that are already package-owned in their existing package layout;
+5. copies other required non-base libraries into the package;
+6. rewrites package runtime search paths to package-relative `$ORIGIN` locations when needed;
+7. repeats the dependency walk until no new package-owned dependency is required;
+8. verifies that every non-base dependency resolves inside the package.
 
-Mach-O dependencies under `/usr/lib` and `/System/Library` remain external system dependencies. Other required dependencies are bundled into the package.
+Tools used by this process include `readelf`, `ldd`, `realpath` and `patchelf`. They are build tools, not package contents.
 
-Package-owned `@rpath` dependencies and absolute non-system load paths are rewritten to deterministic package-relative `@loader_path` references. Bundled Mach-O install IDs are normalized as needed.
+### macOS Mach-O
 
-Mach-O files changed by install-name rewriting are ad-hoc signed before final verification. The current product deployment target is macOS 15.0 for both x64 and arm64.
+macOS executables and dynamic libraries use the Mach-O format.
 
-### Windows
+Dependencies under `/usr/lib` and `/System/Library` are supplied by macOS. Other required dependencies are included in the package.
 
-PE imports are inspected recursively. Windows system DLLs remain external. Required non-system MSYS2/MinGW runtime DLLs are copied from approved builder runtime locations and the dependency walk continues until the package is closed.
+Package-owned `@rpath` dependencies and absolute non-system load paths are rewritten to deterministic package-relative `@loader_path` references. Bundled Mach-O install IDs are normalized when necessary.
 
-Windows packages do not use package symlinks. Python-based tools also carry their required Python runtime files where applicable.
+Mach-O files changed by install-name rewriting are ad-hoc signed before final verification.
+
+### Windows PE
+
+Windows executables and DLLs use the PE format.
+
+The closure follows PE imports recursively. Windows system DLLs remain supplied by the operating system. Required non-system MSYS2/MinGW runtime DLLs are copied into the package and inspected in turn until the dependency graph is complete.
+
+Windows packages use regular files rather than package symbolic links.
 
 ## Python runtime
 
-Python support in GDB and LLDB is part of those upstream tool capabilities. It is separate from repository automation.
+Python can be a genuine runtime capability of a distributed tool.
 
-GDB packages include the Python runtime/standard-library material required by the configured GDB build. LLDB packages similarly include the Python runtime pieces required by LLDB and configure package-relative discovery where supported by the platform.
+GDB and LLDB include Python support. LLVM helper commands such as `git-clang-format`, `run-clang-tidy` and `clang-tidy-diff` can also require Python when those helpers are included.
 
-The presence of runtime Python does not make Python a `cup-components` scripting language and does not make the Python version a package revision by itself.
+When package-owned Python is required, the producer copies the interpreter and the standard-library/runtime material needed by the selected tool. Development-only Python configuration directories are excluded from the final package.
 
-## GCC packages
-
-GCC packages include the compiler drivers, C/C++ frontend support, LTO, the target runtime layout and Binutils required by the package composition.
-
-Native Linux GCC packages include:
-
-- GCC C and C++ support;
-- LTO;
-- libstdc++;
-- the OpenMP runtime required by the current recipe;
-- sanitizer runtime files for native Linux targets;
-- Binutils in the GCC target layout.
-
-A native GCC target directory may use an upstream canonical triple such as `x86_64-pc-linux-gnu` even though the package target is `linux-x64`. That is an internal GCC/Binutils target name, not a second package platform.
-
-Windows-target GCC packages include:
-
-- Binutils for `x86_64-w64-mingw32`;
-- MinGW-w64 headers and CRT;
-- winpthreads;
-- target-prefixed compiler and Binutils entry points;
-- the target sysroot/runtime layout required to produce Windows programs.
-
-## LLVM-family packages
-
-The LLVM source release is shared, but the producer emits separate command-line product packages:
+For POSIX LLDB, the packaged interpreter path is derived from the Python version selected by the build, for example:
 
 ```text
-clang
-clang-format
-clang-tidy
-clangd
-lld
-lldb
+bin/python3.12
 ```
 
-Project selection is:
+The package does not rely on global `PYTHONHOME`, `PYTHONPATH` or `LD_LIBRARY_PATH` settings to make that runtime work.
 
-```text
-clang        -> clang;lld
-clang-format -> clang
-clang-tidy   -> clang;clang-tools-extra
-clangd       -> clang;clang-tools-extra
-lld          -> lld
-lldb         -> clang;lld;lldb
-```
-
-The upstream install can contain a broad LLVM development SDK. The producer removes development API headers, CMake package metadata, development static archives and embedding libraries that are not part of the selected command-line distribution. It retains the selected tools, runtime shared libraries required by them, `lib/clang` resources and tool-specific runtime payload.
-
-Clang packages build compiler runtimes in explicit stages:
-
-```text
-compiler-rt builtins
-libunwind + libc++abi + libc++
-compiler-rt sanitizers/profile
-```
-
-Bundled libc++ is an available capability; it is not forced as the default C++ runtime on every host. On macOS, Clang retains the Mach-O LLD frontend needed by its declared linker/LTO capability. Windows Clang also carries its MinGW target sysroot and driver configuration.
-
-LLDB enables Python and carries the runtime material required by that capability.
-
-## GDB packages
-
-GDB packages enable the supported native feature set, including Python, TUI/readline and the configured compression/XML support. Linux builds also enable the integrations provided by the controlled Linux builder; Intel PT is used for the supported Linux x64 combination.
-
-Package metadata records the resulting features. Python execution is checked before packaging, and `gdbserver` is recorded when the built installation provides it.
-
-## Valgrind packages
-
-Valgrind packages are Linux-only. They retain the core Valgrind tools and use a small wrapper that derives `VALGRIND_LIB` from the relocated package root before launching the installed binary.
-
-MPI wrapping is outside the core package and is configured off. Core `vgdb`/gdbserver functionality is retained, while the optional Python GDB front-end is not part of the package. If `valgrind.pc` is installed, its prefix is rewritten relative to `pcfiledir` rather than the build staging directory.
+Tool-specific Python ownership is documented in [Tool packages](TOOLS.md).

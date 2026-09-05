@@ -8,16 +8,23 @@ source "$REPO_ROOT/scripts/package/package-common.sh"
 usage() {
     cat <<USAGE
 Usage:
-  $0 <version|stable> <host_platform> <target_platform> <revision>
+  $0 <version|stable> <host_platform> <target_platform>
 
 Examples:
-  $0 stable linux-x64 linux-x64 1
-  $0 stable linux-x64 windows-x64 1
-  $0 stable windows-x64 windows-x64 1
+  $0 stable linux-x64 linux-x64
+  $0 stable linux-x64 windows-x64
+  $0 stable windows-x64 windows-x64
+
+Optional GCC composition environment:
+  CUP_GCC_BINUTILS_VERSION=<version|stable>
+  CUP_GCC_MINGW_VERSION=<version|stable>      # Windows targets only
+  CUP_GCC_REVISION=<positive-integer|stable>
+  CUP_BINUTILS_SOURCE_SHA256=<sha256>
+  CUP_MINGW_SOURCE_SHA256=<sha256>            # Windows targets only
 USAGE
 }
 
-if [ "$#" -ne 4 ]; then
+if [ "$#" -ne 3 ]; then
     usage >&2
     exit 2
 fi
@@ -25,16 +32,43 @@ fi
 REQUESTED_VERSION="$1"
 HOST_PLATFORM="$2"
 TARGET_PLATFORM="$3"
-REVISION="$4"
 
 TOOL="gcc"
 COMPONENT="compiler"
 
 VERSION="$(resolve_version gcc "$REQUESTED_VERSION")"
-PACKAGE_VERSION="$(package_version_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
+REQUESTED_BINUTILS_VERSION="${CUP_GCC_BINUTILS_VERSION:-stable}"
+REQUESTED_MINGW_VERSION="${CUP_GCC_MINGW_VERSION:-stable}"
+REQUESTED_REVISION="${CUP_GCC_REVISION:-stable}"
 
-BINUTILS_VERSION="$(resolve_version binutils stable)"
-MINGW_VERSION="$(resolve_version mingw stable)"
+if [ "$REQUESTED_BINUTILS_VERSION" = stable ]; then
+    BINUTILS_VERSION="$DEFAULT_GCC_BINUTILS_VERSION"
+else
+    BINUTILS_VERSION="$(resolve_version binutils "$REQUESTED_BINUTILS_VERSION")"
+fi
+if is_windows_platform "$TARGET_PLATFORM"; then
+    MINGW_VERSION="$(resolve_version mingw "$REQUESTED_MINGW_VERSION")"
+else
+    [ "$REQUESTED_MINGW_VERSION" = stable ] ||
+        die "MinGW-w64 version is only applicable to a Windows target"
+    [ -z "${CUP_MINGW_SOURCE_SHA256:-}" ] ||
+        die "MinGW-w64 source SHA-256 is only applicable to a Windows target"
+    MINGW_VERSION=""
+fi
+
+if [ "$REQUESTED_REVISION" = stable ]; then
+    [ "$VERSION" = "$DEFAULT_GCC_VERSION" ] &&
+        [ "$BINUTILS_VERSION" = "$DEFAULT_GCC_BINUTILS_VERSION" ] &&
+        { ! is_windows_platform "$TARGET_PLATFORM" || [ "$MINGW_VERSION" = "$DEFAULT_GCC_MINGW_VERSION" ]; } ||
+        die "revision=stable is only valid for the configured default GCC composition; select an explicit revision for a custom composition"
+    REVISION="$DEFAULT_GCC_REVISION"
+else
+    package_revision_is_valid "$REQUESTED_REVISION" ||
+        die "invalid GCC package revision: $REQUESTED_REVISION"
+    REVISION="$REQUESTED_REVISION"
+fi
+
+PACKAGE_VERSION="$(package_version_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
 
 HOST_TRIPLE="$(platform_triple "$HOST_PLATFORM")"
 TARGET_TRIPLE="$(platform_triple "$TARGET_PLATFORM")"
@@ -49,7 +83,10 @@ PREFIX="$CUP_STAGE_DIR/$(package_base_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "
 
 GCC_SOURCE_URL="$(source_url_gcc "$VERSION")"
 BINUTILS_SOURCE_URL="$(source_url_binutils "$BINUTILS_VERSION")"
-MINGW_SOURCE_URL="$(source_url_mingw "$MINGW_VERSION")"
+MINGW_SOURCE_URL=""
+if is_windows_platform "$TARGET_PLATFORM"; then
+    MINGW_SOURCE_URL="$(source_url_mingw "$MINGW_VERSION")"
+fi
 
 
 validate_platforms() {
@@ -1191,6 +1228,7 @@ write_gcc_info() {
         "source.primary.name=gcc"
         "source.primary.version=$VERSION"
         "source.primary.url=$GCC_SOURCE_URL"
+        "source.primary.sha256=$(source_archive_sha256 "$GCC_SOURCE_URL" "gcc-$VERSION.tar.xz")"
         "config.languages=c,c++,lto"
         "config.multilib=false"
         "config.nls=false"
@@ -1252,6 +1290,7 @@ write_gcc_info() {
             "bundle.components=$bundle_components"
             "bundle.binutils.version=$BINUTILS_VERSION"
             "bundle.binutils.url=$BINUTILS_SOURCE_URL"
+            "bundle.binutils.sha256=$(source_archive_sha256 "$BINUTILS_SOURCE_URL" "binutils-$BINUTILS_VERSION.tar.xz")"
             "contents.includes_binutils=$includes_binutils"
             "contents.includes_mingw=$includes_mingw"
         )
@@ -1260,6 +1299,7 @@ write_gcc_info() {
             info+=(
                 "bundle.mingw-w64.version=$MINGW_VERSION"
                 "bundle.mingw-w64.url=$MINGW_SOURCE_URL"
+                "bundle.mingw-w64.sha256=$(source_archive_sha256 "$MINGW_SOURCE_URL" "mingw-w64-v$MINGW_VERSION.tar.bz2")"
                 "features.winpthreads=$has_pthread"
             )
         fi
@@ -1281,11 +1321,11 @@ main() {
     rm -rf "$PREFIX"
     mkdir -p "$PREFIX"
 
-    gcc_src="$(prepare_source_tree gcc "$VERSION" "$GCC_SOURCE_URL" "gcc-$VERSION.tar.xz")"
+    gcc_src="$(prepare_source_tree gcc "$VERSION" "$GCC_SOURCE_URL" "gcc-$VERSION.tar.xz" "${CUP_SOURCE_SHA256:-}")"
 
     if is_windows_platform "$TARGET_PLATFORM"; then
-        binutils_src="$(prepare_source_tree binutils "$BINUTILS_VERSION" "$BINUTILS_SOURCE_URL" "binutils-$BINUTILS_VERSION.tar.xz")"
-        mingw_src="$(prepare_source_tree mingw-w64 "$MINGW_VERSION" "$MINGW_SOURCE_URL" "mingw-w64-v$MINGW_VERSION.tar.bz2")"
+        binutils_src="$(prepare_source_tree binutils "$BINUTILS_VERSION" "$BINUTILS_SOURCE_URL" "binutils-$BINUTILS_VERSION.tar.xz" "${CUP_BINUTILS_SOURCE_SHA256:-}")"
+        mingw_src="$(prepare_source_tree mingw "$MINGW_VERSION" "$MINGW_SOURCE_URL" "mingw-w64-v$MINGW_VERSION.tar.bz2" "${CUP_MINGW_SOURCE_SHA256:-}")"
 
         build_bundled_windows_gcc "$gcc_src" "$binutils_src" "$mingw_src"
     else
@@ -1293,12 +1333,15 @@ main() {
             die "unsupported GCC target: $HOST_PLATFORM -> $TARGET_PLATFORM"
         fi
 
-        binutils_src="$(prepare_source_tree binutils "$BINUTILS_VERSION" "$BINUTILS_SOURCE_URL" "binutils-$BINUTILS_VERSION.tar.xz")"
+        binutils_src="$(prepare_source_tree binutils "$BINUTILS_VERSION" "$BINUTILS_SOURCE_URL" "binutils-$BINUTILS_VERSION.tar.xz" "${CUP_BINUTILS_SOURCE_SHA256:-}")"
         build_bundled_native_gcc "$gcc_src" "$binutils_src"
     fi
 
     strip_gcc_package_binaries
     write_gcc_info
+    if is_linux_platform "$HOST_PLATFORM"; then
+        export CUP_REPRODUCIBLE_ARCHIVES=true
+    fi
     create_packages "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION" "$PREFIX"
 }
 

@@ -118,7 +118,12 @@ Expand-Archive -Force "dist/$packageBase.zip" dist/package-test
 $root = Join-Path (Resolve-Path dist/package-test) $packageBase
 Get-Content "$root\info.txt"
 
-pwsh scripts/test/package-capabilities-windows.ps1 -Root $root -Tool 'gdb'
+$pwsh = (Get-Command pwsh -ErrorAction Stop).Source
+Invoke-Native -FilePath $pwsh -ArgumentList @(
+    'scripts/test/package-capabilities-windows.ps1',
+    '-Root', $root,
+    '-Tool', 'gdb'
+)
 
 if (-not (Test-FeatureEnabled -Root $root -Key 'features.tui') -or
     -not (Test-FeatureEnabled -Root $root -Key 'config.tui')) {
@@ -137,11 +142,16 @@ if (($gdbSections | Out-String) -match '(?m)\.debug_') {
     throw 'GDB Windows executable still contains debug-only sections after package stripping'
 }
 
-$nonRelocatableLa = Get-ChildItem -Path $root -Recurse -File -Filter '*.la' | Where-Object {
-    (Get-Content -Raw $_.FullName) -match '\.cup-build|/d/a/cup-components/'
+foreach ($developmentPath in @('include', 'lib\cmake', 'lib64\cmake')) {
+    if (Test-Path (Join-Path $root $developmentPath)) {
+        throw "GDB development payload leaked into Windows package: $developmentPath"
+    }
 }
-if ($nonRelocatableLa) {
-    throw "Non-relocatable libtool metadata remains in package: $($nonRelocatableLa.FullName -join ', ')"
+$developmentArchives = Get-ChildItem -Path $root -Recurse -File | Where-Object {
+    $_.Extension -in @('.a', '.la')
+}
+if ($developmentArchives) {
+    throw "GDB static/libtool development payload leaked into Windows package: $($developmentArchives.FullName -join ', ')"
 }
 
 $testDir = Join-Path $env:TEMP 'cup-gdb-windows-test'

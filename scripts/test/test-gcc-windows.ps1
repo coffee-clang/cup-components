@@ -155,7 +155,12 @@ Expand-Archive -Force "dist/$packageBase.zip" dist/package-test
 $root = Join-Path (Resolve-Path dist/package-test) $packageBase
 Get-Content "$root\info.txt"
 
-pwsh scripts/test/package-capabilities-windows.ps1 -Root $root -Tool 'gcc'
+$pwsh = (Get-Command pwsh -ErrorAction Stop).Source
+Invoke-Native -FilePath $pwsh -ArgumentList @(
+    'scripts/test/package-capabilities-windows.ps1',
+    '-Root', $root,
+    '-Tool', 'gcc'
+)
 Assert-NoNativeWindowsPrefixedBinutilsDuplicates -Root $root
 
 $env:Path = "$root\bin;$env:SystemRoot\System32;$env:SystemRoot"

@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CUP_REPO_OWNER="${CUP_REPO_OWNER:-coffee-clang}"
-CUP_REPO_NAME="${CUP_REPO_NAME:-cup}"
-
 CUP_ROOT="${CUP_ROOT:-$(pwd)}"
 CUP_WORK_DIR="${CUP_WORK_DIR:-$CUP_ROOT/.cup-build}"
 CUP_SRC_DIR="${CUP_SRC_DIR:-$CUP_WORK_DIR/src}"
 CUP_BUILD_DIR="${CUP_BUILD_DIR:-$CUP_WORK_DIR/build}"
 CUP_STAGE_DIR="${CUP_STAGE_DIR:-$CUP_WORK_DIR/stage}"
 CUP_OUT_DIR="${CUP_OUT_DIR:-$CUP_ROOT/dist}"
+CUP_COMPONENTS_ROOT="${CUP_COMPONENTS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 
 if [ -z "${CUP_JOBS:-}" ]; then
     if [ "${RUNNER_OS:-}" = "Windows" ] && [ -n "${NUMBER_OF_PROCESSORS:-}" ]; then
@@ -23,12 +21,17 @@ if [ -z "${CUP_JOBS:-}" ]; then
     fi
 fi
 
-DEFAULT_GCC_VERSION="${DEFAULT_GCC_VERSION:-16.1.0}"
-DEFAULT_GDB_VERSION="${DEFAULT_GDB_VERSION:-17.1}"
-DEFAULT_BINUTILS_VERSION="${DEFAULT_BINUTILS_VERSION:-2.46.0}"
-DEFAULT_MINGW_VERSION="${DEFAULT_MINGW_VERSION:-14.0.0}"
-DEFAULT_LLVM_VERSION="${DEFAULT_LLVM_VERSION:-22.1.5}"
-DEFAULT_VALGRIND_VERSION="${DEFAULT_VALGRIND_VERSION:-3.27.0}"
+DEFAULT_GCC_VERSION="16.2.0"
+# The default GCC package composition is independent of the standalone GNU ld
+# default. Change the component version(s) and revision together when the
+# default GCC composition changes without changing the GCC release itself.
+DEFAULT_GCC_BINUTILS_VERSION="2.47"
+DEFAULT_GCC_MINGW_VERSION="14.0.0"
+DEFAULT_GCC_REVISION="1"
+DEFAULT_GDB_VERSION="17.2"
+DEFAULT_BINUTILS_VERSION="2.47"
+DEFAULT_LLVM_VERSION="23.1.0"
+DEFAULT_VALGRIND_VERSION="3.27.1"
 
 log() {
     printf '[cup-build] %s\n' "$*" >&2
@@ -76,8 +79,8 @@ resolve_version() {
     case "$tool" in
         gcc) resolved="$DEFAULT_GCC_VERSION" ;;
         gdb) resolved="$DEFAULT_GDB_VERSION" ;;
-        binutils) resolved="$DEFAULT_BINUTILS_VERSION" ;;
-        mingw|mingw-w64) resolved="$DEFAULT_MINGW_VERSION" ;;
+        binutils|ld) resolved="$DEFAULT_BINUTILS_VERSION" ;;
+        mingw|mingw-w64) resolved="$DEFAULT_GCC_MINGW_VERSION" ;;
         clang|lld|lldb|clangd|clang-format|clang-tidy|llvm) resolved="$DEFAULT_LLVM_VERSION" ;;
         valgrind) resolved="$DEFAULT_VALGRIND_VERSION" ;;
         *) die "cannot resolve default version for tool: $tool" ;;
@@ -179,7 +182,7 @@ package_component_for_tool() {
     case "$1" in
         gcc|clang) printf '%s\n' compiler ;;
         gdb|lldb) printf '%s\n' debugger ;;
-        lld) printf '%s\n' linker ;;
+        lld|ld) printf '%s\n' linker ;;
         clang-format) printf '%s\n' formatter ;;
         clang-tidy) printf '%s\n' linter ;;
         clangd) printf '%s\n' language-server ;;
@@ -266,6 +269,104 @@ fetch() {
     fi
 }
 
+sha256_file() {
+    local path="$1"
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$path" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$path" | awk '{print $1}'
+    else
+        die "sha256sum or shasum is required for source authentication"
+    fi
+}
+
+known_source_sha256() {
+    case "$1:$2" in
+        gcc:16.1.0) printf '%s\n' 50efb4d94c3397aff3b0d61a5abd748b4dd31d9d3f2ab7be05b171d36a510f79 ;;
+        gcc:16.2.0) printf '%s\n' e6738e29597f733270731aa90600f37ffdc045079dfc27ec7e8192cc81085c3e ;;
+        binutils:2.46.0) printf '%s\n' d75a94f4d73e7a4086f7513e67e439e8fcdcbb726ffe63f4661744e6256b2cf2 ;;
+        binutils:2.47) printf '%s\n' 154ab23b60070e8f27013c22977f1129425d67d1e8acd6e13010e617811e4cff ;;
+        mingw:14.0.0) printf '%s\n' 6eaf921d9eb987d3820b364ea9775bc19b965ec81490b6fdd716526c28e1995c ;;
+        gdb:17.1) printf '%s\n' 14996f5f74c9f68f5a543fdc45bca7800207f91f92aeea6c2e791822c7c6d876 ;;
+        gdb:17.2) printf '%s\n' 1c036c0d72e4b3d1fb5c94c88632add6f9d76f4d7c4d2ea793c12a9f19a3228c ;;
+        llvm:22.1.5) printf '%s\n' 7972b87b705a003ce70ab55f9f0fb495d156887cba0eb296d284731139118e2c ;;
+        llvm:23.1.0) printf '%s\n' ab1f0e3ec52448c33e8782eaf0422504b87c7b016b22514653ee0d8fcee479ff ;;
+        valgrind:3.27.0) printf '%s\n' 5b5937de8257ee8f51698ea71b9711adce98061aa07daa4a685efc3af9215bef ;;
+        valgrind:3.27.1) printf '%s\n' 5d589152eb8071c02feab8ce6ab719e431a1fbc3e2b1700f5432632a8b9264dc ;;
+        *) return 1 ;;
+    esac
+}
+
+source_archive_path() {
+    local url="$1"
+    local fallback="$2"
+    printf '%s/%s\n' "$CUP_SRC_DIR" "$(archive_name_from_url "$url" "$fallback")"
+}
+
+source_archive_sha256() {
+    local archive
+    archive="$(source_archive_path "$1" "$2")"
+    [ -f "$archive" ] || die "source archive is not available: $archive"
+    sha256_file "$archive"
+}
+
+record_source_archive() {
+    local source_id="$1"
+    local version="$2"
+    local url="$3"
+    local filename="$4"
+    local expected_sha="$5"
+    local actual_sha="$6"
+    local status="$7"
+    local records_dir="${CUP_BUILD_RECORDS_DIR:-$CUP_WORK_DIR/build-records}"
+    local output="$records_dir/sources.tsv"
+
+    mkdir -p "$records_dir"
+    if [ ! -f "$output" ]; then
+        printf 'source_id\tversion\tfilename\texpected_sha256\tactual_sha256\tstatus\turl\n' > "$output"
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$source_id" "$version" "$filename" "${expected_sha:--}" "${actual_sha:--}" "$status" "$url" >> "$output"
+}
+
+prepare_source_tree() {
+    local source_id="$1"
+    local version="$2"
+    local url="$3"
+    local fallback_archive="$4"
+    local expected_sha="${5:-}"
+    local filename archive source_dir actual_sha status
+
+    filename="$(archive_name_from_url "$url" "$fallback_archive")"
+    archive="$CUP_SRC_DIR/$filename"
+    source_dir="$CUP_SRC_DIR/$source_id-$version"
+
+    if [ -z "$expected_sha" ]; then
+        expected_sha="$(known_source_sha256 "$source_id" "$version" 2>/dev/null || true)"
+    fi
+
+    if ! fetch "$url" "$archive"; then
+        record_source_archive "$source_id" "$version" "$url" "$filename" "$expected_sha" - download-failed
+        return 1
+    fi
+
+    actual_sha="$(sha256_file "$archive")"
+    if [ -n "$expected_sha" ] && [ "$actual_sha" != "$expected_sha" ]; then
+        record_source_archive "$source_id" "$version" "$url" "$filename" "$expected_sha" "$actual_sha" sha256-mismatch
+        die "source archive SHA-256 mismatch for $filename: expected $expected_sha, got $actual_sha"
+    fi
+
+    status=ready-unverified
+    [ -z "$expected_sha" ] || status=ready-verified
+    if ! extract_archive "$archive" "$source_dir"; then
+        record_source_archive "$source_id" "$version" "$url" "$filename" "$expected_sha" "$actual_sha" extraction-failed
+        return 1
+    fi
+    record_source_archive "$source_id" "$version" "$url" "$filename" "$expected_sha" "$actual_sha" "$status"
+    printf '%s\n' "$source_dir"
+}
+
 llvm_windows_source_excludes() {
     local archive="$1"
 
@@ -311,23 +412,6 @@ extract_archive() {
     esac
 }
 
-prepare_source_tree() {
-    local name="$1"
-    local version="$2"
-    local url="$3"
-    local fallback_archive="$4"
-
-    local archive
-    local source_dir
-
-    archive="$CUP_SRC_DIR/$(archive_name_from_url "$url" "$fallback_archive")"
-    source_dir="$CUP_SRC_DIR/$name-$version"
-
-    fetch "$url" "$archive" || return 1
-    extract_archive "$archive" "$source_dir" || return 1
-
-    printf '%s\n' "$source_dir"
-}
 
 info_key_is_valid() {
     local key="$1"
@@ -624,10 +708,12 @@ python_runtime_prefix() {
 copy_posix_python_runtime() {
     local python_executable="$1"
     local copy_executable="${2:-false}"
+    local executable_relative="${3:-libexec/python3}"
     local version
     local python_prefix
     local stdlib
     local destination
+    local entry_list
     local entry
     local base
 
@@ -650,22 +736,32 @@ copy_posix_python_runtime() {
     [ -d "$stdlib" ] || die "Python standard library was not found: $stdlib"
 
     destination="$PREFIX/lib/python$version"
-    mkdir -p "$destination"
+    mkdir -p "$destination" "$CUP_WORK_DIR"
+    entry_list="$CUP_WORK_DIR/python-runtime-entries.$$.list"
+    rm -f "$entry_list"
+    if ! find "$stdlib" -mindepth 1 -maxdepth 1 -print0 > "$entry_list"; then
+        rm -f "$entry_list"
+        die "could not enumerate Python runtime entries: $stdlib"
+    fi
 
-    # Copy only interpreter-owned stdlib entries. Preserve any LLDB package
-    # modules already installed into site-packages/dist-packages by CMake.
+    # Copy only interpreter-owned runtime entries. Preserve LLDB modules already
+    # installed into site-packages/dist-packages and exclude CPython's installed
+    # build/configuration directory (Makefiles, objects and static libpython).
     while IFS= read -r -d '' entry; do
         base="$(basename "$entry")"
         case "$base" in
-            site-packages|dist-packages) continue ;;
+            site-packages|dist-packages|sitecustomize.py|"config-$version-"*|"config-${version}d-"*) continue ;;
         esac
         cp -RPp "$entry" "$destination/"
-    done < <(find "$stdlib" ! -path "$stdlib" -prune -print0)
+    done < "$entry_list"
+    rm -f "$entry_list"
 
     if [ "$copy_executable" = true ]; then
-        mkdir -p "$PREFIX/libexec"
-        cp -pL "$python_executable" "$PREFIX/libexec/python3"
-        chmod 0755 "$PREFIX/libexec/python3"
+        package_relative_path_is_safe "$executable_relative" ||
+            die "unsafe packaged Python executable path: $executable_relative"
+        mkdir -p "$PREFIX/$(dirname "$executable_relative")"
+        cp -pL "$python_executable" "$PREFIX/$executable_relative"
+        chmod 0755 "$PREFIX/$executable_relative"
     fi
 
     log "copied Python $version runtime into package"
@@ -743,6 +839,47 @@ linux_runtime_library_name_is_safe() {
     package_relative_path_is_safe "lib/$name"
 }
 
+linux_runtime_compiler_library_resolution_is_allowed() {
+    local name="$1"
+    local resolved="$2"
+    local compiler=""
+    local expected=""
+
+    case "$name" in
+        libstdc++.so.*) compiler="${CXX:-g++}" ;;
+        libgcc_s.so.*) compiler="${CC:-gcc}" ;;
+        *) return 1 ;;
+    esac
+    command -v "$compiler" >/dev/null 2>&1 || return 1
+    expected="$($compiler -print-file-name="$name" 2>/dev/null || true)"
+    [ -n "$expected" ] && [ "$expected" != "$name" ] || return 1
+    [ "$(realpath -e "$expected" 2>/dev/null || true)" = "$(realpath -e "$resolved" 2>/dev/null || true)" ]
+}
+
+linux_runtime_external_resolution_is_allowed() {
+    local name="$1"
+    local resolved="$2"
+    local roots="${CUP_LINUX_ALLOWED_RUNTIME_ROOTS:-}"
+    local root canonical_resolved canonical_root
+    local -a runtime_roots=()
+
+    [ "${CUP_ENFORCE_RUNTIME_ORIGINS:-false}" = true ] || return 0
+    canonical_resolved="$(realpath -e "$resolved" 2>/dev/null || true)"
+    [ -n "$canonical_resolved" ] || return 1
+
+    IFS=':' read -r -a runtime_roots <<< "$roots"
+    for root in "${runtime_roots[@]}"; do
+        [ -n "$root" ] || continue
+        canonical_root="$(realpath -e "$root" 2>/dev/null || true)"
+        [ -n "$canonical_root" ] || continue
+        case "$canonical_resolved" in
+            "$canonical_root"/*|"$canonical_root") return 0 ;;
+        esac
+    done
+
+    linux_runtime_compiler_library_resolution_is_allowed "$name" "$resolved"
+}
+
 linux_copy_resolved_runtime_libraries() {
     local prefix="$1"
     local copied
@@ -783,6 +920,9 @@ linux_copy_resolved_runtime_libraries() {
                 case "$resolved" in
                     "$prefix"/*) continue ;;
                 esac
+
+                linux_runtime_external_resolution_is_allowed "$name" "$resolved" ||
+                    die "Linux runtime dependency resolved from an unauthorized provider: $(basename "$file"): $name -> $resolved"
 
                 destination="$prefix/lib/$name"
                 if [ -e "$destination" ]; then
@@ -859,6 +999,7 @@ linux_runtime_directory_for_dependency() {
 linux_runpath_for_file() {
     local prefix="$1"
     local file="$2"
+    local load_path="${3:-$file}"
     local dependencies
     local name
     local resolved
@@ -897,7 +1038,7 @@ linux_runpath_for_file() {
         esac
         seen="${seen:+$seen$'\n'}$runtime_dir"
 
-        relative="$(realpath --relative-to="$(dirname "$file")" "$runtime_dir")" || return 1
+        relative="$(realpath --relative-to="$(dirname "$load_path")" "$runtime_dir")" || return 1
         if [ "$relative" = "." ]; then
             entry='$ORIGIN'
         else
@@ -912,10 +1053,36 @@ linux_runpath_for_file() {
 linux_patch_runtime_search_paths() {
     local prefix="$1"
     local file
+    local alias
+    local alias_target
+    local alias_runpath
+    local entry
     local runpath
+    local canonical_prefix
+    local canonical_file
+    declare -A elf_aliases=()
 
     command -v patchelf >/dev/null 2>&1 ||
         die "patchelf is required to make Linux component packages relocatable"
+
+    canonical_prefix="$(realpath -m "$prefix")" ||
+        die "failed to canonicalize Linux package prefix before RUNPATH rewrite"
+
+    # A shared object may be loaded through a package-internal symlink from a
+    # different directory (LLDB's Python _lldb module is one real example).
+    # $ORIGIN is evaluated from that load pathname, so retain every internal
+    # ELF alias as an additional pathname when deriving the target RUNPATH.
+    while IFS= read -r -d '' alias; do
+        alias_target="$(realpath -e "$alias" 2>/dev/null || true)"
+        [ -n "$alias_target" ] || continue
+        case "$alias_target" in
+            "$canonical_prefix"/*) ;;
+            *) continue ;;
+        esac
+        [ -f "$alias_target" ] || continue
+        linux_is_dynamic_elf "$alias_target" || continue
+        elf_aliases["$alias_target"]="${elf_aliases["$alias_target"]:+${elf_aliases["$alias_target"]}$'\n'}$alias"
+    done < <(find "$prefix" -type l -print0)
 
     # A pathname-specific RUNPATH requires independent bytes. Break only ELF
     # hardlinks that are about to be rewritten; hardlink identity itself is not
@@ -926,8 +1093,25 @@ linux_patch_runtime_search_paths() {
     done < <(linux_dynamic_elf_files "$prefix")
 
     while IFS= read -r file; do
-        runpath="$(linux_runpath_for_file "$prefix" "$file")" ||
+        runpath="$(linux_runpath_for_file "$prefix" "$file" "$file")" ||
             die "failed to derive package-relative Linux RUNPATH for $(basename "$file")"
+        canonical_file="$(realpath -e "$file")" ||
+            die "failed to canonicalize Linux ELF before RUNPATH rewrite: $file"
+
+        while IFS= read -r alias; do
+            [ -n "$alias" ] || continue
+            alias_runpath="$(linux_runpath_for_file "$prefix" "$file" "$alias")" ||
+                die "failed to derive package-relative Linux RUNPATH for ELF alias: ${alias#"$prefix"/}"
+            IFS=':' read -r -a alias_entries <<< "$alias_runpath"
+            for entry in "${alias_entries[@]}"; do
+                [ -n "$entry" ] || continue
+                case ":$runpath:" in
+                    *":$entry:"*) ;;
+                    *) runpath="${runpath:+$runpath:}$entry" ;;
+                esac
+            done
+        done <<< "${elf_aliases["$canonical_file"]:-}"
+
         patchelf --set-rpath "$runpath" "$file"
     done < <(linux_dynamic_elf_files "$prefix")
 }
@@ -1070,8 +1254,20 @@ macos_copy_and_rewrite_runtime_libraries() {
     local dependency_relative
     local relative
     local replacement
+    local source_sha
+    local existing
+    declare -A original_runtime_sha=()
 
     mkdir -p "$prefix/lib"
+
+    # Runtime objects are rewritten in place as the closure converges. Preserve
+    # their original content identity so a later reference to the same external
+    # library is not misclassified as a basename collision merely because the
+    # packaged copy has already had its install-name/dependencies rewritten.
+    for existing in "$prefix"/lib/*; do
+        [ -f "$existing" ] || continue
+        original_runtime_sha["$existing"]="$(sha256_file "$existing")"
+    done
 
     while :; do
         copied=0
@@ -1103,11 +1299,15 @@ macos_copy_and_rewrite_runtime_libraries() {
                         [ -f "$dependency" ] ||
                             die "unresolved macOS runtime dependency for $(basename "$file"): $dependency"
                         destination="$prefix/lib/$(basename "$dependency")"
+                        source_sha="$(sha256_file "$dependency")"
                         if [ -e "$destination" ]; then
-                            cmp -s "$dependency" "$destination" ||
+                            [ -n "${original_runtime_sha[$destination]+x}" ] ||
+                                original_runtime_sha["$destination"]="$(sha256_file "$destination")"
+                            [ "$source_sha" = "${original_runtime_sha[$destination]}" ] ||
                                 die "conflicting macOS runtime libraries for $(basename "$dependency")"
                         else
                             cp -pL "$dependency" "$destination"
+                            original_runtime_sha["$destination"]="$source_sha"
                             if [ -n "$(otool -D "$destination" 2>/dev/null | tail -n +2 | head -n 1 || true)" ]; then
                                 install_name_tool -id "@rpath/$(basename "$destination")" "$destination"
                             fi
@@ -1925,6 +2125,7 @@ package_generate_and_verify_manifest() {
         die "package manifest self-verification failed"
     }
     rm -f "$verification"
+    chmod 0644 "$manifest"
     package_verify_tree "$package_root" "$host_platform"
 }
 
@@ -1992,6 +2193,7 @@ package_verify_info_contract() {
     local revision="$6"
     local info="$package_root/info.txt"
     local package_version
+    local expected_source_name
     local key
     local value
     local entry_count=0
@@ -2004,7 +2206,7 @@ package_verify_info_contract() {
         platform.host platform.target platform.host_triple platform.target_triple \
         platform.family platform.runtime platform.thread_model \
         build.environment build.source_policy \
-        source.primary.name source.primary.version source.primary.url; do
+        source.primary.name source.primary.version source.primary.url source.primary.sha256; do
         package_info_value "$info" "$key" >/dev/null || die "info.txt is missing required field: $key"
     done
 
@@ -2022,6 +2224,54 @@ package_verify_info_contract() {
     elif package_info_value "$info" package.revision >/dev/null 2>&1; then
         die "info.txt package.revision is not valid for a revisionless package"
     fi
+    [[ "$(package_info_value "$info" source.primary.sha256)" =~ ^[0-9a-f]{64}$ ]] ||
+        die "info.txt source.primary.sha256 is not a lowercase SHA-256"
+
+    case "$tool" in
+        gcc) expected_source_name=gcc ;;
+        gdb) expected_source_name=gdb ;;
+        ld) expected_source_name=binutils ;;
+        clang|lld|lldb|clangd|clang-format|clang-tidy) expected_source_name=llvm-project ;;
+        valgrind) expected_source_name=valgrind ;;
+        *) die "cannot derive primary source identity for tool: $tool" ;;
+    esac
+    [ "$(package_info_value "$info" source.primary.name)" = "$expected_source_name" ] ||
+        die "info.txt source.primary.name does not match package tool"
+    [ "$(package_info_value "$info" source.primary.version)" = "$version" ] ||
+        die "info.txt source.primary.version does not match selected package version"
+
+    if [ "$tool" = gcc ]; then
+        for key in bundle.components bundle.binutils.version bundle.binutils.url bundle.binutils.sha256; do
+            package_info_value "$info" "$key" >/dev/null ||
+                die "info.txt is missing required GCC composition field: $key"
+        done
+        numeric_version_is_valid "$(package_info_value "$info" bundle.binutils.version)" ||
+            die "info.txt bundle.binutils.version is not a numeric dotted version"
+        [[ "$(package_info_value "$info" bundle.binutils.sha256)" =~ ^[0-9a-f]{64}$ ]] ||
+            die "info.txt bundle.binutils.sha256 is not a lowercase SHA-256"
+
+        if is_windows_platform "$target_platform"; then
+            [ "$(package_info_value "$info" bundle.components)" = "binutils,mingw-w64" ] ||
+                die "info.txt bundle.components does not match Windows-target GCC composition"
+            for key in bundle.mingw-w64.version bundle.mingw-w64.url bundle.mingw-w64.sha256; do
+                package_info_value "$info" "$key" >/dev/null ||
+                    die "info.txt is missing required Windows-target GCC composition field: $key"
+            done
+            numeric_version_is_valid "$(package_info_value "$info" bundle.mingw-w64.version)" ||
+                die "info.txt bundle.mingw-w64.version is not a numeric dotted version"
+            [[ "$(package_info_value "$info" bundle.mingw-w64.sha256)" =~ ^[0-9a-f]{64}$ ]] ||
+                die "info.txt bundle.mingw-w64.sha256 is not a lowercase SHA-256"
+        else
+            [ "$(package_info_value "$info" bundle.components)" = "binutils" ] ||
+                die "info.txt bundle.components does not match native GCC composition"
+            if package_info_value "$info" bundle.mingw-w64.version >/dev/null 2>&1 ||
+                package_info_value "$info" bundle.mingw-w64.url >/dev/null 2>&1 ||
+                package_info_value "$info" bundle.mingw-w64.sha256 >/dev/null 2>&1; then
+                die "info.txt contains MinGW-w64 composition metadata for a non-Windows GCC target"
+            fi
+        fi
+    fi
+
     [ "$(package_info_value "$info" package.mode)" = "self-contained" ] ||
         die "info.txt package.mode must be self-contained"
     [ "$(package_info_value "$info" package.formats)" = "$(package_formats_csv "$host_platform")" ] ||
@@ -2229,6 +2479,64 @@ package_normalize_root() {
     package_verify_tree "$package_root" "$host_platform"
 }
 
+package_reproducible_archives_enabled() {
+    [ "${CUP_REPRODUCIBLE_ARCHIVES:-false}" = true ]
+}
+
+package_reproducible_epoch() {
+    local epoch="${SOURCE_DATE_EPOCH:-946684800}"
+    [[ "$epoch" =~ ^[0-9]+$ ]] || die "SOURCE_DATE_EPOCH must be a non-negative integer"
+    [ "$epoch" -ge 315532800 ] || die "SOURCE_DATE_EPOCH must be 1980-01-01 or later for ZIP portability"
+    printf '%s\n' "$epoch"
+}
+
+package_normalize_timestamps() {
+    local package_root="$1"
+    local epoch
+    local path
+
+    package_reproducible_archives_enabled || return 0
+    epoch="$(package_reproducible_epoch)"
+    while IFS= read -r -d '' path; do
+        touch -h -d "@$epoch" "$path"
+    done < <(find "$package_root" -print0)
+}
+
+create_reproducible_archive() {
+    local format="$1"
+    local package_base="$2"
+    local package_root="$3"
+    local output="$4"
+    local host_platform="$5"
+    local parent="$(dirname "$package_root")"
+    local base="$(basename "$package_root")"
+    local epoch
+
+    is_linux_platform "$host_platform" ||
+        die "reproducible archive mode is currently supported only for Linux packages"
+    epoch="$(package_reproducible_epoch)"
+
+    case "$format" in
+        tar.xz)
+            need xz
+            tar --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner \
+                -C "$parent" -cf - "$base" | xz -T1 -9 -c > "$output"
+            ;;
+        tar.gz)
+            need gzip
+            tar --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner \
+                -C "$parent" -cf - "$base" | gzip -n -9 > "$output"
+            ;;
+        zip)
+            (
+                cd "$parent"
+                find "$base" -print | LC_ALL=C sort | zip -X -q -y "$output" -@
+            )
+            ;;
+        *) die "unsupported package format: $format" ;;
+    esac
+}
+
 create_archive() {
     local format="$1"
     local package_base="$2"
@@ -2240,6 +2548,12 @@ create_archive() {
     output="$output_dir/$package_base.$format"
 
     rm -f "$output"
+
+    if package_reproducible_archives_enabled; then
+        create_reproducible_archive "$format" "$package_base" "$package_root" "$output" "$host_platform"
+        log "created reproducible package: $output"
+        return 0
+    fi
 
     case "$format" in
         tar.xz)
@@ -2367,6 +2681,7 @@ create_packages() {
     package_verify_info_contract \
         "$package_root" "$tool" "$version" "$host_platform" "$target_platform" "$revision"
     package_generate_and_verify_manifest "$package_root" "$host_platform"
+    package_normalize_timestamps "$package_root"
 
     for format in $(package_formats_for_host "$host_platform"); do
         create_archive "$format" "$package_base" "$package_root" "$CUP_OUT_DIR" "$host_platform"

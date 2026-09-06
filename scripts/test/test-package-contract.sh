@@ -84,6 +84,34 @@ printf 'source corrupt-cache propagation test passed\n'
 )
 printf 'source acquisition success-path test passed\n'
 
+# Executable capability metadata must mean executable on POSIX, while native
+# Windows command identity remains extension-based rather than dependent on
+# MSYS2 mode bits.
+(
+    executable_root="$TMP/executable-semantics"
+    mkdir -p "$executable_root/bin"
+    printf 'fixture\n' > "$executable_root/bin/tool"
+    HOST_PLATFORM=linux-x64
+    if prefix_executable_exists "$executable_root" tool; then
+        echo 'POSIX executable detection accepted a non-executable file' >&2
+        exit 1
+    fi
+    chmod 0755 "$executable_root/bin/tool"
+    prefix_executable_exists "$executable_root" tool || {
+        echo 'POSIX executable detection rejected an executable file' >&2
+        exit 1
+    }
+
+    printf 'fixture\n' > "$executable_root/bin/windows-tool.exe"
+    chmod 0644 "$executable_root/bin/windows-tool.exe"
+    HOST_PLATFORM=windows-x64
+    prefix_executable_exists "$executable_root" windows-tool || {
+        echo 'Windows executable detection incorrectly depends on MSYS2 mode bits' >&2
+        exit 1
+    }
+)
+printf 'platform executable-semantics test passed\n'
+
 symlink_probe="$TMP/symlink-probe"
 mkdir -p "$symlink_probe"
 printf target > "$symlink_probe/target"
@@ -242,8 +270,8 @@ printf '#!/bin/sh\nexit 0\n' > "$windows_archive_root/$windows_archive_base/bin/
 chmod 0644 "$windows_archive_root/$windows_archive_base/bin/helper"
 cat > "$windows_archive_root/$windows_archive_base/manifest.txt" <<EOF_WINDOWS_MANIFEST
 format=2
-f	0755	$(package_file_digest "$windows_archive_root/$windows_archive_base/bin/helper")	bin/helper
 d	0755	-	bin
+f	0755	$(package_file_digest "$windows_archive_root/$windows_archive_base/bin/helper")	bin/helper
 EOF_WINDOWS_MANIFEST
 (
     cd "$windows_archive_root"
@@ -252,6 +280,37 @@ EOF_WINDOWS_MANIFEST
 if package_verify_archive zip "$windows_archive_base" \
     "$windows_archive_root/$windows_archive_base" "$TMP" windows-x64 >/dev/null 2>&1; then
     echo 'final archive verifier accepted wrong stored Windows script mode' >&2
+    exit 1
+fi
+
+# Info-ZIP status 1 is a warning status. A self-produced Windows ZIP may
+# therefore report a warning even though listing/extraction completed. The
+# common verifier must continue into its mode/manifest/tree checks, while true
+# unzip failures remain fatal.
+chmod 0755 "$windows_archive_root/$windows_archive_base/bin/helper"
+rm -f "$TMP/$windows_archive_base.zip"
+(
+    cd "$windows_archive_root"
+    zip -qr "$TMP/$windows_archive_base.zip" "$windows_archive_base"
+)
+real_unzip="$(command -v unzip)"
+unzip_stub="$TMP/unzip-stub"
+mkdir -p "$unzip_stub"
+cat > "$unzip_stub/unzip" <<EOF_UNZIP_STUB
+#!/usr/bin/env bash
+"$real_unzip" "\$@" || exit \$?
+exit "\${CUP_UNZIP_TEST_STATUS:-0}"
+EOF_UNZIP_STUB
+chmod 0755 "$unzip_stub/unzip"
+
+CUP_UNZIP_TEST_STATUS=1 PATH="$unzip_stub:$PATH" \
+    package_verify_archive zip "$windows_archive_base" \
+    "$windows_archive_root/$windows_archive_base" "$TMP" windows-x64 >/dev/null
+
+if CUP_UNZIP_TEST_STATUS=2 PATH="$unzip_stub:$PATH" \
+    package_verify_archive zip "$windows_archive_base" \
+    "$windows_archive_root/$windows_archive_base" "$TMP" windows-x64 >/dev/null 2>&1; then
+    echo 'final archive verifier accepted a hard unzip failure' >&2
     exit 1
 fi
 

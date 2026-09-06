@@ -70,6 +70,19 @@ make_payload_noise() {
     done
 }
 
+make_windows_analyzer_noise() {
+    local prefix="$1"
+    local helper
+    local suffix
+
+    mkdir -p "$prefix/libexec"
+    for helper in analyze-cc analyze-c++ intercept-cc intercept-c++ ccc-analyzer c++-analyzer; do
+        for suffix in .exe .bat .cmd; do
+            make_exe "$prefix/libexec/$helper$suffix"
+        done
+    done
+}
+
 assert_noise_removed() {
     local prefix="$1"
     local path
@@ -171,7 +184,58 @@ validate_llvm_package_layout
 [ -f "$prefix/lib/clang/23/include/stddef.h" ] || fail 'clangd built-in resource header was removed'
 assert_noise_removed "$prefix"
 
+
+# LLD must not inherit LLVM's optimization-report Python utility or an empty
+# include directory after its own headers are pruned.
+prefix="$TMP/lld"
+mkdir -p "$prefix/bin" "$prefix/include/lld" "$prefix/share/opt-viewer"
+make_exe "$prefix/bin/lld"
+printf 'header\n' > "$prefix/include/lld/Driver.h"
+printf 'print("opt")\n' > "$prefix/share/opt-viewer/opt-viewer.py"
+PREFIX="$prefix" TOOL=lld HOST_PLATFORM=linux-x64
+prune_llvm_package_bins
+prune_llvm_auxiliary_share_payload
+prune_llvm_development_payload
+[ -x "$prefix/bin/lld" ] || fail 'LLD public root was removed'
+[ ! -e "$prefix/share/opt-viewer" ] || fail 'LLD retained unowned opt-viewer payload'
+[ ! -e "$prefix/include" ] || fail 'LLD retained empty include directory'
+
+# Windows command identity must use the common package candidate semantics:
+# public .exe/.bat entries are accepted, while analyzer helpers are removed
+# with all native suffixes rather than only their POSIX names.
+prefix="$TMP/clangd-windows"
+mkdir -p "$prefix/bin" "$prefix/lib/clang/23/include"
+make_exe "$prefix/bin/clangd.exe"
+printf 'stddef\n' > "$prefix/lib/clang/23/include/stddef.h"
+make_windows_analyzer_noise "$prefix"
+PREFIX="$prefix" TOOL=clangd HOST_PLATFORM=windows-x64
+prune_llvm_package_bins
+prune_llvm_auxiliary_share_payload
+prune_llvm_development_payload
+validate_llvm_package_layout
+[ -e "$prefix/bin/clangd.exe" ] || fail 'Windows clangd .exe public root was removed'
+[ ! -e "$prefix/libexec" ] || fail 'Windows clangd retained analyzer libexec variants'
+
+prefix="$TMP/clang-tidy-windows"
+mkdir -p "$prefix/bin" "$prefix/libexec/llvm-python-scripts" "$prefix/lib"
+for exe in clang-tidy.exe clang-apply-replacements.exe; do make_exe "$prefix/bin/$exe"; done
+make_exe "$prefix/bin/run-clang-tidy.bat"
+make_exe "$prefix/bin/clang-tidy-diff.bat"
+make_exe "$prefix/libexec/cup-python3.exe"
+printf 'print("run")\n' > "$prefix/libexec/llvm-python-scripts/run-clang-tidy.py"
+printf 'print("diff")\n' > "$prefix/libexec/llvm-python-scripts/clang-tidy-diff.py"
+make_windows_analyzer_noise "$prefix"
+PREFIX="$prefix" TOOL=clang-tidy HOST_PLATFORM=windows-x64
+prune_llvm_package_bins
+prune_llvm_auxiliary_share_payload
+prune_llvm_development_payload
+validate_llvm_package_layout
+[ -e "$prefix/bin/run-clang-tidy.bat" ] || fail 'Windows run-clang-tidy wrapper was removed'
+[ -e "$prefix/bin/clang-tidy-diff.bat" ] || fail 'Windows clang-tidy-diff wrapper was removed'
+
 echo 'CLANG_FORMAT_EXTERNAL_GIT_HELPER_EXCLUSION=PASS'
 echo 'CLANG_TIDY_SIBLING_PAYLOAD_PRUNING=PASS'
 echo 'CLANGD_VERSIONED_DYLIB_AND_XPC_PRUNING=PASS'
+echo 'LLD_AUXILIARY_PRUNING=PASS'
+echo 'WINDOWS_LLVM_COMMAND_NAME_POLICY=PASS'
 echo 'LLVM_AUXILIARY_PACKAGE_POLICY=PASS'

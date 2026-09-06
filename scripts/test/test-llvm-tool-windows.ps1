@@ -472,6 +472,9 @@ int main(void) {
     }
 
     'lldb' {
+        if (Test-InfoBool 'features.process_launch' -and -not (Test-Path "$root\bin\lldb-argdumper.exe")) {
+            throw 'LLDB process-launch capability is missing lldb-argdumper.exe'
+        }
         Show-PEImports "$root\bin\lldb.exe"
         if (Test-Path "$root\bin\lldb-dap.exe") { Show-PEImports "$root\bin\lldb-dap.exe" }
         if (Test-Path "$root\bin\lldb-server.exe") { Show-PEImports "$root\bin\lldb-server.exe" }

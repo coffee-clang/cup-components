@@ -179,7 +179,7 @@ clang-format -> clang
 clang-tidy   -> clang;clang-tools-extra
 clangd       -> clang;clang-tools-extra
 lld          -> lld
-lldb         -> clang;lld;lldb
+lldb         -> clang;lldb
 ```
 
 Building a project does not automatically make all of its installed files part of the final package.

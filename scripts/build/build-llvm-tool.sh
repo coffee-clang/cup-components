@@ -55,7 +55,7 @@ case "$TOOL" in
         ;;
     lldb)
         COMPONENT="debugger"
-        LLVM_PROJECTS="clang;lld;lldb"
+        LLVM_PROJECTS="clang;lldb"
         CONTENTS_EXTRA=("contents.uses_clang=true")
         ;;
     clangd)
@@ -139,8 +139,17 @@ llvm_common_cmake_args() {
         -DLLVM_INCLUDE_BENCHMARKS=OFF \
         -DLLVM_INCLUDE_DOCS=OFF \
         -DLLVM_BUILD_DOCS=OFF \
+        -DLLVM_BUILD_UTILS=OFF \
         -DLLVM_ENABLE_BINDINGS=OFF \
         -DLLVM_ENABLE_ASSERTIONS=OFF
+
+    # Only the Clang package deliberately owns LLVM command-line tools such as
+    # llvm-ar/llvm-nm/llvm-objdump. The other standalone packages use LLVM
+    # libraries but ship project-owned commands, so keep LLVM's tool targets
+    # available for dependencies without building the entire llvm-* toolbox.
+    if [ "$TOOL" != clang ]; then
+        printf '%s\n' -DLLVM_BUILD_TOOLS=OFF
+    fi
 }
 
 macos_sdk_path() {
@@ -604,17 +613,15 @@ is_kept_bin_tool() {
     shift
 
     local tool
+    local candidate
     for tool in "$@"; do
-        case "$base" in
-            "$tool"|"$tool.exe"|"$tool.cmd"|"$tool.bat")
-                return 0
-                ;;
-        esac
+        while IFS= read -r candidate; do
+            [ "$base" = "$candidate" ] && return 0
+        done < <(package_bin_candidate_names "$tool")
     done
 
     return 1
 }
-
 prune_bin_except() {
     local bin_dir="$PREFIX/bin"
     local keep_tools=("$@")
@@ -749,17 +756,12 @@ prune_llvm_package_bins() {
                 lld ld.lld lld-link wasm-ld ld64.lld
             ;;
         lldb)
+            # lldb-argdumper is not a public CUP entry, but LLDB launches it as
+            # a runtime helper while evaluating process arguments.
             prune_bin_except \
-                lldb lldb-server lldb-dap
-            # lldb-argdumper is intentionally not a public package root. LLVM's
-            # Python install may leave a companion link to that removed binary;
-            # remove the companion at the same pruning boundary so every host
-            # sees one coherent LLDB package graph.
-            local python_dir
-            for python_dir in "$PREFIX"/lib/python[0-9]*; do
-                [ -d "$python_dir" ] || continue
-                rm -f "$python_dir/site-packages/lldb/lldb-argdumper"
-            done
+                lldb lldb-server lldb-dap lldb-argdumper
+            prefix_executable_exists "$PREFIX" lldb-argdumper ||
+                die "LLDB process-launch runtime helper is missing: bin/lldb-argdumper"
             ;;
         clangd)
             prune_bin_except \
@@ -794,6 +796,7 @@ prepare_lldb_package_seed() {
     local lldb_python_link
     local link_target
     local python_dir
+    local python_packages_dir
     local clang_dir
     local relative
 
@@ -809,6 +812,7 @@ prepare_lldb_package_seed() {
     llvm_copy_path_into_seed bin/lldb
     llvm_copy_path_into_seed bin/lldb-dap
     llvm_copy_path_into_seed bin/lldb-server
+    llvm_copy_path_into_seed bin/lldb-argdumper
     [ -z "$LLDB_PACKAGED_PYTHON_RELATIVE" ] || llvm_copy_path_into_seed "$LLDB_PACKAGED_PYTHON_RELATIVE"
     llvm_copy_path_into_seed share/lldb
     llvm_copy_path_into_seed info.txt
@@ -842,15 +846,18 @@ prepare_lldb_package_seed() {
 
         # Some LLVM releases bind the Python extension through the unversioned
         # development liblldb.so link. Rebind only that known alias to the
-        # packaged runtime SONAME; other layouts are left intact for closure.
-        for lldb_python_link in "$PACKAGE_PREFIX/lib/$(basename "$python_dir")/site-packages/lldb/native"/_lldb*.so; do
-            [ -L "$lldb_python_link" ] || continue
-            link_target="$(readlink "$lldb_python_link")"
-            case "$link_target" in
-                ../../../../liblldb.so)
-                    ln -sfn "../../../../$liblldb_soname" "$lldb_python_link"
-                    ;;
-            esac
+        # packaged runtime SONAME; support both Python package-directory
+        # conventions used by the deliberate Linux/macOS builders.
+        for python_packages_dir in site-packages dist-packages; do
+            for lldb_python_link in "$PACKAGE_PREFIX/lib/$(basename "$python_dir")/$python_packages_dir/lldb/native"/_lldb*.so; do
+                [ -L "$lldb_python_link" ] || continue
+                link_target="$(readlink "$lldb_python_link")"
+                case "$link_target" in
+                    ../../../../liblldb.so)
+                        ln -sfn "../../../../$liblldb_soname" "$lldb_python_link"
+                        ;;
+                esac
+            done
         done
     done
 
@@ -910,6 +917,12 @@ normalize_clang_tidy_helper_install_layout() {
 
 prune_llvm_auxiliary_share_payload() {
     case "$TOOL" in
+        lld)
+            # opt-viewer is an LLVM optimization-report utility, not runtime
+            # responsibility of the standalone linker package.
+            rm -rf "$PREFIX/share/opt-viewer"
+            rmdir "$PREFIX/share" 2>/dev/null || true
+            ;;
         clangd|clang-format|clang-tidy)
             # clang-tools-extra installs sibling documentation/analyzer payload
             # alongside several standalone tools. None of these directories is
@@ -1025,6 +1038,10 @@ prune_llvm_development_payload() {
         "$PREFIX/lib/cmake" \
         "$PREFIX/lib64/cmake"
 
+    if [ "$TOOL" = lld ]; then
+        rmdir "$PREFIX/include" 2>/dev/null || true
+    fi
+
     case "$TOOL" in
         clangd|clang-format|clang-tidy)
             # The monorepo install also contributes clang-tidy development
@@ -1034,13 +1051,13 @@ prune_llvm_development_payload() {
                 "$PREFIX/include/clang-tidy" \
                 "$PREFIX/lib/libear" \
                 "$PREFIX/lib/libscanbuild"
-            rm -f \
-                "$PREFIX/libexec/analyze-cc" \
-                "$PREFIX/libexec/analyze-c++" \
-                "$PREFIX/libexec/intercept-cc" \
-                "$PREFIX/libexec/intercept-c++" \
-                "$PREFIX/libexec/ccc-analyzer" \
-                "$PREFIX/libexec/c++-analyzer"
+            local helper
+            local candidate
+            for helper in analyze-cc analyze-c++ intercept-cc intercept-c++ ccc-analyzer c++-analyzer; do
+                while IFS= read -r candidate; do
+                    rm -f "$PREFIX/libexec/$candidate"
+                done < <(package_bin_candidate_names "$helper")
+            done
             rmdir "$PREFIX/libexec" 2>/dev/null || true
             rmdir "$PREFIX/include" 2>/dev/null || true
             ;;
@@ -1135,7 +1152,7 @@ validate_llvm_package_layout() {
 
     case "$TOOL" in
         clangd)
-            [ -x "$PREFIX/bin/clangd" ] || die "clangd package is missing bin/clangd"
+            prefix_executable_exists "$PREFIX" clangd || die "clangd package is missing bin/clangd"
             if [ -d "$PREFIX/lib/clang" ]; then
                 for candidate in "$PREFIX/lib/clang"/*; do
                     [ -d "$candidate" ] || continue
@@ -1146,10 +1163,8 @@ validate_llvm_package_layout() {
             [ -n "$resource_dir" ] || die "clangd package is missing its Clang resource directory"
             [ -f "$resource_dir/include/stddef.h" ] || die "clangd package is missing built-in Clang headers"
             while IFS= read -r -d '' bin_entry; do
-                case "$(basename "$bin_entry")" in
-                    clangd|clangd-indexer) ;;
-                    *) die "clangd package retained unexpected sibling executable: $bin_entry" ;;
-                esac
+                is_kept_bin_tool "$(basename "$bin_entry")" clangd clangd-indexer ||
+                    die "clangd package retained unexpected sibling executable: $bin_entry"
             done < <(find "$PREFIX/bin" -mindepth 1 -maxdepth 1 \( -type f -o -type l \) -print0)
             for forbidden in include share libexec; do
                 [ ! -e "$PREFIX/$forbidden" ] && [ ! -L "$PREFIX/$forbidden" ] ||
@@ -1157,7 +1172,7 @@ validate_llvm_package_layout() {
             done
             ;;
         clang-format)
-            [ -x "$PREFIX/bin/clang-format" ] || die "clang-format package is missing bin/clang-format"
+            prefix_executable_exists "$PREFIX" clang-format || die "clang-format package is missing bin/clang-format"
             [ ! -e "$PREFIX/bin/git-clang-format" ] && [ ! -L "$PREFIX/bin/git-clang-format" ] ||
                 die "clang-format package retained git-clang-format with an external Git runtime dependency"
             for forbidden in include share libexec; do
@@ -1166,9 +1181,9 @@ validate_llvm_package_layout() {
             done
             ;;
         clang-tidy)
-            [ -x "$PREFIX/bin/clang-tidy" ] || die "clang-tidy package is missing bin/clang-tidy"
-            [ -x "$PREFIX/bin/run-clang-tidy" ] || die "clang-tidy package is missing run-clang-tidy"
-            [ -x "$PREFIX/bin/clang-tidy-diff" ] || die "clang-tidy package is missing clang-tidy-diff"
+            prefix_executable_exists "$PREFIX" clang-tidy || die "clang-tidy package is missing bin/clang-tidy"
+            prefix_executable_exists "$PREFIX" run-clang-tidy || die "clang-tidy package is missing run-clang-tidy"
+            prefix_executable_exists "$PREFIX" clang-tidy-diff || die "clang-tidy package is missing clang-tidy-diff"
             [ ! -e "$PREFIX/include" ] && [ ! -L "$PREFIX/include" ] ||
                 die "clang-tidy package retained development headers"
             [ ! -e "$PREFIX/share" ] && [ ! -L "$PREFIX/share" ] ||
@@ -1809,6 +1824,7 @@ build_llvm_tool() {
     local sdk_path
     local lldb_python=""
     local lldb_python_version=""
+    local lldb_python_package_dir=""
 
     if is_cross_build "$HOST_PLATFORM" "$TARGET_PLATFORM"; then
         die "cross LLVM tool builds are not supported by this recipe yet: $HOST_PLATFORM -> $TARGET_PLATFORM"
@@ -1821,6 +1837,7 @@ build_llvm_tool() {
             -DLLDB_ENABLE_SWIG=ON
             -DLLDB_ENABLE_LIBXML2=ON
             -DLLDB_ENABLE_LZMA=ON
+            -DCLANG_BUILD_TOOLS=OFF
         )
 
         if [ "$HOST_PLATFORM" = "windows-x64" ]; then
@@ -1832,6 +1849,7 @@ build_llvm_tool() {
                 -DLLDB_ENABLE_LIBEDIT=OFF
                 -DLLDB_ENABLE_CURSES=OFF
                 -DLLDB_EMBED_PYTHON_HOME=OFF
+                -DLLDB_ENABLE_PYTHON_LIMITED_API=OFF
                 -DPython3_EXECUTABLE="$MINGW_PREFIX/bin/python.exe"
                 -DPython3_ROOT_DIR="$MINGW_PREFIX"
                 -DPython3_FIND_REGISTRY=NEVER
@@ -1843,12 +1861,20 @@ build_llvm_tool() {
             lldb_python_version="$(python_runtime_version "$lldb_python")"
             [ -n "$lldb_python_version" ] || die "could not determine Python major/minor version for LLDB"
 
+            if is_linux_platform "$HOST_PLATFORM"; then
+                # The controlled Linux builder is Ubuntu. Its relocated CPython
+                # imports distribution packages from dist-packages.
+                lldb_python_package_dir="lib/python$lldb_python_version/dist-packages"
+            else
+                lldb_python_package_dir="lib/python$lldb_python_version/site-packages"
+            fi
+
             cmake_extra_args+=(
                 -DLLDB_ENABLE_LIBEDIT=ON
                 -DLLDB_ENABLE_CURSES=ON
                 -DLLDB_EMBED_PYTHON_HOME=ON
                 -DLLDB_PYTHON_HOME=..
-                "-DLLDB_PYTHON_RELATIVE_PATH=lib/python$lldb_python_version/site-packages"
+                "-DLLDB_PYTHON_RELATIVE_PATH=$lldb_python_package_dir"
                 "-DLLDB_PYTHON_EXE_RELATIVE_PATH=bin/python$lldb_python_version"
                 "-DPython3_EXECUTABLE=$lldb_python"
             )
@@ -1902,14 +1928,24 @@ build_llvm_tool() {
 
     log "selected LLVM CMake cache entries:"
     if [ -f "$build_dir/CMakeCache.txt" ]; then
-        llvm_dump_cmake_cache_entries "$build_dir/CMakeCache.txt" '^(LLVM_ENABLE_PROJECTS|LLVM_ENABLE_RUNTIMES|LLVM_TARGETS_TO_BUILD|LLVM_ENABLE_ZLIB|LLVM_ENABLE_ZSTD|LLVM_ENABLE_LIBXML2|LLVM_ENABLE_CURL|LLVM_ENABLE_HTTPLIB|LLVM_ENABLE_LIBPFM|LLVM_ENABLE_Z3|LLVM_INCLUDE_TESTS|LLVM_INCLUDE_BENCHMARKS|LLVM_INCLUDE_DOCS|LLVM_ENABLE_BINDINGS|LLVM_ENABLE_ASSERTIONS|LLVM_HOST_TRIPLE|LLDB_ENABLE_PYTHON|LLDB_ENABLE_SWIG|LLDB_EMBED_PYTHON_HOME|LLDB_ENABLE_PYTHON_LIMITED_API|LLDB_ENABLE_LIBXML2|LLDB_ENABLE_LZMA|LLDB_ENABLE_LIBEDIT|LLDB_ENABLE_CURSES|LLDB_ENABLE_LUA|LLDB_ENABLE_FBSDVMCORE|Python3_EXECUTABLE|Python3_LIBRARY|Python3_INCLUDE_DIR|CURSES_|PANEL_|TINFO_|CMAKE_PREFIX_PATH|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_OSX_SYSROOT):'
+        llvm_dump_cmake_cache_entries "$build_dir/CMakeCache.txt" '^(LLVM_ENABLE_PROJECTS|LLVM_ENABLE_RUNTIMES|LLVM_TARGETS_TO_BUILD|LLVM_ENABLE_ZLIB|LLVM_ENABLE_ZSTD|LLVM_ENABLE_LIBXML2|LLVM_ENABLE_CURL|LLVM_ENABLE_HTTPLIB|LLVM_ENABLE_LIBPFM|LLVM_ENABLE_Z3|LLVM_INCLUDE_TESTS|LLVM_INCLUDE_BENCHMARKS|LLVM_INCLUDE_DOCS|LLVM_ENABLE_BINDINGS|LLVM_ENABLE_ASSERTIONS|LLVM_HOST_TRIPLE|CLANG_BUILD_TOOLS|LLDB_ENABLE_PYTHON|LLDB_ENABLE_SWIG|LLDB_EMBED_PYTHON_HOME|LLDB_ENABLE_PYTHON_LIMITED_API|LLDB_ENABLE_LIBXML2|LLDB_ENABLE_LZMA|LLDB_ENABLE_LIBEDIT|LLDB_ENABLE_CURSES|LLDB_ENABLE_LUA|LLDB_ENABLE_FBSDVMCORE|Python3_EXECUTABLE|Python3_LIBRARY|Python3_INCLUDE_DIR|CURSES_|PANEL_|TINFO_|CMAKE_PREFIX_PATH|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_OSX_SYSROOT):'
     fi
 
     if ! cmake --build "$build_dir" --parallel "$CUP_JOBS"; then
         log "LLVM tool build failed; selected CMake cache entries:"
-        llvm_dump_cmake_cache_entries "$build_dir/CMakeCache.txt" '^(LLVM_ENABLE_PROJECTS|LLVM_TARGETS_TO_BUILD|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|LLVM_HOST_TRIPLE|LLDB_|Python3_):'
+        llvm_dump_cmake_cache_entries "$build_dir/CMakeCache.txt" '^(LLVM_ENABLE_PROJECTS|LLVM_TARGETS_TO_BUILD|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|LLVM_HOST_TRIPLE|CLANG_BUILD_TOOLS|LLDB_|Python3_):'
         return 1
     fi
+
+    # LLDB links against Clang libraries but does not package Clang command-line
+    # tools. With CLANG_BUILD_TOOLS=OFF, explicitly materialize the builtin
+    # headers LLDB still owns and needs for expression evaluation.
+    if [ "$TOOL" = lldb ]; then
+        if ! cmake --build "$build_dir" --target clang-resource-headers --parallel "$CUP_JOBS"; then
+            die "failed to build LLDB Clang resource headers"
+        fi
+    fi
+
     cmake --install "$build_dir"
     materialize_lldb_clang_resources "$build_dir"
 

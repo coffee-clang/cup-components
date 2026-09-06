@@ -56,9 +56,9 @@ EOF_INSTALL
 chmod 0755 install.sh
 
 cat > Makefile <<'EOF_MAKE'
-all:
+all-ld:
 	@:
-install:
+install-ld:
 	./install.sh
 EOF_MAKE
 EOF_CONFIGURE

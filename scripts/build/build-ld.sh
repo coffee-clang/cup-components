@@ -101,8 +101,8 @@ configure_and_build_binutils() {
     (
         cd "$build_dir"
         "$configure_script" "${configure_args[@]}"
-        make -j"$CUP_JOBS"
-        make install
+        make -j"$CUP_JOBS" all-ld
+        make install-ld
     )
 }
 

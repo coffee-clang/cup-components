@@ -166,6 +166,7 @@ jobs:
             dist/SHA256SUMS
             dist/release.env
           if-no-files-found: error
+          compression-level: 1
 
       - name: Publish GitHub Release
         if: ${{ inputs.publish }}

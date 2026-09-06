@@ -298,8 +298,8 @@ build_gdb() {
     (
         cd "$build_dir"
         "$source_dir/configure" "${configure_args[@]}"
-        make -j"$CUP_JOBS"
-        make install
+        make -j"$CUP_JOBS" all-gdb all-gdbserver
+        make install-gdb install-gdbserver
     )
 
     if is_windows_platform "$HOST_PLATFORM"; then

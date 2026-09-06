@@ -306,13 +306,24 @@ macos_expected_native_arch() {
 
 macos_test_is_runtime_macho() {
     local path="$1"
-    local archive_magic
+    local description
 
-    archive_magic="$(LC_ALL=C head -c 8 "$path" 2>/dev/null || true)"
-    [ "$archive_magic" != '!<arch>' ] || return 1
-    file -b "$path" 2>/dev/null | grep -Fq 'Mach-O'
+    [ -f "$path" ] || return 1
+
+    # Keep raw bytes out of shell variables. The first probe recognizes a
+    # normal ar archive; the textual `file` description also catches fat
+    # Mach-O containers whose slices are static archives.
+    if LC_ALL=C head -c 8 "$path" 2>/dev/null | grep -Fqx '!<arch>'; then
+        return 1
+    fi
+
+    description="$(LC_ALL=C file -b "$path" 2>/dev/null || true)"
+    case "$description" in
+        *archive*) return 1 ;;
+        *Mach-O*) return 0 ;;
+        *) return 1 ;;
+    esac
 }
-
 assert_macos_clang_package_contract() {
     local candidate="$1"
     local expected_arch="$2"
@@ -549,6 +560,7 @@ lldb_identity_probe() {
     local clean_home="$tmp_root/clean-home-$label"
     local python_entry
     local python_version
+    local lldb_pythonpath
     local clang_resource
 
     python_entry="$(awk -F= '$1 == "config.python_executable" { print $2; exit }' "$candidate/info.txt")"
@@ -568,21 +580,28 @@ d=lldb.SBDebugger.Create(); print('SBDEBUGGER_VALID='+str(d.IsValid())); lldb.SB
 PY_ID
     grep -Fx "PY_PREFIX=$candidate" "$out" >/dev/null
     grep -Fx "PY_EXEC=$candidate/$python_entry" "$out" >/dev/null
-    grep -F "LLDB_FILE=$candidate/lib/python$python_version/site-packages/lldb/" "$out" >/dev/null
+    lldb_pythonpath="$(sed -n 's/^LLDB_FILE=//p' "$out" | sed 's#/lldb/.*$##' | head -n 1)"
+    case "$lldb_pythonpath" in
+        "$candidate/lib/python$python_version/site-packages"|"$candidate/lib/python$python_version/dist-packages") ;;
+        *)
+            echo "LLDB Python module escaped the package-owned Python directories: $lldb_pythonpath" >&2
+            exit 1
+            ;;
+    esac
     grep -Fx 'SBDEBUGGER_VALID=True' "$out" >/dev/null
 
     run_lldb_clean "$candidate" --print-script-interpreter-info > "$json"
     env -i HOME="$clean_home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
-        "$candidate/$python_entry" - "$json" "$candidate" "$python_entry" "$python_version" <<'PY_INFO'
+        "$candidate/$python_entry" - "$json" "$candidate" "$python_entry" "$lldb_pythonpath" <<'PY_INFO'
 import json, os, sys
 with open(sys.argv[1], encoding='utf-8') as f:
     info=json.load(f)
-root, python_entry, python_version=sys.argv[2:5]
+root, python_entry, lldb_pythonpath=sys.argv[2:5]
 expected={
     'language':'python',
     'prefix':root,
     'executable':root+'/'+python_entry,
-    'lldb-pythonpath':root+'/lib/python'+python_version+'/site-packages',
+    'lldb-pythonpath':lldb_pythonpath,
 }
 for key, value in expected.items():
     if info.get(key) != value:
@@ -822,16 +841,19 @@ C_EOF
             [ "$(info_value contents.clang_resources)" = true ] || { echo 'LLDB package-owned Clang resources not declared' >&2; exit 1; }
             lldb_identity_probe "$root" A
         fi
-        if feature_enabled features.lldb_dap; then
+        if info_bool features.process_launch; then
+            require_executable "$root/bin/lldb-argdumper"
+        fi
+        if info_bool features.lldb_dap; then
             require_executable "$root/bin/lldb-dap"
         fi
-        if feature_enabled features.lldb_server; then
+        if info_bool features.lldb_server; then
             require_executable "$root/bin/lldb-server"
-            feature_enabled features.remote_debugging || {
+            info_bool features.remote_debugging || {
                 echo 'LLDB lldb-server is present but remote-debugging capability is not declared' >&2
                 exit 1
             }
-        elif feature_enabled features.remote_debugging; then
+        elif info_bool features.remote_debugging; then
             echo 'LLDB remote-debugging capability is declared without lldb-server' >&2
             exit 1
         fi
@@ -1176,7 +1198,7 @@ case "$LLVM_TOOL" in
                 -o 'image lookup -n cup_lldb_test_add_unique' \
                 -o quit 2>&1 | tee "$tmp_root/lldb-reloc-c-output.txt"
             grep -F 'cup_lldb_test_add_unique' "$tmp_root/lldb-reloc-c-output.txt"
-            if [[ "$(info_value platform.host)" == linux-* ]] && feature_enabled features.lldb_server; then
+            if [[ "$(info_value platform.host)" == linux-* ]] && info_bool features.lldb_server; then
                 lldb_remote_debug_probe "$reloc_c" C
             fi
         else

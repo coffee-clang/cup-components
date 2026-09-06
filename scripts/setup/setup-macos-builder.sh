@@ -43,7 +43,7 @@ if ! command -v brew >/dev/null 2>&1; then
     exit 1
 fi
 
-brew update
+brew update-if-needed
 
 brew_install_if_missing bash
 brew_install_if_missing cmake

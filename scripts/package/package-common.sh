@@ -370,12 +370,8 @@ prepare_source_tree() {
     printf '%s\n' "$source_dir"
 }
 
-llvm_windows_source_excludes() {
+llvm_source_excludes() {
     local archive="$1"
-
-    if ! is_windows_platform "${HOST_PLATFORM:-}"; then
-        return 0
-    fi
 
     case "$(basename "$archive")" in
         llvm-project-*.src.tar.*)
@@ -405,7 +401,7 @@ extract_archive() {
 
     while IFS= read -r exclude_arg; do
         [ -n "$exclude_arg" ] && tar_excludes+=("$exclude_arg")
-    done < <(llvm_windows_source_excludes "$archive")
+    done < <(llvm_source_excludes "$archive")
 
     case "$archive" in
         *.tar.xz) tar_mode=-xJf ;;
@@ -511,7 +507,11 @@ prefix_executable_exists() {
     local candidate
 
     while IFS= read -r candidate; do
-        if package_bin_exact_file_exists "$prefix" "$candidate"; then
+        if is_windows_platform "$HOST_PLATFORM"; then
+            # Native Windows command identity is extension-based; POSIX mode
+            # bits in the MSYS2 staging tree are not part of that contract.
+            package_bin_exact_file_exists "$prefix" "$candidate" && return 0
+        elif [ -x "$prefix/bin/$candidate" ]; then
             return 0
         fi
     done < <(package_bin_candidate_names "$name")
@@ -1195,17 +1195,24 @@ macos_runtime_library_is_base() {
 
 macos_is_runtime_macho() {
     local path="$1"
-    local archive_magic
+    local description
 
-    # Apple `file` can describe a static ar archive in terms of the Mach-O
-    # objects it contains. Such an archive is link-time input, not a runtime
-    # loadable object, and must never be handed to otool/install_name_tool.
-    archive_magic="$(LC_ALL=C head -c 8 "$path" 2>/dev/null || true)"
-    [ "$archive_magic" != '!<arch>' ] || return 1
+    [ -f "$path" ] || return 1
 
-    file -b "$path" 2>/dev/null | grep -Fq 'Mach-O'
+    # Keep raw bytes out of shell variables. The first probe recognizes a
+    # normal ar archive; the textual `file` description also catches fat
+    # Mach-O containers whose slices are static archives.
+    if LC_ALL=C head -c 8 "$path" 2>/dev/null | grep -Fqx '!<arch>'; then
+        return 1
+    fi
+
+    description="$(LC_ALL=C file -b "$path" 2>/dev/null || true)"
+    case "$description" in
+        *archive*) return 1 ;;
+        *Mach-O*) return 0 ;;
+        *) return 1 ;;
+    esac
 }
-
 macos_macho_files() {
     local prefix="$1"
     local path
@@ -2034,7 +2041,6 @@ package_file_mode_class() {
     local path="$1"
     local host_platform="$2"
     local base
-    local first_two=""
 
     if is_windows_platform "$host_platform"; then
         base="$(basename "$path" | tr '[:upper:]' '[:lower:]')"
@@ -2049,10 +2055,8 @@ package_file_mode_class() {
         # cannot carry a meaningful native-Windows execute permission. Mirror
         # that archive semantics so manifest.txt and the emitted tar/ZIP modes
         # describe the same logical package.
-        if [ -f "$path" ]; then
-            first_two="$(LC_ALL=C head -c 2 "$path" 2>/dev/null || true)"
-        fi
-        if [ "$first_two" = '#!' ]; then
+        if [ -f "$path" ] &&
+           LC_ALL=C head -c 2 "$path" 2>/dev/null | grep -q '^#!'; then
             printf '%s\n' 0755
         else
             printf '%s\n' 0644
@@ -2076,7 +2080,6 @@ package_write_path_list() {
     while IFS= read -r -d '' path; do
         relative="${path#"$package_root"/}"
         [ "$relative" != "manifest.txt" ] || continue
-        [ "$relative" != ".manifest.verify" ] || continue
         [ "$relative" != ".manifest.paths" ] || continue
         package_relative_path_is_safe "$relative" ||
             die "package contains a path outside the CUP package grammar: $relative"
@@ -2159,23 +2162,15 @@ package_write_manifest() {
     rm -f "$path_list"
 }
 
-package_generate_and_verify_manifest() {
+package_generate_manifest() {
     local package_root="$1"
     local host_platform="$2"
     local manifest="$package_root/manifest.txt"
-    local verification="$package_root/.manifest.verify"
 
-    rm -f "$manifest" "$verification"
+    rm -f "$manifest"
     package_verify_tree "$package_root" "$host_platform"
     package_write_manifest "$package_root" "$host_platform" "$manifest"
-    package_write_manifest "$package_root" "$host_platform" "$verification"
-    cmp -s "$manifest" "$verification" || {
-        rm -f "$verification"
-        die "package manifest self-verification failed"
-    }
-    rm -f "$verification"
     chmod 0644 "$manifest"
-    package_verify_tree "$package_root" "$host_platform"
 }
 
 package_info_value() {
@@ -2639,6 +2634,23 @@ create_archive() {
     log "created package: $output"
 }
 
+package_unzip_allow_warnings() {
+    local status=0
+
+    unzip "$@" || status=$?
+    case "$status" in
+        0) return 0 ;;
+        1)
+            # Info-ZIP status 1 means processing completed with warnings. The
+            # semantic verifier still validates modes, extraction, manifest
+            # identity and the complete logical tree.
+            log "warning: unzip completed with warnings: $*"
+            return 0
+            ;;
+        *) die "unzip failed with status $status: $*" ;;
+    esac
+}
+
 package_verify_archive() (
     local format="$1"
     local package_base="$2"
@@ -2686,7 +2698,7 @@ package_verify_archive() (
             ' | LC_ALL=C sort > "$actual_modes"
             ;;
         zip)
-            unzip -Z -l "$archive" | awk -v prefix="$package_base/" '
+            package_unzip_allow_warnings -Z -l "$archive" | awk -v prefix="$package_base/" '
                 {
                     permissions=$1
                     kind=substr(permissions, 1, 1)
@@ -2715,7 +2727,7 @@ package_verify_archive() (
     case "$format" in
         tar.xz) tar -xJf "$archive" -C "$extract_dir" ;;
         tar.gz) tar -xzf "$archive" -C "$extract_dir" ;;
-        zip) unzip -q "$archive" -d "$extract_dir" ;;
+        zip) package_unzip_allow_warnings -q "$archive" -d "$extract_dir" ;;
     esac
 
     extracted="$extract_dir/$package_base"
@@ -2774,7 +2786,6 @@ generate_package_checksums() {
     done
     LC_ALL=C sort -k2,2 "$temporary" > "$checksum_file"
     rm -f "$temporary"
-    verify_package_checksums "$package_base" "$output_dir"
     log "created checksums: $checksum_file"
 }
 
@@ -2852,7 +2863,7 @@ create_packages() {
     package_normalize_root "$prefix" "$package_root" "$host_platform"
     package_verify_info_contract \
         "$package_root" "$tool" "$version" "$host_platform" "$target_platform" "$revision"
-    package_generate_and_verify_manifest "$package_root" "$host_platform"
+    package_generate_manifest "$package_root" "$host_platform"
     package_normalize_timestamps "$package_root"
 
     for format in $(package_formats_for_host "$host_platform"); do

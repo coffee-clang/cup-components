@@ -2,6 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT="$ROOT/scripts/build/build-gdb.sh"
+PRODUCT_TEST="$ROOT/scripts/test/test-gdb.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -46,7 +47,14 @@ relocate_gdb_source_highlight_data "$TMP/src"
 grep -F 'gdb_configure_has_option' "$SCRIPT" >/dev/null
 grep -F 'gdb_config_bool HAVE_SOURCE_HIGHLIGHT' "$SCRIPT" >/dev/null
 grep -F 'prepare_gdb_package_seed' "$SCRIPT" >/dev/null
-grep -F 'copy_path_into_seed lib/libinproctrace.so' "$SCRIPT" >/dev/null
+if grep -F 'copy_path_into_seed lib/libinproctrace.so' "$SCRIPT" >/dev/null; then
+    echo 'GDB package seed still ships unsupported fast-tracepoint in-process agent' >&2
+    exit 1
+fi
+if grep -F 'contents.inproctrace=' "$SCRIPT" >/dev/null; then
+    echo 'GDB metadata still advertises unsupported inproctrace payload' >&2
+    exit 1
+fi
 
 # GDB-owned configure options must be discovered from gdb/configure rather than
 # silently dropped because the top-level Binutils/GDB configure does not list them.
@@ -76,5 +84,14 @@ if grep -F 'gdb_config_bool HAVE_ZLIB_H' "$SCRIPT" >/dev/null; then
     echo 'GDB zlib metadata reverted to an unrelated header macro' >&2
     exit 1
 fi
+
+grep -F 'features.remote_debugging' "$PRODUCT_TEST" >/dev/null || {
+    echo 'GDB POSIX product test no longer requires declared remote debugging' >&2
+    exit 1
+}
+grep -F 'target remote 127.0.0.1:$port' "$PRODUCT_TEST" >/dev/null || {
+    echo 'GDB POSIX product test no longer exercises packaged gdbserver over loopback' >&2
+    exit 1
+}
 
 echo GDB_PACKAGE_POLICY=PASS

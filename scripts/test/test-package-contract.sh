@@ -173,6 +173,18 @@ find "$package_root/share/data" -perm 0755 -print -quit | grep -q . || {
     exit 1
 }
 
+# Windows package modes are logical archive modes. PE loadable images are kept
+# executable so MSYS2 tar/ZIP metadata and manifest v2 describe the same tree.
+[ "$(package_file_mode_class tool.exe windows-x64)" = 0755 ]
+[ "$(package_file_mode_class runtime.dll windows-x64)" = 0755 ]
+[ "$(package_file_mode_class extension.pyd windows-x64)" = 0755 ]
+windows_script="$TMP/windows-script-without-extension"
+printf '#!/bin/sh\nexit 0\n' > "$windows_script"
+[ "$(package_file_mode_class "$windows_script" windows-x64)" = 0755 ]
+printf 'plain-data\n' > "$windows_script"
+[ "$(package_file_mode_class "$windows_script" windows-x64)" = 0644 ]
+[ "$(package_file_mode_class metadata.txt windows-x64)" = 0644 ]
+
 tar -tf "$CUP_OUT_DIR/$base.tar.xz" >/dev/null
 tar -tf "$CUP_OUT_DIR/$base.tar.gz" >/dev/null
 unzip -tqq "$CUP_OUT_DIR/$base.zip"
@@ -219,6 +231,29 @@ cmp -s "$TMP/parity-xz.manifest" "$TMP/parity-zip.manifest" || {
     echo 'tar.xz and zip logical package graphs differ' >&2
     exit 1
 }
+
+# The production archive verifier must inspect the stored mode metadata itself.
+# A Windows shebang file can look executable after extraction under MSYS2 even
+# when a ZIP recorded the wrong mode, so extraction-only parity is insufficient.
+windows_archive_root="$TMP/windows-archive-root"
+windows_archive_base="gdb-1.0-windows-x64-windows-x64"
+mkdir -p "$windows_archive_root/$windows_archive_base/bin"
+printf '#!/bin/sh\nexit 0\n' > "$windows_archive_root/$windows_archive_base/bin/helper"
+chmod 0644 "$windows_archive_root/$windows_archive_base/bin/helper"
+cat > "$windows_archive_root/$windows_archive_base/manifest.txt" <<EOF_WINDOWS_MANIFEST
+format=2
+f	0755	$(package_file_digest "$windows_archive_root/$windows_archive_base/bin/helper")	bin/helper
+d	0755	-	bin
+EOF_WINDOWS_MANIFEST
+(
+    cd "$windows_archive_root"
+    zip -qr "$TMP/$windows_archive_base.zip" "$windows_archive_base"
+)
+if package_verify_archive zip "$windows_archive_base" \
+    "$windows_archive_root/$windows_archive_base" "$TMP" windows-x64 >/dev/null 2>&1; then
+    echo 'final archive verifier accepted wrong stored Windows script mode' >&2
+    exit 1
+fi
 
 # Unsupported producer objects must fail before publication when the host
 # filesystem can actually represent the fixture object.

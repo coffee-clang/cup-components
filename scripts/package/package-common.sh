@@ -398,6 +398,7 @@ extract_archive() {
     local destination="$2"
     local tar_excludes=()
     local exclude_arg
+    local tar_mode=""
 
     rm -rf "$destination"
     mkdir -p "$destination"
@@ -407,12 +408,33 @@ extract_archive() {
     done < <(llvm_windows_source_excludes "$archive")
 
     case "$archive" in
-        *.tar.xz) tar -xJf "$archive" -C "$destination" --strip-components=1 "${tar_excludes[@]}" ;;
-        *.tar.gz|*.tgz) tar -xzf "$archive" -C "$destination" --strip-components=1 "${tar_excludes[@]}" ;;
-        *.tar.bz2|*.tbz2) tar -xjf "$archive" -C "$destination" --strip-components=1 "${tar_excludes[@]}" ;;
-        *.zip) unzip -q "$archive" -d "$destination" ;;
+        *.tar.xz) tar_mode=-xJf ;;
+        *.tar.gz|*.tgz) tar_mode=-xzf ;;
+        *.tar.bz2|*.tbz2) tar_mode=-xjf ;;
+        *.zip)
+            unzip -q "$archive" -d "$destination"
+            return
+            ;;
         *) die "unsupported archive format: $archive" ;;
     esac
+
+    if tar "$tar_mode" "$archive" -C "$destination" --strip-components=1 "${tar_excludes[@]}"; then
+        return 0
+    fi
+
+    # MSYS2's default winsymlinks:deepcopy mode requires a symlink target to
+    # exist before the link entry is unpacked. A first pass can therefore fail
+    # only because an archive lists a link before its target, while still
+    # materializing that later target. Retrying into the same destination is
+    # the documented MSYS2 workaround and remains fail-closed for every other
+    # tar error because the second pass must itself succeed.
+    if is_windows_platform "${HOST_PLATFORM:-}"; then
+        log "retrying tar source extraction after the Windows first pass failed"
+        tar "$tar_mode" "$archive" -C "$destination" --strip-components=1 "${tar_excludes[@]}"
+        return
+    fi
+
+    return 1
 }
 
 
@@ -728,6 +750,7 @@ copy_posix_python_runtime() {
     local entry_list
     local entry
     local base
+    local framework_app
 
     if ! is_linux_platform "$HOST_PLATFORM" && ! is_macos_platform "$HOST_PLATFORM"; then
         return 0
@@ -770,12 +793,35 @@ copy_posix_python_runtime() {
     done < "$entry_list"
     rm -f "$entry_list"
 
+    # Match the Windows Python package policy: interpreter caches, CPython's
+    # own regression suites and GUI/demo modules are not runtime responsibility
+    # for CUP's debugger/helper use cases. Keeping them also preserves builder
+    # paths in bytecode and needlessly inflates every Python-carrying package.
+    find "$destination" -type d -name __pycache__ -prune -exec rm -rf {} +
+    find "$destination" -type d \
+        \( -name test -o -name tests -o -name idlelib -o -name tkinter -o -name turtledemo \) \
+        -prune -exec rm -rf {} +
+
     if [ "$copy_executable" = true ]; then
         package_relative_path_is_safe "$executable_relative" ||
             die "unsafe packaged Python executable path: $executable_relative"
         mkdir -p "$PREFIX/$(dirname "$executable_relative")"
         cp -pL "$python_executable" "$PREFIX/$executable_relative"
         chmod 0755 "$PREFIX/$executable_relative"
+
+        if is_macos_platform "$HOST_PLATFORM"; then
+            # Homebrew/framework Python's command-line launcher loads the
+            # framework dylib and then spawns this companion executable. Once
+            # the dylib is relocated to <package>/lib/Python, CPython resolves
+            # the companion at <package>/lib/Resources/Python.app. Preserve
+            # that framework topology instead of depending on the host prefix.
+            framework_app="$python_prefix/Resources/Python.app"
+            if [ -d "$framework_app" ]; then
+                mkdir -p "$PREFIX/lib/Resources"
+                rm -rf "$PREFIX/lib/Resources/Python.app"
+                cp -RPp "$framework_app" "$PREFIX/lib/Resources/Python.app"
+            fi
+        fi
     fi
 
     PACKAGED_PYTHON_RUNTIME_VERSION="$full_version"
@@ -1147,8 +1193,16 @@ macos_runtime_library_is_base() {
     esac
 }
 
-macos_is_macho() {
+macos_is_runtime_macho() {
     local path="$1"
+    local archive_magic
+
+    # Apple `file` can describe a static ar archive in terms of the Mach-O
+    # objects it contains. Such an archive is link-time input, not a runtime
+    # loadable object, and must never be handed to otool/install_name_tool.
+    archive_magic="$(LC_ALL=C head -c 8 "$path" 2>/dev/null || true)"
+    [ "$archive_magic" != '!<arch>' ] || return 1
+
     file -b "$path" 2>/dev/null | grep -Fq 'Mach-O'
 }
 
@@ -1157,7 +1211,7 @@ macos_macho_files() {
     local path
 
     while IFS= read -r -d '' path; do
-        if macos_is_macho "$path"; then
+        if macos_is_runtime_macho "$path"; then
             printf '%s\n' "$path"
         fi
     done < <(find "$prefix" -type f -print0)
@@ -1980,13 +2034,29 @@ package_file_mode_class() {
     local path="$1"
     local host_platform="$2"
     local base
+    local first_two=""
 
     if is_windows_platform "$host_platform"; then
         base="$(basename "$path" | tr '[:upper:]' '[:lower:]')"
         case "$base" in
-            *.exe|*.com|*.bat|*.cmd) printf '%s\n' 0755 ;;
-            *) printf '%s\n' 0644 ;;
+            *.exe|*.com|*.bat|*.cmd|*.dll|*.pyd)
+                printf '%s\n' 0755
+                return 0
+                ;;
         esac
+
+        # MSYS2 also reports shebang scripts as executable even when chmod
+        # cannot carry a meaningful native-Windows execute permission. Mirror
+        # that archive semantics so manifest.txt and the emitted tar/ZIP modes
+        # describe the same logical package.
+        if [ -f "$path" ]; then
+            first_two="$(LC_ALL=C head -c 2 "$path" 2>/dev/null || true)"
+        fi
+        if [ "$first_two" = '#!' ]; then
+            printf '%s\n' 0755
+        else
+            printf '%s\n' 0644
+        fi
     elif [ -x "$path" ]; then
         printf '%s\n' 0755
     else
@@ -2569,6 +2639,116 @@ create_archive() {
     log "created package: $output"
 }
 
+package_verify_archive() (
+    local format="$1"
+    local package_base="$2"
+    local package_root="$3"
+    local output_dir="$4"
+    local host_platform="$5"
+    local archive="$output_dir/$package_base.$format"
+    local tmp
+    local extracted
+    local expected_modes
+    local actual_modes
+    local recomputed
+    local extract_dir
+
+    [ -f "$archive" ] || die "missing package archive for semantic verification: $archive"
+    tmp="$(mktemp -d "$CUP_WORK_DIR/archive-verify.XXXXXX")"
+    trap 'rm -rf "$tmp"' EXIT
+    expected_modes="$tmp/expected-modes.tsv"
+    actual_modes="$tmp/actual-modes.tsv"
+    recomputed="$tmp/recomputed-manifest.txt"
+    extract_dir="$tmp/extract"
+    mkdir -p "$extract_dir"
+
+    awk -F '\t' 'NR > 1 && ($1 == "f" || $1 == "d") { print $1 "\t" $2 "\t" $4 }' \
+        "$package_root/manifest.txt" | LC_ALL=C sort > "$expected_modes"
+
+    case "$format" in
+        tar.xz|tar.gz)
+            tar -tvf "$archive" | awk -v prefix="$package_base/" '
+                {
+                    permissions=$1
+                    kind=substr(permissions, 1, 1)
+                    if (kind != "-" && kind != "d") next
+                    path=$NF
+                    if (index(path, prefix) != 1) next
+                    relative=substr(path, length(prefix) + 1)
+                    sub(/\/$/, "", relative)
+                    if (relative == "" || relative == "manifest.txt") next
+                    executable=(substr(permissions,4,1) ~ /[xstST]/ || \
+                                substr(permissions,7,1) ~ /[xstST]/ || \
+                                substr(permissions,10,1) ~ /[xstST]/)
+                    mode=executable ? "0755" : "0644"
+                    print (kind == "d" ? "d" : "f") "\t" mode "\t" relative
+                }
+            ' | LC_ALL=C sort > "$actual_modes"
+            ;;
+        zip)
+            unzip -Z -l "$archive" | awk -v prefix="$package_base/" '
+                {
+                    permissions=$1
+                    kind=substr(permissions, 1, 1)
+                    if (kind != "-" && kind != "d") next
+                    path=$NF
+                    if (index(path, prefix) != 1) next
+                    relative=substr(path, length(prefix) + 1)
+                    sub(/\/$/, "", relative)
+                    if (relative == "" || relative == "manifest.txt") next
+                    executable=(substr(permissions,4,1) ~ /[xstST]/ || \
+                                substr(permissions,7,1) ~ /[xstST]/ || \
+                                substr(permissions,10,1) ~ /[xstST]/)
+                    mode=executable ? "0755" : "0644"
+                    print (kind == "d" ? "d" : "f") "\t" mode "\t" relative
+                }
+            ' | LC_ALL=C sort > "$actual_modes"
+            ;;
+        *) die "unsupported package format during semantic verification: $format" ;;
+    esac
+
+    cmp -s "$expected_modes" "$actual_modes" || {
+        diff -u "$expected_modes" "$actual_modes" >&2 || true
+        die "package archive mode/object representation differs from manifest.txt: $(basename "$archive")"
+    }
+
+    case "$format" in
+        tar.xz) tar -xJf "$archive" -C "$extract_dir" ;;
+        tar.gz) tar -xzf "$archive" -C "$extract_dir" ;;
+        zip) unzip -q "$archive" -d "$extract_dir" ;;
+    esac
+
+    extracted="$extract_dir/$package_base"
+    [ -d "$extracted" ] || die "package archive has the wrong top-level root: $(basename "$archive")"
+    if find "$extract_dir" -mindepth 1 -maxdepth 1 ! -name "$package_base" -print -quit | grep -q .; then
+        die "package archive contains an unexpected top-level entry: $(basename "$archive")"
+    fi
+    [ -f "$extracted/manifest.txt" ] || die "package archive is missing manifest.txt: $(basename "$archive")"
+    cmp -s "$package_root/manifest.txt" "$extracted/manifest.txt" ||
+        die "package archive carries a different manifest.txt: $(basename "$archive")"
+
+    package_verify_tree "$extracted" "$host_platform"
+    package_write_manifest "$extracted" "$host_platform" "$recomputed"
+    cmp -s "$package_root/manifest.txt" "$recomputed" || {
+        diff -u "$package_root/manifest.txt" "$recomputed" >&2 || true
+        die "package archive logical graph differs from finalized package tree: $(basename "$archive")"
+    }
+
+    log "verified package archive semantics: $archive"
+)
+
+verify_package_archives() {
+    local package_base="$1"
+    local package_root="$2"
+    local output_dir="$3"
+    local host_platform="$4"
+    local format
+
+    for format in $(package_formats_for_host "$host_platform"); do
+        package_verify_archive "$format" "$package_base" "$package_root" "$output_dir" "$host_platform"
+    done
+}
+
 generate_package_checksums() {
     local package_base="$1"
     local output_dir="$2"
@@ -2678,6 +2858,7 @@ create_packages() {
     for format in $(package_formats_for_host "$host_platform"); do
         create_archive "$format" "$package_base" "$package_root" "$CUP_OUT_DIR" "$host_platform"
     done
+    verify_package_archives "$package_base" "$package_root" "$CUP_OUT_DIR" "$host_platform"
     generate_package_checksums "$package_base" "$CUP_OUT_DIR"
 
     cat > "$CUP_OUT_DIR/release.env" <<EOF_ENV

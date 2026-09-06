@@ -77,6 +77,7 @@ write_function_fixture() {
         macos_macho_min_version \
         macos_version_at_most \
         macos_version_is \
+        macos_test_is_runtime_macho \
         assert_macos_clang_package_contract; do
         extract_function "$TEST_SCRIPT" "$fn" >> "$target"
         printf '\n' >> "$target"
@@ -90,7 +91,7 @@ make_fake_macos_tools() {
     cat > "$bin/file" <<'SH'
 #!/usr/bin/env sh
 case "$2" in
-    */clang|*/ld64.lld|*/libfixture.dylib) printf '%s\n' 'Mach-O 64-bit executable' ;;
+    */clang|*/ld64.lld|*/libfixture.dylib|*/libfixture.a) printf '%s\n' 'Mach-O 64-bit executable' ;;
     *) printf '%s\n' 'ASCII text' ;;
 esac
 SH
@@ -98,6 +99,9 @@ SH
     cat > "$bin/lipo" <<'SH'
 #!/usr/bin/env sh
 [ "$1" = '-archs' ] || exit 2
+case "$2" in
+    *.a) exit 91 ;;
+esac
 printf '%s\n' "${MOCK_ARCH:-x86_64}"
 SH
 
@@ -136,6 +140,7 @@ make_candidate() {
     printf '#!/bin/sh\nexit 0\n' > "$root/bin/clang"
     printf '#!/bin/sh\nexit 0\n' > "$root/bin/ld64.lld"
     printf 'fixture\n' > "$root/lib/libfixture.dylib"
+    printf '!<arch>\nfixture\n' > "$root/lib/libfixture.a"
     chmod +x "$root/bin/clang" "$root/bin/ld64.lld"
 }
 

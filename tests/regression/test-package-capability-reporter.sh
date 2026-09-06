@@ -107,4 +107,33 @@ rm -f "$binutils_fixture/bin/x86_64-pc-linux-gnu-ar"
 bash "$reporter" "$binutils_fixture" gcc > "$tmp/binutils-missing-required.out"
 grep -Fq 'declared:features.target_prefixed_binutils=true  WARNING: declared true but executable missing' "$tmp/binutils-missing-required.out"
 
+# A cross package whose public tool naming is target-prefixed must not emit
+# false missing warnings for unprefixed tools that are deliberately absent.
+cross="$tmp/cross-target-prefixed"
+make_fixture "$cross" x86_64-w64-mingw32 x86_64-w64-mingw32 true true
+printf 'config.tool_naming=target-prefixed\n' >> "$cross/info.txt"
+sed -i \
+    -e 's/^features.c=false$/features.c=true/' \
+    -e 's/^features.cpp=false$/features.cpp=true/' \
+    -e 's/^features.preprocessor=false$/features.preprocessor=true/' \
+    -e 's/^features.gcov=false$/features.gcov=true/' \
+    -e 's/^features.lto_dump=false$/features.lto_dump=true/' \
+    -e 's/^features.binutils=false$/features.binutils=true/' \
+    "$cross/info.txt"
+for exe in gcc g++ cpp gcov lto-dump ar as ld ranlib strip objdump readelf; do
+    make_exe "$cross/bin/x86_64-w64-mingw32-$exe"
+done
+bash "$reporter" "$cross" gcc > "$tmp/cross.out"
+if grep -Fq 'WARNING:' "$tmp/cross.out"; then
+    echo 'target-prefixed GCC package produced a false missing-tool warning' >&2
+    cat "$tmp/cross.out" >&2
+    exit 1
+fi
+if grep -Eq '^  missing  (gcc|g\+\+|cpp|gcov|lto-dump|as|ld|ar|ranlib|strip|objdump|readelf)[[:space:]]' "$tmp/cross.out"; then
+    echo 'target-prefixed GCC package was probed for deliberately absent unprefixed tools' >&2
+    cat "$tmp/cross.out" >&2
+    exit 1
+fi
+grep -Fq 'present  x86_64-w64-mingw32-lto-dump' "$tmp/cross.out"
+
 printf 'PACKAGE_CAPABILITY_REPORTER_TARGET_PREFIX_SEMANTICS=PASS\n'

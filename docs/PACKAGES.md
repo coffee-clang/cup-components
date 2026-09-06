@@ -78,6 +78,13 @@ Before archive creation:
 - executable regular files use mode `0755`;
 - non-executable regular files use mode `0644`.
 
+For Windows package archives, PE command/loadable files (`.exe`, `.com`, `.dll`,
+`.pyd`), command scripts (`.bat`, `.cmd`) and files beginning with a shebang use
+the `0755` archive mode class. Other regular files use `0644`. The shebang rule
+matches the executable-file semantics exposed by MSYS2 even when native Windows
+permissions do not carry a POSIX execute bit. These are archive/manifest modes;
+Windows does not use the POSIX execute bit as its native execution permission model.
+
 ## Package paths
 
 Every path stored inside a package is relative to the package root and must satisfy one cross-platform grammar. This prevents an archive produced on one operating system from containing names that are unsafe or ambiguous on another.
@@ -243,7 +250,7 @@ Records are sorted by relative path. Every descendant of the package root is lis
 
 A symbolic link's final regular-file target has its own separate manifest record.
 
-The producer writes the manifest twice from the finalized tree and compares the results before archive creation. Package validation later extracts each archive and independently regenerates the manifest from the extracted tree. This checks that the archive really represents the same package object graph described by `manifest.txt`.
+The producer writes the manifest twice from the finalized tree and compares the results before archive creation. After creating each advertised archive, the finalizer verifies the stored file/directory mode classes, extracts that archive, independently regenerates the manifest from the extracted tree and compares it with the finalized package manifest. This checks both the archive metadata consumed during installation and the package object graph described by `manifest.txt`.
 
 The manifest is therefore the exact reference inventory for the installed package tree and can be used to detect missing, changed or unexpected package paths. It does not make the package immutable to a process that already has permission to rewrite both the payload and its metadata.
 
@@ -352,7 +359,7 @@ Windows packages use regular files rather than package symbolic links.
 
 Python can be a genuine runtime capability of a distributed tool.
 
-GDB and LLDB include Python support. LLVM helper commands such as `git-clang-format`, `run-clang-tidy` and `clang-tidy-diff` can also require Python when those helpers are included.
+GDB and LLDB include Python support. The clang-tidy package also carries a package-owned Python runtime for the deliberate `run-clang-tidy` and `clang-tidy-diff` helpers. The standalone clang-format package does not include `git-clang-format`: that upstream integration helper requires an external Git runtime and would make the formatter package non-self-contained for a feature outside CUP's deliberate formatter surface.
 
 When package-owned Python is required, the producer copies the interpreter and the standard-library/runtime material needed by the selected tool. Development-only Python configuration directories are excluded from the final package.
 

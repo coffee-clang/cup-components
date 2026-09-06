@@ -54,6 +54,7 @@ need_common_tools() {
     need tar
     need make
     need zip
+    need unzip
     need realpath
 
     if ! command -v gcc >/dev/null 2>&1 && ! command -v cc >/dev/null 2>&1; then

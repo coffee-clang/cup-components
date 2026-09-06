@@ -51,6 +51,7 @@ need_valgrind_tools() {
     need gcc
     need perl
     need zip
+    need unzip
 }
 
 

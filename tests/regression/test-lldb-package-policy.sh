@@ -21,6 +21,30 @@ done
 grep -F 'llvm_copy_path_into_seed bin/lldb' "$SCRIPT" >/dev/null
 grep -F 'llvm_copy_path_into_seed bin/lldb-dap' "$SCRIPT" >/dev/null
 grep -F 'llvm_copy_path_into_seed bin/lldb-server' "$SCRIPT" >/dev/null
+grep -F 'contents.clang_resources=$has_lldb_clang_resources' "$SCRIPT" >/dev/null || {
+    echo 'LLDB metadata no longer derives Clang resources from the exact resource root' >&2
+    exit 1
+}
+if grep -F "metadata_bool_for_dirs "\$PREFIX" 'lib/clang/*/include'" "$SCRIPT" >/dev/null; then
+    echo 'LLDB metadata regressed to basename-only pathname matching' >&2
+    exit 1
+fi
+grep -F 'rm -f "$python_dir/site-packages/lldb/lldb-argdumper"' "$SCRIPT" >/dev/null || {
+    echo 'LLDB pruning no longer removes the lldb-argdumper Python companion' >&2
+    exit 1
+}
+grep -F 'lldb_remote_debug_probe()' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
+    echo 'LLDB product qualification no longer contains a real remote-debugging probe' >&2
+    exit 1
+}
+grep -F 'lldb_remote_debug_probe "$reloc_c" C' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
+    echo 'LLDB remote-debugging qualification is no longer bound to relocation C' >&2
+    exit 1
+}
+grep -F 'if [[ "$(info_value platform.host)" == linux-* || "$(info_value platform.host)" == macos-* ]]; then' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
+    echo 'LLDB POSIX relocation no longer includes macOS previous-root isolation' >&2
+    exit 1
+}
 if grep -F '[ -x "$PACKAGE_PREFIX/bin/lldb-dap" ] || die' "$SCRIPT" >/dev/null; then
     echo 'LLDB package seed incorrectly requires lldb-dap for every LLVM version' >&2
     exit 1

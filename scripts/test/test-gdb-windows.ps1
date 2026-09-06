@@ -62,7 +62,7 @@ function Assert-OutputContains {
         [string] $Pattern
     )
 
-    $text = ($Output | Out-String)
+    $text = (($Output | Out-String) -replace "`r", '')
     if ($text -notmatch $Pattern) {
         throw "Expected output to match pattern: $Pattern"
     }

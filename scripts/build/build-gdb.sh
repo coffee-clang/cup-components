@@ -71,6 +71,7 @@ need_common_tools() {
     need tar
     need make
     need zip
+    need unzip
 
     if ! python_command >/dev/null 2>&1; then
         die "python3 or python is required to build GDB with Python support"
@@ -355,7 +356,6 @@ prepare_gdb_package_seed() {
     else
         copy_path_into_seed bin/gdb
         copy_path_into_seed bin/gdbserver
-        copy_path_into_seed lib/libinproctrace.so
     fi
 
     copy_path_into_seed share/gdb
@@ -461,7 +461,6 @@ write_gdb_info() {
         "contents.uses_xxhash=$xxhash"
         "contents.uses_babeltrace=$babeltrace"
         "contents.uses_intel_pt=$intel_pt"
-        "contents.inproctrace=$(metadata_bool_for_files "$PREFIX" 'lib/libinproctrace.so')"
         "features.debug_native=$has_gdb"
         "features.breakpoints=$has_gdb"
         "features.backtrace=$has_gdb"

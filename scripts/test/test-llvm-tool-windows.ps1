@@ -88,7 +88,7 @@ function Test-InfoBool {
 
 function Assert-NoLlvmDevelopmentPayload {
     $forbiddenDirectories = @(
-        'include\llvm', 'include\llvm-c', 'include\clang', 'include\clang-c',
+        'include\llvm', 'include\llvm-c', 'include\clang', 'include\clang-c', 'include\clang-tidy',
         'include\lld', 'include\lldb', 'include\mach-o', 'lib\cmake', 'lib64\cmake'
     )
 
@@ -178,7 +178,7 @@ function Assert-OutputContains {
     if ($null -eq $Output) {
         $text = ''
     } else {
-        $text = ($Output | Out-String)
+        $text = (($Output | Out-String) -replace "`r", '')
     }
 
     if ($text -notmatch $Pattern) {
@@ -191,6 +191,70 @@ function To-ForwardSlashPath {
     return $Path.Replace('\', '/')
 }
 
+function Invoke-ClangTidyHelperProbe {
+    param(
+        [Parameter(Mandatory = $true)][string] $PackageRoot,
+        [Parameter(Mandatory = $true)][string] $Label
+    )
+
+    $projectDir = Join-Path $testDir "tidy-helper-$Label"
+    Remove-Item -Recurse -Force $projectDir -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force $projectDir | Out-Null
+    $sourcePath = Join-Path $projectDir 'main.c'
+    @'
+int main(void) {
+    return *(int *)0;
+}
+'@ | Set-Content $sourcePath
+    $projectJson = To-ForwardSlashPath $projectDir
+    $sourceJson = To-ForwardSlashPath $sourcePath
+    @"
+[
+  {
+    "directory": "$projectJson",
+    "command": "clang -std=c11 -c main.c",
+    "file": "$sourceJson"
+  }
+]
+"@ | Set-Content (Join-Path $projectDir 'compile_commands.json')
+
+    $runOutput = Invoke-NativeCapture -FilePath (Join-Path $PackageRoot 'bin\run-clang-tidy.bat') -ArgumentList @(
+        '-p', $projectDir, '-j', '1', '-checks=-*,clang-analyzer-core.NullDereference', $sourcePath
+    )
+    Assert-OutputContains -Output $runOutput -Pattern 'clang-analyzer-core.NullDereference'
+
+    $diffText = @'
+diff --git a/main.c b/main.c
+--- a/main.c
++++ b/main.c
+@@ -1,2 +1,3 @@
+ int main(void) {
++    return *(int *)0;
+ }
+'@
+    Push-Location $projectDir
+    try {
+        $prevEap = $ErrorActionPreference
+        $prevNativeEap = if (Test-Path Variable:PSNativeCommandUseErrorActionPreference) { $PSNativeCommandUseErrorActionPreference } else { $null }
+        $ErrorActionPreference = 'Continue'
+        $PSNativeCommandUseErrorActionPreference = $false
+        $diffOutput = @($diffText | & (Join-Path $PackageRoot 'bin\clang-tidy-diff.bat') `
+            '-p1' '-path' $projectDir '-checks=-*,clang-analyzer-core.NullDereference' 2>&1 | ForEach-Object {
+                if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { "$_" }
+            })
+        $exitCode = $LASTEXITCODE
+        $global:LASTEXITCODE = 0
+        $ErrorActionPreference = $prevEap
+        if ($null -ne $prevNativeEap) { $PSNativeCommandUseErrorActionPreference = $prevNativeEap }
+    } finally {
+        Pop-Location
+    }
+    $diffOutput | ForEach-Object { Write-Host $_ }
+    if ($exitCode -ne 0) { throw "clang-tidy-diff failed at relocation $Label with exit code $exitCode" }
+    Assert-OutputContains -Output $diffOutput -Pattern 'clang-analyzer-core.NullDereference'
+    Write-Host "CLANG_TIDY_RUN_HELPER_$Label=PASS"
+    Write-Host "CLANG_TIDY_DIFF_HELPER_$Label=PASS"
+}
 
 function Assert-LldbPythonRuntime {
     param(
@@ -329,7 +393,7 @@ switch ($Tool) {
             throw 'required Clang LTO/LLD integration is not declared; LTO test cannot run'
         }
 
-        if ((Test-InfoBool 'features.asan') -or (Test-InfoBool 'features.sanitizers')) {
+        if (Test-InfoBool 'features.asan') {
             $asanSource = Join-Path $testDir 'asan-test.c'
             $asanExe = Join-Path $testDir 'asan-test.exe'
 @'
@@ -484,6 +548,18 @@ int main(void) {
 
     'clang-format' {
         Invoke-Native -FilePath "$root\bin\clang-format.exe" -ArgumentList @('--version')
+        if (Test-InfoBool 'features.git_clang_format') { throw 'clang-format unexpectedly declares git-clang-format' }
+        foreach ($gitHelper in @('git-clang-format', 'git-clang-format.exe', 'git-clang-format.cmd', 'git-clang-format.bat')) {
+            if (Test-Path (Join-Path "$root\bin" $gitHelper)) {
+                throw "clang-format retained external-Git helper: $gitHelper"
+            }
+        }
+        if ((Get-InfoValue 'contents.python_runtime') -eq 'packaged') {
+            throw 'clang-format retained Python solely for a removed Git helper'
+        }
+        foreach ($forbidden in @('include', 'share', 'libexec')) {
+            if (Test-Path (Join-Path $root $forbidden)) { throw "clang-format retained non-runtime payload: $forbidden" }
+        }
 
         $source = Join-Path $testDir 'format-test.c'
         'int main( void ){return 0;}' | Set-Content $source
@@ -545,12 +621,15 @@ return 0;
         )) {
             if (-not (Test-Path $required)) { throw "required clang-tidy package path missing: $required" }
         }
-        if (Test-Path "$root\share\clang") { throw 'non-deliberate share/clang payload leaked into clang-tidy package' }
+        if (Test-Path "$root\include") { throw 'development headers leaked into clang-tidy package' }
+        if (Test-Path "$root\share") { throw 'non-deliberate share payload leaked into clang-tidy package' }
+        foreach ($forbidden in @('analyze-cc', 'analyze-c++', 'intercept-cc', 'intercept-c++', 'ccc-analyzer', 'c++-analyzer')) {
+            if (Test-Path (Join-Path "$root\libexec" $forbidden)) { throw "scan-build helper leaked into clang-tidy package: $forbidden" }
+        }
 
         Invoke-Native -FilePath "$root\bin\clang-tidy.exe" -ArgumentList @('--version')
         Invoke-Native -FilePath "$root\bin\clang-apply-replacements.exe" -ArgumentList @('--version')
-        Invoke-Native -FilePath "$root\bin\run-clang-tidy.bat" -ArgumentList @('--help')
-        Invoke-Native -FilePath "$root\bin\clang-tidy-diff.bat" -ArgumentList @('--help')
+        Invoke-ClangTidyHelperProbe -PackageRoot $root -Label 'A'
 
         $checksOutput = Invoke-NativeCapture -FilePath "$root\bin\clang-tidy.exe" -ArgumentList @(
             '--list-checks',
@@ -645,7 +724,6 @@ switch ($Tool) {
             '--checks=clang-analyzer-*', $source, '--', '-std=c11'
         )
         Invoke-Native -FilePath "$relocatedRoot\bin\clang-apply-replacements.exe" -ArgumentList @('--version')
-        Invoke-Native -FilePath "$relocatedRoot\bin\run-clang-tidy.bat" -ArgumentList @('--help')
-        Invoke-Native -FilePath "$relocatedRoot\bin\clang-tidy-diff.bat" -ArgumentList @('--help')
+        Invoke-ClangTidyHelperProbe -PackageRoot $relocatedRoot -Label 'B-spaces'
     }
 }

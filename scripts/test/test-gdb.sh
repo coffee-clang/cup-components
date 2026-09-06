@@ -13,7 +13,16 @@ unset PYTHONHOME PYTHONPATH || true
 
 bash scripts/test/package-capabilities.sh "$root" gdb
 tmpdir="$(mktemp -d /tmp/cup-gdb-test.XXXXXX)"
-trap 'rm -rf "$tmpdir"' EXIT
+remote_server_pid=""
+
+cleanup() {
+    if [ -n "${remote_server_pid:-}" ]; then
+        kill "$remote_server_pid" 2>/dev/null || true
+        wait "$remote_server_pid" 2>/dev/null || true
+    fi
+    rm -rf "$tmpdir"
+}
+trap cleanup EXIT
 
 info_value() {
     local key="$1"
@@ -87,10 +96,67 @@ gdb_python_identity_probe() {
     fi
 }
 
+gdb_remote_debug_probe() {
+    local candidate="$1"
+    local label="$2"
+    local server_out="$tmpdir/gdbserver-$label.txt"
+    local client_out="$tmpdir/gdb-remote-$label.txt"
+    local port=""
+    local attempt=0
+
+    "$candidate/bin/gdbserver" --once 127.0.0.1:0 "$tmpdir/gdb-test" > "$server_out" 2>&1 &
+    remote_server_pid=$!
+
+    while [ "$attempt" -lt 100 ]; do
+        port="$(sed -n 's/^Listening on port \([0-9][0-9]*\)$/\1/p' "$server_out" | tail -n 1)"
+        [ -n "$port" ] && break
+        kill -0 "$remote_server_pid" 2>/dev/null || break
+        sleep 0.05
+        attempt=$((attempt + 1))
+    done
+
+    if [ -z "$port" ]; then
+        echo "packaged gdbserver did not reach loopback listening state at relocation $label" >&2
+        cat "$server_out" >&2
+        return 1
+    fi
+
+    if ! "$candidate/bin/gdb" -q -nx -batch \
+        -ex 'set debuginfod enabled off' \
+        -ex "file $tmpdir/gdb-test" \
+        -ex "target remote 127.0.0.1:$port" \
+        -ex 'break add' \
+        -ex 'continue' \
+        -ex 'print a' \
+        -ex 'print b' \
+        -ex 'backtrace' \
+        -ex 'continue' \
+        > "$client_out" 2>&1; then
+        echo "packaged GDB remote-debugging session failed at relocation $label" >&2
+        cat "$server_out" "$client_out" >&2
+        return 1
+    fi
+
+    if ! grep -F '$1 = 20' "$client_out" >/dev/null ||
+       ! grep -F '$2 = 22' "$client_out" >/dev/null ||
+       ! grep -F '#0' "$client_out" >/dev/null; then
+        echo "packaged GDB remote-debugging output was incomplete at relocation $label" >&2
+        cat "$server_out" "$client_out" >&2
+        return 1
+    fi
+    if ! wait "$remote_server_pid"; then
+        echo "packaged gdbserver exited unsuccessfully at relocation $label" >&2
+        cat "$server_out" "$client_out" >&2
+        return 1
+    fi
+    remote_server_pid=""
+}
+
 require_executable "$root/bin/gdb"
 require_executable "$root/bin/gdbserver"
-if feature_enabled "contents.inproctrace"; then
-    [ -f "$root/lib/libinproctrace.so" ] || { echo 'declared GDB in-process agent is missing' >&2; exit 1; }
+if ! feature_enabled "features.gdbserver" || ! feature_enabled "features.remote_debugging"; then
+    echo "required GDB remote-debugging capability is not fully declared in info.txt" >&2
+    exit 1
 fi
 [ -d "$root/share/gdb" ] || { echo 'missing GDB data directory' >&2; exit 1; }
 assert_no_gdb_development_payload
@@ -100,6 +166,7 @@ fi
 gdb_python_identity_probe "$root" A
 "$root/bin/gdb" --version
 "$root/bin/gdb" --configuration
+"$root/bin/gdbserver" --version
 
 # Python support is a major GDB capability and is declared by the package metadata.
 # Other configure-time libraries are intentionally not asserted here: they are
@@ -166,3 +233,4 @@ gdb_python_identity_probe "$reloc_c" C
     -ex 'break add' -ex run -ex backtrace \
     | tee "$tmpdir/gdb-reloc-c-output.txt"
 grep -F '#0' "$tmpdir/gdb-reloc-c-output.txt"
+gdb_remote_debug_probe "$reloc_c" C

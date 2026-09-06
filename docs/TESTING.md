@@ -24,7 +24,7 @@ It checks common behavior such as:
 - package identity and revision rules;
 - `info.txt` field/path compatibility;
 - `manifest.txt` format and regeneration;
-- archive object parity across `tar.xz`, `tar.gz` and `zip`;
+- final archive stored-mode and object parity across `tar.xz`, `tar.gz` and `zip`;
 - checksum generation and checksum tamper rejection;
 - admissible POSIX symbolic-link behavior;
 - rejection of unsupported filesystem objects and unsafe paths;
@@ -89,6 +89,7 @@ The GDB package check verifies:
 - package-owned Python identity and runtime-version provenance;
 - isolated Python search paths where the platform provides packaged path configuration;
 - declared debugger feature metadata;
+- packaged `gdbserver` remote debugging over loopback;
 - relocation through multiple physical package roots, including paths with spaces and with the previous root unavailable.
 
 ### LLVM-family checks
@@ -116,13 +117,14 @@ LLDB checks include:
 - Clang resource-directory ownership;
 - target creation, breakpoint and symbol lookup behavior;
 - process launch where the runner permits debugger process control;
-- relocation.
+- on Linux, a real packaged `lldb-server gdbserver` loopback session when remote debugging is declared, including structured ephemeral-port publication, breakpoint/expression, detach and inferior-owned completion;
+- POSIX relocation with previous roots unavailable; the final path contains real spaces.
 
 clangd checks the language-server entry, matching Clang resource headers and optional `clangd-indexer`.
 
-clang-format checks formatting behavior and optional `git-clang-format`.
+clang-format checks formatting behavior, style-file discovery, dry-run failure semantics and relocation; `git-clang-format` is deliberately absent from the standalone self-contained package.
 
-clang-tidy checks the main analyzer command, available helper commands and their package-owned Python runtime where required.
+clang-tidy checks the main analyzer command plus real `run-clang-tidy` and `clang-tidy-diff` operations, package-owned Python identity and relocation with previous roots unavailable.
 
 ### Valgrind checks
 

@@ -101,6 +101,7 @@ need_common_tools() {
     need tar
     need make
     need zip
+    need unzip
     need realpath
 
     require_host_compilers

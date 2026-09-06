@@ -112,7 +112,7 @@ The package is rooted in:
 - the package-owned Python runtime;
 - optional installed runtime helpers required by the selected GDB build.
 
-Development headers and static build material are not included simply because the upstream install created them.
+Development headers and static build material are not included simply because the upstream install created them. The `libinproctrace.so` in-process agent used by GDB fast-tracepoint workflows is also not shipped: fast tracepoints are outside the deliberate CUP debugger contract, so that specialized helper has no production package responsibility.
 
 ### Python
 
@@ -259,7 +259,7 @@ LLDB enables Python. The Python executable path is derived from the interpreter 
 
 If the LLDB installation does not already contain the generated Clang built-in headers it needs, the producer copies the single matching resource directory produced by that LLVM build. The path is derived from the selected build rather than assuming a fixed `lib/clang/<major>` directory.
 
-`lldb-vscode` is not a deliberate package command. Linux `lldb-argdumper` is also not a public package root.
+`lldb-vscode` and `lldb-argdumper` are not deliberate package commands. When LLVM installs a Python-side `lldb-argdumper` companion link, the producer removes that companion together with the excluded binary so the final LLDB graph cannot contain a dangling package link.
 
 ### clangd
 
@@ -285,7 +285,7 @@ The required public command is:
 clang-format
 ```
 
-`git-clang-format` is included when the selected upstream installation provides it. If that helper requires Python, the package includes the required Python runtime and invokes the helper through the package-owned interpreter.
+The CUP package deliberately exposes `clang-format` itself. `git-clang-format` is not packaged: the upstream integration helper requires a separate Git runtime, while CUP's formatter package is self-contained and does not make Git a formatter dependency. This also avoids carrying Python solely for that optional integration helper.
 
 ### clang-tidy
 
@@ -298,9 +298,9 @@ run-clang-tidy
 clang-tidy-diff
 ```
 
-Some LLVM releases install `clang-tidy-diff.py` as shared Clang data rather than as a direct executable. The producer normalizes the helper into the package's command/helper layout before pruning unrelated `share/clang` scripts.
+Some LLVM releases install `clang-tidy-diff.py` as shared Clang data rather than as a direct executable. The producer normalizes the helper into the package's command/helper layout before pruning unrelated clang-tools-extra development, analyzer, documentation and editor-integration payload.
 
-Python helper commands execute through the package-owned Python runtime.
+Python helper commands execute through the package-owned Python runtime. POSIX packages remove interpreter caches, CPython test suites and GUI/demo modules; macOS framework Python packages additionally preserve the `Resources/Python.app` companion required by the framework launcher after relocation.
 
 ## Valgrind
 

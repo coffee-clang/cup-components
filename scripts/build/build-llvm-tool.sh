@@ -593,6 +593,7 @@ need_common_tools() {
     need cmake
     need ninja
     need zip
+    need unzip
     if [ "$TOOL" = lldb ]; then
         need swig
     fi
@@ -750,14 +751,22 @@ prune_llvm_package_bins() {
         lldb)
             prune_bin_except \
                 lldb lldb-server lldb-dap
+            # lldb-argdumper is intentionally not a public package root. LLVM's
+            # Python install may leave a companion link to that removed binary;
+            # remove the companion at the same pruning boundary so every host
+            # sees one coherent LLDB package graph.
+            local python_dir
+            for python_dir in "$PREFIX"/lib/python[0-9]*; do
+                [ -d "$python_dir" ] || continue
+                rm -f "$python_dir/site-packages/lldb/lldb-argdumper"
+            done
             ;;
         clangd)
             prune_bin_except \
                 clangd clangd-indexer
             ;;
         clang-format)
-            prune_bin_except \
-                clang-format git-clang-format
+            prune_bin_except clang-format
             ;;
         clang-tidy)
             prune_bin_except \
@@ -830,7 +839,6 @@ prepare_lldb_package_seed() {
     for python_dir in "$PREFIX"/lib/python[0-9]*; do
         [ -d "$python_dir" ] || continue
         llvm_copy_path_into_seed "lib/$(basename "$python_dir")"
-        rm -f "$PACKAGE_PREFIX/lib/$(basename "$python_dir")/site-packages/lldb/lldb-argdumper"
 
         # Some LLVM releases bind the Python extension through the unversioned
         # development liblldb.so link. Rebind only that known alias to the
@@ -860,10 +868,8 @@ prepare_lldb_package_seed() {
 
 
 llvm_python_helper_names() {
-    case "$TOOL" in
-        clang-format) printf '%s\n' git-clang-format ;;
-        clang-tidy) printf '%s\n' run-clang-tidy clang-tidy-diff ;;
-    esac
+    [ "$TOOL" = clang-tidy ] || return 0
+    printf '%s\n' run-clang-tidy clang-tidy-diff
 }
 
 normalize_clang_tidy_helper_install_layout() {
@@ -904,11 +910,11 @@ normalize_clang_tidy_helper_install_layout() {
 
 prune_llvm_auxiliary_share_payload() {
     case "$TOOL" in
-        clangd)
-            # clangd's load-bearing Clang runtime data lives under lib/clang.
-            # The full clang/clang-tools-extra install also contributes sibling
-            # documentation and analysis-tool support that is not part of the
-            # standalone language-server runtime.
+        clangd|clang-format|clang-tidy)
+            # clang-tools-extra installs sibling documentation/analyzer payload
+            # alongside several standalone tools. None of these directories is
+            # runtime responsibility for CUP's clangd/clang-format/clang-tidy
+            # command packages. clang-tidy-diff is normalized before this step.
             rm -rf \
                 "$PREFIX/share/clang" \
                 "$PREFIX/share/clang-doc" \
@@ -919,12 +925,6 @@ prune_llvm_auxiliary_share_payload() {
             rmdir "$PREFIX/share/man/man1" 2>/dev/null || true
             rmdir "$PREFIX/share/man" 2>/dev/null || true
             rmdir "$PREFIX/share" 2>/dev/null || true
-            ;;
-        clang-tidy)
-            # clang-tidy-diff is normalized into the package-owned helper model
-            # above. Other share/clang scripts belong to the broad upstream
-            # install, not to the deliberate clang-tidy command package.
-            rm -rf "$PREFIX/share/clang"
             ;;
     esac
 }
@@ -967,10 +967,7 @@ prepare_llvm_python_helpers() {
     local python_cmd=""
     local found=false
 
-    case "$TOOL" in
-        clang-format|clang-tidy) ;;
-        *) return 0 ;;
-    esac
+    [ "$TOOL" = clang-tidy ] || return 0
 
     for name in $(llvm_python_helper_names); do
         source="$PREFIX/bin/$name"
@@ -1028,24 +1025,26 @@ prune_llvm_development_payload() {
         "$PREFIX/lib/cmake" \
         "$PREFIX/lib64/cmake"
 
-    if [ "$TOOL" = clangd ]; then
-        # clangd links its configured clang-tidy checks into bin/clangd. The
-        # installed clang-tidy headers and scan-build support libraries/scripts
-        # are build/development or sibling-tool payload, not runtime inputs.
-        rm -rf \
-            "$PREFIX/include/clang-tidy" \
-            "$PREFIX/lib/libear" \
-            "$PREFIX/lib/libscanbuild"
-        rm -f \
-            "$PREFIX/libexec/analyze-cc" \
-            "$PREFIX/libexec/analyze-c++" \
-            "$PREFIX/libexec/intercept-cc" \
-            "$PREFIX/libexec/intercept-c++" \
-            "$PREFIX/libexec/ccc-analyzer" \
-            "$PREFIX/libexec/c++-analyzer"
-        rmdir "$PREFIX/libexec" 2>/dev/null || true
-        rmdir "$PREFIX/include" 2>/dev/null || true
-    fi
+    case "$TOOL" in
+        clangd|clang-format|clang-tidy)
+            # The monorepo install also contributes clang-tidy development
+            # headers and scan-build implementation helpers. They are not
+            # load-bearing for these three standalone CUP command packages.
+            rm -rf \
+                "$PREFIX/include/clang-tidy" \
+                "$PREFIX/lib/libear" \
+                "$PREFIX/lib/libscanbuild"
+            rm -f \
+                "$PREFIX/libexec/analyze-cc" \
+                "$PREFIX/libexec/analyze-c++" \
+                "$PREFIX/libexec/intercept-cc" \
+                "$PREFIX/libexec/intercept-c++" \
+                "$PREFIX/libexec/ccc-analyzer" \
+                "$PREFIX/libexec/c++-analyzer"
+            rmdir "$PREFIX/libexec" 2>/dev/null || true
+            rmdir "$PREFIX/include" 2>/dev/null || true
+            ;;
+    esac
 
     for lib_dir in "$PREFIX/lib" "$PREFIX/lib64"; do
         [ -d "$lib_dir" ] || continue
@@ -1054,10 +1053,11 @@ prune_llvm_development_payload() {
         # command-line tools are built without runtime dependencies on these
         # libraries; compiler runtimes under lib/clang are not matched here.
         rm -f \
-            "$lib_dir"/libLTO.so* "$lib_dir"/libLTO.dylib* \
-            "$lib_dir"/libRemarks.so* "$lib_dir"/libRemarks.dylib* \
-            "$lib_dir"/libclang.so* "$lib_dir"/libclang.dylib* \
-            "$lib_dir"/libclang-cpp.so* "$lib_dir"/libclang-cpp.dylib*
+            "$lib_dir"/libLTO.so* "$lib_dir"/libLTO.dylib* "$lib_dir"/libLTO.*.dylib \
+            "$lib_dir"/libRemarks.so* "$lib_dir"/libRemarks.dylib* "$lib_dir"/libRemarks.*.dylib \
+            "$lib_dir"/libclang.so* "$lib_dir"/libclang.dylib* "$lib_dir"/libclang.*.dylib \
+            "$lib_dir"/libclang-cpp.so* "$lib_dir"/libclang-cpp.dylib* "$lib_dir"/libclang-cpp.*.dylib \
+            "$lib_dir"/libClangdXPCLib.so* "$lib_dir"/libClangdXPCLib.dylib* "$lib_dir"/libClangdXPCLib.*.dylib
         while IFS= read -r -d '' archive; do
             base="$(basename "$archive")"
             case "$base" in
@@ -1096,97 +1096,85 @@ clang_resource_dir() {
     return 1
 }
 
-validate_clangd_package_layout() {
+validate_llvm_package_layout() {
     local candidate
     local resource_dir=""
-
-    [ "$TOOL" = clangd ] || return 0
-
-    [ -x "$PREFIX/bin/clangd" ] || {
-        die "clangd package is missing its required public executable: $PREFIX/bin/clangd"
-        return 1
-    }
-
-    if [ -d "$PREFIX/lib/clang" ]; then
-        for candidate in "$PREFIX/lib/clang"/*; do
-            [ -d "$candidate" ] || continue
-            [ -z "$resource_dir" ] || {
-                die "clangd package contains multiple Clang resource directories under $PREFIX/lib/clang"
-                return 1
-            }
-            resource_dir="$candidate"
-        done
-    fi
-
-    [ -n "$resource_dir" ] || {
-        die "clangd package is missing its required Clang resource directory under $PREFIX/lib/clang"
-        return 1
-    }
-
-    [ -f "$resource_dir/include/stddef.h" ] || {
-        die "clangd package is missing required built-in Clang headers: $resource_dir/include/stddef.h"
-        return 1
-    }
-
     local forbidden
     local bin_entry
 
-    while IFS= read -r -d '' bin_entry; do
-        case "$(basename "$bin_entry")" in
-            clangd|clangd-indexer) ;;
-            *)
-                die "clangd package retained unexpected sibling executable: $bin_entry"
-                return 1
-                ;;
-        esac
-    done < <(find "$PREFIX/bin" -mindepth 1 -maxdepth 1 \
-        \( -type f -o -type l \) -print0)
+    case "$TOOL" in
+        clangd|clang-format|clang-tidy) ;;
+        *) return 0 ;;
+    esac
 
     for forbidden in \
-        include/llvm \
-        include/llvm-c \
-        include/clang \
-        include/clang-c \
-        include/clang-tidy \
-        lib/cmake \
-        lib64/cmake \
-        lib/libear \
-        lib/libscanbuild \
-        libexec \
-        share/clang \
-        share/clang-doc \
-        share/opt-viewer \
-        share/scan-build \
-        share/scan-view; do
+        include/llvm include/llvm-c include/clang include/clang-c include/clang-tidy \
+        lib/cmake lib64/cmake lib/libear lib/libscanbuild \
+        share/clang share/clang-doc share/opt-viewer share/scan-build share/scan-view; do
         if [ -e "$PREFIX/$forbidden" ] || [ -L "$PREFIX/$forbidden" ]; then
-            die "clangd package retained non-runtime sibling/development payload: $forbidden"
+            die "$TOOL package retained non-runtime sibling/development payload: $forbidden"
             return 1
         fi
     done
+
+    if [ -e "$PREFIX/share/man/man1/scan-build.1" ] || [ -L "$PREFIX/share/man/man1/scan-build.1" ]; then
+        die "$TOOL package retained sibling scan-build manpage"
+        return 1
+    fi
 
     if find "$PREFIX/lib" "$PREFIX/lib64" -maxdepth 1 -type f \
         \( -name 'libLLVM.so*' -o -name 'libLLVM.dylib*' \
-           -o -name 'libclang.so*' -o -name 'libclang.dylib*' \
-           -o -name 'libclang-cpp.so*' -o -name 'libclang-cpp.dylib*' \) \
+           -o -name 'libclang.so*' -o -name 'libclang.dylib*' -o -name 'libclang.*.dylib' \
+           -o -name 'libclang-cpp.so*' -o -name 'libclang-cpp.dylib*' -o -name 'libclang-cpp.*.dylib' \
+           -o -name 'libRemarks.so*' -o -name 'libRemarks.dylib*' -o -name 'libRemarks.*.dylib' \
+           -o -name 'libClangdXPCLib.so*' -o -name 'libClangdXPCLib.dylib*' -o -name 'libClangdXPCLib.*.dylib' \) \
         -print -quit 2>/dev/null | grep -q .; then
-        die "clangd package retained LLVM/Clang shared development SDK payload"
+        die "$TOOL package retained LLVM/Clang shared development or sibling payload"
         return 1
     fi
 
-    if [ -e "$PREFIX/share/man/man1/scan-build.1" ] || [ -L "$PREFIX/share/man/man1/scan-build.1" ]; then
-        die "clangd package retained sibling scan-build manpage"
-        return 1
-    fi
-
-    # For the standalone clangd contract, no top-level include, share, or
-    # libexec responsibility remains after the selected install payload is
-    # pruned. lib/clang is intentionally separate and remains load-bearing.
-    for forbidden in include share libexec; do
-        if [ -e "$PREFIX/$forbidden" ] || [ -L "$PREFIX/$forbidden" ]; then
-            die "clangd package retained unexpected non-runtime top-level payload: $forbidden"
-            return 1
-        fi
-    done
+    case "$TOOL" in
+        clangd)
+            [ -x "$PREFIX/bin/clangd" ] || die "clangd package is missing bin/clangd"
+            if [ -d "$PREFIX/lib/clang" ]; then
+                for candidate in "$PREFIX/lib/clang"/*; do
+                    [ -d "$candidate" ] || continue
+                    [ -z "$resource_dir" ] || die "clangd package contains multiple Clang resource directories"
+                    resource_dir="$candidate"
+                done
+            fi
+            [ -n "$resource_dir" ] || die "clangd package is missing its Clang resource directory"
+            [ -f "$resource_dir/include/stddef.h" ] || die "clangd package is missing built-in Clang headers"
+            while IFS= read -r -d '' bin_entry; do
+                case "$(basename "$bin_entry")" in
+                    clangd|clangd-indexer) ;;
+                    *) die "clangd package retained unexpected sibling executable: $bin_entry" ;;
+                esac
+            done < <(find "$PREFIX/bin" -mindepth 1 -maxdepth 1 \( -type f -o -type l \) -print0)
+            for forbidden in include share libexec; do
+                [ ! -e "$PREFIX/$forbidden" ] && [ ! -L "$PREFIX/$forbidden" ] ||
+                    die "clangd package retained unexpected top-level payload: $forbidden"
+            done
+            ;;
+        clang-format)
+            [ -x "$PREFIX/bin/clang-format" ] || die "clang-format package is missing bin/clang-format"
+            [ ! -e "$PREFIX/bin/git-clang-format" ] && [ ! -L "$PREFIX/bin/git-clang-format" ] ||
+                die "clang-format package retained git-clang-format with an external Git runtime dependency"
+            for forbidden in include share libexec; do
+                [ ! -e "$PREFIX/$forbidden" ] && [ ! -L "$PREFIX/$forbidden" ] ||
+                    die "clang-format package retained unexpected top-level payload: $forbidden"
+            done
+            ;;
+        clang-tidy)
+            [ -x "$PREFIX/bin/clang-tidy" ] || die "clang-tidy package is missing bin/clang-tidy"
+            [ -x "$PREFIX/bin/run-clang-tidy" ] || die "clang-tidy package is missing run-clang-tidy"
+            [ -x "$PREFIX/bin/clang-tidy-diff" ] || die "clang-tidy package is missing clang-tidy-diff"
+            [ ! -e "$PREFIX/include" ] && [ ! -L "$PREFIX/include" ] ||
+                die "clang-tidy package retained development headers"
+            [ ! -e "$PREFIX/share" ] && [ ! -L "$PREFIX/share" ] ||
+                die "clang-tidy package retained unrelated share payload"
+            ;;
+    esac
 }
 
 clang_runtime_platform_dir() {
@@ -1932,7 +1920,7 @@ build_llvm_tool() {
     prepare_llvm_python_helpers
     prune_llvm_auxiliary_share_payload
     prune_llvm_development_payload
-    validate_clangd_package_layout
+    validate_llvm_package_layout
     copy_windows_clang_mingw_sysroot
     write_windows_clang_driver_config
     write_linux_clang_cxx_driver_config
@@ -2015,7 +2003,6 @@ write_llvm_info() {
     local has_clangd
     local has_clangd_indexer
     local has_clang_format
-    local has_git_clang_format
     local has_clang_tidy
     local has_clang_apply_replacements
     local has_run_clang_tidy
@@ -2038,6 +2025,8 @@ write_llvm_info() {
     local has_llvm_runtimes
     local has_mingw_sysroot
     local has_driver_config
+    local lldb_resource_dir=""
+    local has_lldb_clang_resources=false
 
     has_clang="$(metadata_bool_for_executable "$PREFIX" clang)"
     has_clangpp="$(metadata_bool_for_executable "$PREFIX" clang++)"
@@ -2056,7 +2045,6 @@ write_llvm_info() {
     has_clangd="$(metadata_bool_for_executable "$PREFIX" clangd)"
     has_clangd_indexer="$(metadata_bool_for_executable "$PREFIX" clangd-indexer)"
     has_clang_format="$(metadata_bool_for_executable "$PREFIX" clang-format)"
-    has_git_clang_format="$(metadata_bool_for_executable "$PREFIX" git-clang-format)"
     has_clang_tidy="$(metadata_bool_for_executable "$PREFIX" clang-tidy)"
     has_clang_apply_replacements="$(metadata_bool_for_executable "$PREFIX" clang-apply-replacements)"
     has_run_clang_tidy="$(metadata_bool_for_executable "$PREFIX" run-clang-tidy)"
@@ -2179,12 +2167,15 @@ write_llvm_info() {
             )
             ;;
         lldb)
+            if lldb_resource_dir="$(clang_resource_dir)" &&
+               [ -d "$lldb_resource_dir/include" ] &&
+               [ "$(find "$lldb_resource_dir/include" -type f -print -quit)" ]; then
+                has_lldb_clang_resources=true
+            fi
             info+=(
                 "contents.python_runtime=packaged"
                 "contents.python_runtime.version=$PACKAGED_PYTHON_RUNTIME_VERSION"
-            )
-            info+=(
-                        "contents.clang_resources=$(metadata_bool_for_dirs "$PREFIX" 'lib/clang/*/include')"
+                "contents.clang_resources=$has_lldb_clang_resources"
             )
             if [ -n "$LLDB_PACKAGED_PYTHON_RELATIVE" ]; then
                 info+=("config.python_executable=$LLDB_PACKAGED_PYTHON_RELATIVE")
@@ -2220,19 +2211,12 @@ write_llvm_info() {
             )
             ;;
         clang-format)
-            if [ "$has_git_clang_format" = true ]; then
-                info+=(
-                    "contents.python_runtime=packaged"
-                    "contents.python_runtime.version=$PACKAGED_PYTHON_RUNTIME_VERSION"
-                )
-            fi
             info+=(
                 "$(info_required_entry entry.clang_format "$PREFIX" clang-format)"
-                "$(info_entry_if_present entry.git_clang_format "$PREFIX" git-clang-format)"
                 "features.format_file=$has_clang_format"
                 "features.style_config=$has_clang_format"
                 "features.dry_run_werror=$has_clang_format"
-                "features.git_clang_format=$has_git_clang_format"
+                "features.git_clang_format=false"
             )
             ;;
         clang-tidy)

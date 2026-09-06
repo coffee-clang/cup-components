@@ -68,6 +68,48 @@ grep -F $'fixture\t99.99.99\tfixture-99.99.99.tar.xz\t'"$(printf '0%.0s' {1..64}
     exit 1
 }
 
+# MSYS2's default deepcopy symlink mode can fail on a link-before-target tar
+# ordering. Exercise the common retry contract without pretending this Linux
+# regression is the native MSYS2 proof.
+retry_bin="$TMP/retry-bin"
+retry_state="$TMP/retry-state"
+retry_dest="$TMP/retry-dest"
+real_tar="$(command -v tar)"
+mkdir -p "$retry_bin"
+cat > "$retry_bin/tar" <<EOF_RETRY_TAR
+#!/usr/bin/env sh
+count=0
+[ ! -f '$retry_state' ] || count=\$(cat '$retry_state')
+count=\$((count + 1))
+printf '%s\n' "\$count" > '$retry_state'
+'$real_tar' "\$@"
+status=\$?
+[ "\$status" -eq 0 ] || exit "\$status"
+[ "\$count" -ne 1 ] || exit 17
+exit 0
+EOF_RETRY_TAR
+chmod 0755 "$retry_bin/tar"
+HOST_PLATFORM=windows-x64 PATH="$retry_bin:$PATH" extract_archive \
+    "$CUP_SRC_DIR/fixture-99.99.99.tar.xz" "$retry_dest"
+[ "$(cat "$retry_state")" = 2 ] || {
+    echo 'Windows tar source extraction did not retry exactly once' >&2
+    exit 1
+}
+[ -f "$retry_dest/marker" ] || {
+    echo 'Windows tar source extraction retry lost extracted content' >&2
+    exit 1
+}
+rm -f "$retry_state"
+if HOST_PLATFORM=linux-x64 PATH="$retry_bin:$PATH" extract_archive \
+    "$CUP_SRC_DIR/fixture-99.99.99.tar.xz" "$retry_dest" >/dev/null 2>&1; then
+    echo 'non-Windows tar extraction incorrectly retried a failed first pass' >&2
+    exit 1
+fi
+[ "$(cat "$retry_state")" = 1 ] || {
+    echo 'non-Windows tar extraction did not remain single-pass' >&2
+    exit 1
+}
+
 for builder in build-gcc.sh build-gdb.sh build-ld.sh build-llvm-tool.sh build-valgrind.sh; do
     grep -F 'prepare_source_tree' "$ROOT/scripts/build/$builder" >/dev/null || {
         echo "builder does not use common source acquisition: $builder" >&2

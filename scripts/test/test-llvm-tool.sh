@@ -25,7 +25,17 @@ LLVM_TOOL="$1"
 source dist/release.env
 
 tmp_root="$(mktemp -d /tmp/cup-llvm-test.XXXXXX)"
+lldb_server_pid=""
+lldb_port_reader_pid=""
 cleanup() {
+    if [ -n "${lldb_port_reader_pid:-}" ]; then
+        kill "$lldb_port_reader_pid" 2>/dev/null || true
+        wait "$lldb_port_reader_pid" 2>/dev/null || true
+    fi
+    if [ -n "${lldb_server_pid:-}" ]; then
+        kill "$lldb_server_pid" 2>/dev/null || true
+        wait "$lldb_server_pid" 2>/dev/null || true
+    fi
     rm -rf "$tmp_root"
 }
 trap cleanup EXIT
@@ -90,6 +100,82 @@ info_bool() {
     [ "$(info_value "$1")" = "true" ]
 }
 
+llvm_helper_python_identity_probe() {
+    local candidate="$1"
+    local label="$2"
+    local python="$candidate/libexec/python3"
+    local clean_home="$tmp_root/helper-python-home-$label"
+
+    require_executable "$python"
+    mkdir -p "$clean_home"
+    env -i HOME="$clean_home" PATH="$candidate/bin:/usr/bin:/bin" \
+        LANG=C LC_ALL=C TZ=UTC PYTHONDONTWRITEBYTECODE=1 \
+        "$python" - "$candidate" <<'PY_HELPER_ID'
+import os, sys
+root = os.path.realpath(sys.argv[1])
+prefix = os.path.realpath(sys.prefix)
+stdlib = os.path.realpath(os.path.dirname(os.__file__))
+assert prefix == root, (prefix, root)
+assert stdlib.startswith(root + os.sep), (stdlib, root)
+import json, pathlib
+print('LLVM_HELPER_PYTHON_IDENTITY=PASS')
+PY_HELPER_ID
+}
+
+clang_tidy_helper_probe() {
+    local candidate="$1"
+    local label="$2"
+    local project="$tmp_root/tidy-helper-$label"
+    local clean_home="$tmp_root/tidy-helper-home-$label"
+    local run_log="$project/run-clang-tidy.log"
+    local diff_log="$project/clang-tidy-diff.log"
+
+    rm -rf "$project" "$clean_home"
+    mkdir -p "$project" "$clean_home"
+    cat > "$project/main.c" <<'C_TIDY_HELPER'
+int main(void) {
+    return *(int *)0;
+}
+C_TIDY_HELPER
+    cat > "$project/compile_commands.json" <<EOF_TIDY_DB
+[
+  {
+    "directory": "$project",
+    "command": "cc -std=c11 -c $project/main.c",
+    "file": "$project/main.c"
+  }
+]
+EOF_TIDY_DB
+
+    env -i HOME="$clean_home" PATH="$candidate/bin:/usr/bin:/bin" \
+        LANG=C LC_ALL=C TZ=UTC PYTHONDONTWRITEBYTECODE=1 \
+        "$candidate/bin/run-clang-tidy" -p "$project" -j 1 \
+        -checks=-*,clang-analyzer-core.NullDereference "$project/main.c" \
+        > "$run_log" 2>&1
+    assert_output_contains "$run_log" 'clang-analyzer-core.NullDereference'
+
+    cat > "$project/change.diff" <<'DIFF_TIDY_HELPER'
+diff --git a/main.c b/main.c
+--- a/main.c
++++ b/main.c
+@@ -1,2 +1,3 @@
+ int main(void) {
++    return *(int *)0;
+ }
+DIFF_TIDY_HELPER
+    (
+        cd "$project"
+        env -i HOME="$clean_home" PATH="$candidate/bin:/usr/bin:/bin" \
+            LANG=C LC_ALL=C TZ=UTC PYTHONDONTWRITEBYTECODE=1 \
+            "$candidate/bin/clang-tidy-diff" -p1 -path "$project" \
+            -checks=-*,clang-analyzer-core.NullDereference \
+            < "$project/change.diff"
+    ) > "$diff_log" 2>&1
+    assert_output_contains "$diff_log" 'clang-analyzer-core.NullDereference'
+
+    printf 'CLANG_TIDY_RUN_HELPER_%s=PASS\n' "$label"
+    printf 'CLANG_TIDY_DIFF_HELPER_%s=PASS\n' "$label"
+}
 
 require_package_owned_clang_resource_dir() {
     local candidate="$1"
@@ -218,6 +304,15 @@ macos_expected_native_arch() {
     esac
 }
 
+macos_test_is_runtime_macho() {
+    local path="$1"
+    local archive_magic
+
+    archive_magic="$(LC_ALL=C head -c 8 "$path" 2>/dev/null || true)"
+    [ "$archive_magic" != '!<arch>' ] || return 1
+    file -b "$path" 2>/dev/null | grep -Fq 'Mach-O'
+}
+
 assert_macos_clang_package_contract() {
     local candidate="$1"
     local expected_arch="$2"
@@ -234,7 +329,7 @@ assert_macos_clang_package_contract() {
     done
 
     while IFS= read -r -d '' path; do
-        file -b "$path" 2>/dev/null | grep -Fq 'Mach-O' || continue
+        macos_test_is_runtime_macho "$path" || continue
         count=$((count + 1))
 
         archs="$(lipo -archs "$path")"
@@ -318,6 +413,133 @@ run_lldb_clean() {
     env -i HOME="$clean_home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
         PYTHONDONTWRITEBYTECODE=1 "$candidate/bin/lldb" "$@"
 }
+
+lldb_remote_debug_probe() {
+    local candidate="$1"
+    local label="$2"
+    local work="$tmp_root/lldb-remote-$label"
+    local fifo="$work/port.fifo"
+    local port_file="$work/port"
+    local marker="$work/inferior.done"
+    local server_out="$work/server.txt"
+    local client_out="$work/client.txt"
+    local port=""
+    local attempt=0
+    local reader_status
+
+    mkdir -p "$work"
+    cat > "$work/remote-test.c" <<'C_REMOTE_EOF'
+#include <stdio.h>
+
+volatile int cup_lldb_remote_value = 37;
+
+__attribute__((noinline)) static void cup_lldb_remote_stop(int value) {
+    __asm__ volatile("" : : "r"(value) : "memory");
+}
+
+int main(int argc, char **argv) {
+    int value = cup_lldb_remote_value + 5;
+    cup_lldb_remote_stop(value);
+    if (argc > 1) {
+        FILE *marker = fopen(argv[1], "w");
+        if (!marker) return 3;
+        fprintf(marker, "LLDB_REMOTE_DONE=%d\\n", value);
+        if (fclose(marker) != 0) return 4;
+    }
+    return value == 42 ? 0 : 2;
+}
+C_REMOTE_EOF
+    cc -g -O0 "$work/remote-test.c" -o "$work/remote-test"
+
+    rm -f "$fifo" "$port_file" "$marker"
+    mkfifo "$fifo"
+    cat "$fifo" > "$port_file" &
+    lldb_port_reader_pid=$!
+    env -i HOME="$tmp_root/lldb-server-home-$label" PATH=/usr/bin:/bin \
+        LANG=C LC_ALL=C TZ=UTC \
+        "$candidate/bin/lldb-server" gdbserver \
+        --named-pipe "$fifo" 127.0.0.1:0 -- "$work/remote-test" "$marker" \
+        > "$server_out" 2>&1 &
+    lldb_server_pid=$!
+
+    while [ "$attempt" -lt 160 ]; do
+        if ! kill -0 "$lldb_server_pid" 2>/dev/null; then
+            break
+        fi
+        if ! kill -0 "$lldb_port_reader_pid" 2>/dev/null; then
+            break
+        fi
+        sleep 0.05
+        attempt=$((attempt + 1))
+    done
+
+    if kill -0 "$lldb_port_reader_pid" 2>/dev/null; then
+        echo "packaged lldb-server did not publish its structured port at relocation $label" >&2
+        cat "$server_out" >&2
+        return 1
+    fi
+    set +e
+    wait "$lldb_port_reader_pid"
+    reader_status=$?
+    set -e
+    lldb_port_reader_pid=""
+    [ "$reader_status" -eq 0 ] && [ -s "$port_file" ] || {
+        echo "packaged lldb-server port publication failed at relocation $label" >&2
+        cat "$server_out" >&2
+        return 1
+    }
+
+    port="$(LC_ALL=C tr -d '\000\r\n\t ' < "$port_file")"
+    [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || {
+        echo "packaged lldb-server published an invalid port at relocation $label: $port" >&2
+        return 1
+    }
+    rm -f "$fifo"
+
+    cat > "$work/client.cmd" <<EOF_REMOTE_CMD
+ target create '$work/remote-test'
+ gdb-remote 127.0.0.1:$port
+ breakpoint set -n cup_lldb_remote_stop
+ continue
+ expression -- (int)(cup_lldb_remote_value + 5)
+ process detach
+ quit
+EOF_REMOTE_CMD
+    if ! run_lldb_clean "$candidate" -b -s "$work/client.cmd" > "$client_out" 2>&1; then
+        echo "packaged LLDB remote-debugging session failed at relocation $label" >&2
+        cat "$server_out" "$client_out" >&2
+        return 1
+    fi
+    grep -E '\(int\).*42|=[[:space:]]*42' "$client_out" >/dev/null || {
+        echo "packaged LLDB remote-debugging expression was not observed at relocation $label" >&2
+        cat "$client_out" >&2
+        return 1
+    }
+
+    attempt=0
+    while [ "$attempt" -lt 200 ]; do
+        if [ -f "$marker" ] && grep -Fx 'LLDB_REMOTE_DONE=42' "$marker" >/dev/null 2>&1; then
+            break
+        fi
+        kill -0 "$lldb_server_pid" 2>/dev/null || break
+        sleep 0.05
+        attempt=$((attempt + 1))
+    done
+    [ -f "$marker" ] && grep -Fx 'LLDB_REMOTE_DONE=42' "$marker" >/dev/null || {
+        echo "packaged LLDB remote inferior did not complete after detach at relocation $label" >&2
+        cat "$server_out" "$client_out" >&2
+        return 1
+    }
+    if ! wait "$lldb_server_pid"; then
+        lldb_server_pid=""
+        echo "packaged lldb-server exited unsuccessfully at relocation $label" >&2
+        cat "$server_out" "$client_out" >&2
+        return 1
+    fi
+    lldb_server_pid=""
+    echo "LLDB remote-debugging session passed at relocation $label on port $port"
+}
+
 
 lldb_identity_probe() {
     local candidate="$1"
@@ -525,7 +747,7 @@ CPP_EOF
             "$tmp_root/clang-libcxx-test" | grep -F "42"
         fi
 
-        if info_bool features.asan || info_bool features.sanitizers; then
+        if info_bool features.asan; then
             cat > "$tmp_root/asan-test.c" <<'ASAN_C_EOF'
 #include <stdlib.h>
 
@@ -558,7 +780,7 @@ ASAN_C_EOF
                 exit 1
             fi
         else
-            echo "required Clang sanitizer runtime is not declared; ASan test cannot run" >&2
+            echo "required Clang ASan runtime is not declared; ASan test cannot run" >&2
             exit 1
         fi
         ;;
@@ -605,6 +827,13 @@ C_EOF
         fi
         if feature_enabled features.lldb_server; then
             require_executable "$root/bin/lldb-server"
+            feature_enabled features.remote_debugging || {
+                echo 'LLDB lldb-server is present but remote-debugging capability is not declared' >&2
+                exit 1
+            }
+        elif feature_enabled features.remote_debugging; then
+            echo 'LLDB remote-debugging capability is declared without lldb-server' >&2
+            exit 1
         fi
 
         "$root/bin/lldb" --version
@@ -694,8 +923,10 @@ C_EOF
         done < <(find "$root/bin" -mindepth 1 -maxdepth 1 \( -type f -o -type l \) -print0)
         if find "$root/lib" "$root/lib64" -maxdepth 1 -type f \
             \( -name 'libLLVM.so*' -o -name 'libLLVM.dylib*' \
-               -o -name 'libclang.so*' -o -name 'libclang.dylib*' \
-               -o -name 'libclang-cpp.so*' -o -name 'libclang-cpp.dylib*' \) \
+               -o -name 'libclang.so*' -o -name 'libclang.dylib*' -o -name 'libclang.*.dylib' \
+               -o -name 'libclang-cpp.so*' -o -name 'libclang-cpp.dylib*' -o -name 'libclang-cpp.*.dylib' \
+               -o -name 'libRemarks.so*' -o -name 'libRemarks.dylib*' -o -name 'libRemarks.*.dylib' \
+               -o -name 'libClangdXPCLib.so*' -o -name 'libClangdXPCLib.dylib*' -o -name 'libClangdXPCLib.*.dylib' \) \
             -print -quit 2>/dev/null | grep -q .; then
             echo "LLVM/Clang shared development SDK leaked into clangd package" >&2
             exit 1
@@ -744,11 +975,20 @@ EOF_JSON
 
         "$root/bin/clang-format" --version
 
-        if info_bool features.git_clang_format; then
-            require_executable "$root/bin/git-clang-format"
-            "$root/bin/git-clang-format" --help > "$tmp_root/git-clang-format-help.txt"
-            grep -F "git clang-format" "$tmp_root/git-clang-format-help.txt"
+        if info_bool features.git_clang_format || [ -e "$root/bin/git-clang-format" ] || [ -L "$root/bin/git-clang-format" ]; then
+            echo 'clang-format package retained git-clang-format despite the standalone formatter contract' >&2
+            exit 1
         fi
+        [ "$(info_value contents.python_runtime)" != packaged ] || {
+            echo 'clang-format package retained Python solely for a removed Git helper' >&2
+            exit 1
+        }
+        for forbidden in include share libexec; do
+            [ ! -e "$root/$forbidden" ] && [ ! -L "$root/$forbidden" ] || {
+                echo "non-runtime sibling/development payload leaked into clang-format package: $forbidden" >&2
+                exit 1
+            }
+        done
 
         printf "%s\n" "int main( void ){return 0;}" > "$tmp_root/format-test.c"
         "$root/bin/clang-format" "$tmp_root/format-test.c" | tee "$tmp_root/format-output.c"
@@ -799,12 +1039,23 @@ C_EOF
         require_executable "$root/libexec/python3"
         [ -f "$root/libexec/llvm-python-scripts/run-clang-tidy.py" ] || { echo "run-clang-tidy implementation missing" >&2; exit 1; }
         [ -f "$root/libexec/llvm-python-scripts/clang-tidy-diff.py" ] || { echo "clang-tidy-diff implementation missing" >&2; exit 1; }
-        [ ! -e "$root/share/clang" ] || { echo "non-deliberate share/clang payload leaked into clang-tidy package" >&2; exit 1; }
+        [ ! -e "$root/include" ] || { echo "development headers leaked into clang-tidy package" >&2; exit 1; }
+        [ ! -e "$root/share" ] || { echo "non-deliberate share payload leaked into clang-tidy package" >&2; exit 1; }
+        for forbidden in analyze-cc analyze-c++ intercept-cc intercept-c++ ccc-analyzer c++-analyzer; do
+            [ ! -e "$root/libexec/$forbidden" ] || {
+                echo "scan-build helper leaked into clang-tidy package: $forbidden" >&2
+                exit 1
+            }
+        done
+        if find "$root/lib" -type d -name __pycache__ -print -quit 2>/dev/null | grep -q .; then
+            echo 'Python __pycache__ payload leaked into clang-tidy package' >&2
+            exit 1
+        fi
 
         "$root/bin/clang-tidy" --version
         "$root/bin/clang-apply-replacements" --version
-        "$root/bin/run-clang-tidy" --help >/dev/null
-        "$root/bin/clang-tidy-diff" --help >/dev/null
+        llvm_helper_python_identity_probe "$root" A
+        clang_tidy_helper_probe "$root" A
         "$root/bin/clang-tidy" --list-checks "--checks=clang-analyzer-*" | tee "$tmp_root/tidy-checks.txt"
         grep -F "clang-analyzer-core" "$tmp_root/tidy-checks.txt"
         cat > "$tmp_root/tidy-test.c" <<'C_EOF'
@@ -900,8 +1151,10 @@ case "$LLVM_TOOL" in
         fi
         ;;
     lldb)
-        if [[ "$(info_value platform.host)" == linux-* ]]; then
-            # A must disappear before B, and B before C. C contains real spaces.
+        if [[ "$(info_value platform.host)" == linux-* || "$(info_value platform.host)" == macos-* ]]; then
+            # LLDB carries package-owned Python/resource state on POSIX hosts. A
+            # must disappear before B, and B before C, so absolute fallbacks
+            # cannot satisfy the identity checks. C contains real spaces.
             rm -rf "$reloc_root"
             reloc_b="$tmp_root/relocated-lldb-b"
             reloc_c="$tmp_root/relocation c with spaces"
@@ -923,6 +1176,9 @@ case "$LLVM_TOOL" in
                 -o 'image lookup -n cup_lldb_test_add_unique' \
                 -o quit 2>&1 | tee "$tmp_root/lldb-reloc-c-output.txt"
             grep -F 'cup_lldb_test_add_unique' "$tmp_root/lldb-reloc-c-output.txt"
+            if [[ "$(info_value platform.host)" == linux-* ]] && feature_enabled features.lldb_server; then
+                lldb_remote_debug_probe "$reloc_c" C
+            fi
         else
             "$reloc_root/bin/lldb" --version
             "$reloc_root/bin/lldb" -b \
@@ -951,13 +1207,37 @@ case "$LLVM_TOOL" in
         assert_output_contains "$tmp_root/clangd-reloc-c-output.txt" "All checks completed|Testing on source file"
         ;;
     clang-format)
-        "$reloc_root/bin/clang-format" "$tmp_root/format-test.c" | tee "$tmp_root/format-reloc-output.c"
-        grep -F "int main(void)" "$tmp_root/format-reloc-output.c"
+        rm -rf "$reloc_root"
+        reloc_b="$tmp_root/relocated-clang-format-b"
+        reloc_c="$tmp_root/relocation clang-format c with spaces"
+        cp -RPp "$root" "$reloc_b"
+        mv "$root" "$tmp_root/original-clang-format-root-disabled"
+        [ ! -e "$root" ] || { echo 'clang-format relocation A root is still available' >&2; exit 1; }
+        "$reloc_b/bin/clang-format" "$tmp_root/format-test.c" | tee "$tmp_root/format-reloc-b-output.c"
+        grep -F "int main(void)" "$tmp_root/format-reloc-b-output.c"
+        mv "$reloc_b" "$reloc_c"
+        [ ! -e "$reloc_b" ] || { echo 'clang-format relocation B root is still available' >&2; exit 1; }
+        "$reloc_c/bin/clang-format" "$tmp_root/format-test.c" | tee "$tmp_root/format-reloc-c-output.c"
+        grep -F "int main(void)" "$tmp_root/format-reloc-c-output.c"
+        printf 'CLANG_FORMAT_RELOCATION_A_TO_B_TO_C=PASS\n'
         ;;
     clang-tidy)
-        "$reloc_root/bin/clang-tidy" "--checks=clang-analyzer-*" "$tmp_root/tidy-test.c" -- -std=c11
-        "$reloc_root/bin/clang-apply-replacements" --version
-        "$reloc_root/bin/run-clang-tidy" --help >/dev/null
-        "$reloc_root/bin/clang-tidy-diff" --help >/dev/null
+        rm -rf "$reloc_root"
+        reloc_b="$tmp_root/relocated-clang-tidy-b"
+        reloc_c="$tmp_root/relocation clang-tidy c with spaces"
+        cp -RPp "$root" "$reloc_b"
+        mv "$root" "$tmp_root/original-clang-tidy-root-disabled"
+        [ ! -e "$root" ] || { echo 'clang-tidy relocation A root is still available' >&2; exit 1; }
+        llvm_helper_python_identity_probe "$reloc_b" B
+        clang_tidy_helper_probe "$reloc_b" B
+        "$reloc_b/bin/clang-tidy" "--checks=clang-analyzer-*" "$tmp_root/tidy-test.c" -- -std=c11
+        "$reloc_b/bin/clang-apply-replacements" --version
+        mv "$reloc_b" "$reloc_c"
+        [ ! -e "$reloc_b" ] || { echo 'clang-tidy relocation B root is still available' >&2; exit 1; }
+        llvm_helper_python_identity_probe "$reloc_c" C
+        clang_tidy_helper_probe "$reloc_c" C
+        "$reloc_c/bin/clang-tidy" "--checks=clang-analyzer-*" "$tmp_root/tidy-test.c" -- -std=c11
+        "$reloc_c/bin/clang-apply-replacements" --version
+        printf 'CLANG_TIDY_RELOCATION_A_TO_B_TO_C=PASS\n'
         ;;
 esac

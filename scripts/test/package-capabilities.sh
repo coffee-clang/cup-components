@@ -140,25 +140,32 @@ show_bin_summary() {
 }
 
 show_gcc() {
-    echo ""
-    echo "[GCC capability probes]"
-    mark_exe gcc features.c
-    mark_exe g++ features.cpp
-    mark_exe cpp features.preprocessor
-    mark_exe gcov features.gcov
-    mark_exe lto-dump features.lto_dump
-    mark_exe as features.binutils
-    mark_exe ld features.binutils
-    mark_exe ar features.binutils
-    mark_exe ranlib features.binutils
-    mark_exe strip features.binutils
-    mark_exe objdump features.binutils
-    mark_exe readelf features.binutils
+    local target_triple
+    local tool_naming
 
     target_triple="$(info_value config.gcc_target_triple)"
     if [ -z "$target_triple" ]; then
         target_triple="$(info_value platform.target_triple)"
     fi
+    tool_naming="$(info_value config.tool_naming)"
+
+    echo ""
+    echo "[GCC capability probes]"
+    if [ "$tool_naming" != "target-prefixed" ]; then
+        mark_exe gcc features.c
+        mark_exe g++ features.cpp
+        mark_exe cpp features.preprocessor
+        mark_exe gcov features.gcov
+        mark_exe lto-dump features.lto_dump
+        mark_exe as features.binutils
+        mark_exe ld features.binutils
+        mark_exe ar features.binutils
+        mark_exe ranlib features.binutils
+        mark_exe strip features.binutils
+        mark_exe objdump features.binutils
+        mark_exe readelf features.binutils
+    fi
+
     if [ -n "$target_triple" ]; then
         echo ""
         echo "[target-prefixed compiler driver probes: $target_triple]"
@@ -166,6 +173,11 @@ show_gcc() {
         for exe in g++ cpp gcov; do
             mark_exe "$target_triple-$exe"
         done
+        if [ "$tool_naming" = "target-prefixed" ]; then
+            mark_exe "$target_triple-lto-dump" features.lto_dump
+        else
+            mark_exe "$target_triple-lto-dump"
+        fi
 
         echo ""
         echo "[target-prefixed Binutils probes: $target_triple]"
@@ -175,8 +187,10 @@ show_gcc() {
         done
     fi
 
-    try_version gcc --version
-    try_version g++ --version
+    if [ "$tool_naming" != "target-prefixed" ]; then
+        try_version gcc --version
+        try_version g++ --version
+    fi
     [ -n "$target_triple" ] && try_version "$target_triple-gcc" --version
 }
 

@@ -150,6 +150,10 @@ test_static_contract() {
     require_text "$TEST_SCRIPT" 'unexpected host ld.lld fallback'
     require_text "$TEST_SCRIPT" 'env -i'
     require_text "$TEST_SCRIPT" '-flto -fuse-ld=lld'
+    require_text "$TEST_SCRIPT" 'if info_bool features.asan; then'
+    if grep -F 'info_bool features.asan || info_bool features.sanitizers' "$TEST_SCRIPT" >/dev/null; then
+        fail 'Clang sanitizer qualification regressed to aggregate metadata instead of the selected ASan runtime'
+    fi
     require_text "$TEST_SCRIPT" 'reloc_b="$tmp_root/relocated-clang-b"'
     require_text "$TEST_SCRIPT" 'reloc_c="$tmp_root/relocation c with spaces"'
     require_text "$TEST_SCRIPT" 'mv "$root" "$tmp_root/original-clang-root-disabled"'

@@ -394,8 +394,8 @@ Examples:
 | Clang | Clang resources, compiler runtimes, packaged C++ runtime capability and linker payload required by declared integration |
 | LLD | selected LLD frontends and their host runtime libraries |
 | LLDB | LLDB commands, package-owned Python, Clang resources and required debugger libraries |
-| clang-format | formatter command and optional package-owned Python for its helper |
-| clang-tidy | tidy commands and package-owned Python helper scripts |
+| clang-format | formatter command only; no Git/Python dependency for `git-clang-format` |
+| clang-tidy | tidy commands plus `run-clang-tidy`/`clang-tidy-diff` and their package-owned Python runtime |
 | clangd | language server, optional indexer and matching Clang built-in headers |
 | Valgrind | Valgrind runtime objects, `vgdb`, public client headers and relocatable pkg-config metadata |
 

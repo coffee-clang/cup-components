@@ -24,6 +24,13 @@ mkdir -p \
     "$STDLIB/config-3.12-x86_64-linux-gnu" \
     "$STDLIB/config-3.12d-x86_64-linux-gnu" \
     "$STDLIB/site-packages" \
+    "$STDLIB/test" \
+    "$STDLIB/tests" \
+    "$STDLIB/idlelib" \
+    "$STDLIB/tkinter" \
+    "$STDLIB/turtledemo" \
+    "$STDLIB/json/__pycache__" \
+    "$PY_PREFIX/Resources/Python.app/Contents/MacOS" \
     "$TMP/host-python-site" \
     "$PREFIX/lib/python3.12/site-packages"
 
@@ -54,6 +61,14 @@ printf 'dev-archive\n' > "$STDLIB/config-3.12-x86_64-linux-gnu/libpython3.12.a"
 printf 'dev-object\n' > "$STDLIB/config-3.12d-x86_64-linux-gnu/python.o"
 printf 'source-site-package\n' > "$STDLIB/site-packages/should-not-copy.py"
 printf 'preserved-lldb-module\n' > "$PREFIX/lib/python3.12/site-packages/lldb.py"
+printf 'test-only\n' > "$STDLIB/test/test_runtime.py"
+printf 'tests-only\n' > "$STDLIB/tests/test_runtime.py"
+printf 'idle\n' > "$STDLIB/idlelib/idle.py"
+printf 'tk\n' > "$STDLIB/tkinter/__init__.py"
+printf 'turtle\n' > "$STDLIB/turtledemo/demo.py"
+printf 'cached\n' > "$STDLIB/json/__pycache__/json.cpython-312.pyc"
+printf '#!/bin/sh\nexit 0\n' > "$PY_PREFIX/Resources/Python.app/Contents/MacOS/Python"
+chmod 0755 "$PY_PREFIX/Resources/Python.app/Contents/MacOS/Python"
 
 copy_posix_python_runtime "$PY_BIN" true "bin/python3.12"
 
@@ -104,6 +119,16 @@ copy_posix_python_runtime "$PY_BIN" true "bin/python3.12"
     echo 'debug-CPython development config directory leaked into package runtime' >&2
     exit 1
 }
+for excluded in test tests idlelib tkinter turtledemo; do
+    [ ! -e "$PREFIX/lib/python3.12/$excluded" ] || {
+        echo "non-runtime Python payload leaked into package: $excluded" >&2
+        exit 1
+    }
+done
+if find "$PREFIX/lib/python3.12" -type d -name __pycache__ -print -quit | grep -q .; then
+    echo 'Python __pycache__ payload leaked into package runtime' >&2
+    exit 1
+fi
 [ -x "$PREFIX/bin/python3.12" ] || {
     echo 'requested package-owned Python executable was not copied' >&2
     exit 1
@@ -114,7 +139,27 @@ package_verify_staging_links "$PREFIX" "$HOST_PLATFORM" >/dev/null || {
     exit 1
 }
 
+# Framework Python on macOS has a companion app executable below Resources.
+# The package relocates the framework dylib under lib/, so preserve the exact
+# companion topology the launcher resolves relative to that dylib.
+MAC_PREFIX="$TMP/macos-package"
+PREFIX="$MAC_PREFIX"
+HOST_PLATFORM=macos-x64
+mkdir -p "$PREFIX"
+copy_posix_python_runtime "$PY_BIN" true "libexec/python3"
+[ -x "$PREFIX/lib/Resources/Python.app/Contents/MacOS/Python" ] || {
+    echo 'macOS Python framework companion app was not preserved' >&2
+    exit 1
+}
+[ ! -e "$PREFIX/lib/python3.12/test" ] || {
+    echo 'macOS Python runtime retained test payload' >&2
+    exit 1
+}
+
 # A load-bearing enumeration failure must not be hidden by a process substitution.
+HOST_PLATFORM=linux-x64
+PREFIX="$TMP/enumeration-package"
+mkdir -p "$PREFIX"
 if (
     find() { return 37; }
     copy_posix_python_runtime "$PY_BIN"
@@ -128,4 +173,6 @@ echo 'PYTHON_RUNTIME_DEVELOPMENT_EXCLUSION=PASS'
 echo 'PYTHON_RUNTIME_SITECUSTOMIZE_EXCLUSION=PASS'
 echo 'PYTHON_RUNTIME_INTERNAL_ALIAS_PRESERVATION=PASS'
 echo 'PYTHON_RUNTIME_STAGING_LINK_VERIFY=PASS'
+echo 'PYTHON_RUNTIME_NON_RUNTIME_PAYLOAD_PRUNING=PASS'
+echo 'PYTHON_RUNTIME_MACOS_FRAMEWORK_COMPANION=PASS'
 echo 'PYTHON_RUNTIME_ENUMERATION_FAILURE_PROPAGATION=PASS'

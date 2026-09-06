@@ -274,7 +274,6 @@ write_ld_info() {
 prepare_windows_ld_runtime() {
     is_windows_platform "$HOST_PLATFORM" || return 0
     copy_windows_runtime_dlls "$PREFIX/bin"
-    verify_windows_runtime_dlls "$PREFIX/bin"
 }
 
 main() {

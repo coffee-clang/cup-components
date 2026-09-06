@@ -636,7 +636,69 @@ if (
     exit 1
 fi
 [ ! -e "$TMP/escape.dll" ] || { echo 'unsafe PE import escaped package bin directory' >&2; exit 1; }
+
+missing_pe_prefix="$TMP/missing-pe-prefix"
+mkdir -p "$missing_pe_prefix/bin"
+printf fixture > "$missing_pe_prefix/bin/tool.exe"
+if (
+    HOST_PLATFORM=windows-x64
+    PREFIX="$missing_pe_prefix"
+    windows_pe_import_tool() { printf '%s\n' fixture-objdump; }
+    windows_pe_import_dll_names() { printf '%s\n' missing-runtime.dll; }
+    find_windows_runtime_dll_by_name() { :; }
+    copy_windows_runtime_dlls "$missing_pe_prefix/bin"
+) >/dev/null 2>&1; then
+    echo 'Windows runtime closure accepted an unresolved non-system DLL import' >&2
+    exit 1
+fi
+system_path_pe_prefix="$TMP/system-path-pe-prefix"
+mkdir -p "$system_path_pe_prefix/bin"
+printf fixture > "$system_path_pe_prefix/bin/tool.exe"
+if (
+    HOST_PLATFORM=windows-x64
+    PREFIX="$system_path_pe_prefix"
+    windows_pe_import_tool() { printf '%s\n' fixture-objdump; }
+    windows_pe_import_dll_names() { printf '%s\n' package-runtime.dll; }
+    find_windows_runtime_dll_by_name() { printf '%s\n' /c/windows/system32/package-runtime.dll; }
+    windows_runtime_dll_allowed_path() { return 1; }
+    copy_windows_runtime_dlls "$system_path_pe_prefix/bin"
+) >/dev/null 2>&1; then
+    echo 'Windows runtime closure accepted a non-system import from a system path' >&2
+    exit 1
+fi
 printf 'runtime dependency-name path-safety tests passed\n'
+
+windows_chain_prefix="$TMP/windows-chain-prefix"
+windows_chain_provider="$TMP/windows-chain-provider"
+mkdir -p "$windows_chain_prefix/bin" "$windows_chain_provider"
+printf tool > "$windows_chain_prefix/bin/tool.exe"
+printf first > "$windows_chain_provider/first.dll"
+printf second > "$windows_chain_provider/second.dll"
+(
+    HOST_PLATFORM=windows-x64
+    PREFIX="$windows_chain_prefix"
+    windows_pe_import_tool() { printf '%s\n' fixture-objdump; }
+    windows_pe_import_dll_names() {
+        case "$(basename "$1")" in
+            tool.exe) printf '%s\n' first.dll ;;
+            first.dll) printf '%s\n' second.dll ;;
+        esac
+    }
+    find_windows_runtime_dll_by_name() {
+        [ -f "$windows_chain_provider/$1" ] && printf '%s\n' "$windows_chain_provider/$1"
+    }
+    windows_runtime_dll_allowed_path() { return 0; }
+    copy_windows_runtime_dlls "$windows_chain_prefix/bin"
+)
+[ -f "$windows_chain_prefix/bin/first.dll" ] || {
+    echo 'Windows runtime closure did not copy the first dependency' >&2
+    exit 1
+}
+[ -f "$windows_chain_prefix/bin/second.dll" ] || {
+    echo 'Windows runtime closure did not traverse a copied dependency' >&2
+    exit 1
+}
+printf 'Windows recursive runtime-closure test passed\n'
 
 # @rpath alone is not a proof of relocatability. The macOS closure canonicalizes
 # package-owned @rpath edges to a deterministic @loader_path reference.

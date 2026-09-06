@@ -1494,26 +1494,6 @@ windows_runtime_dll_name_is_safe() {
     esac
 }
 
-windows_runtime_dll_is_system_path() {
-    local path="$1"
-    local lower
-
-    lower="$(printf '%s\n' "$path" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
-
-    case "$lower" in
-        /c/windows/*|/windows/*|c:/windows/*)
-            return 0
-            ;;
-    esac
-
-    if ! printf '%s\n' "$lower" | grep -q '/'; then
-        windows_runtime_dll_name_is_system "$lower"
-        return $?
-    fi
-
-    return 1
-}
-
 windows_runtime_dll_search_dirs() {
     local bin_dir="${1:-}"
 
@@ -1659,18 +1639,11 @@ copy_windows_runtime_dlls() {
 
             dll_path="$(find_windows_runtime_dll_by_name "$dll_name" "$bin_dir")"
             if [ -z "$dll_path" ] || [ ! -f "$dll_path" ]; then
-                log "  unresolved PE import for $(basename "$current"): $dll_name"
-                continue
+                die "unresolved Windows runtime DLL import for $(basename "$current"): $dll_name"
             fi
 
-            if windows_runtime_dll_is_system_path "$dll_path"; then
-                continue
-            fi
-
-            if ! windows_runtime_dll_allowed_path "$dll_path"; then
-                log "  skipping non-package PE import: $dll_path"
-                continue
-            fi
+            windows_runtime_dll_allowed_path "$dll_path" ||
+                die "Windows runtime DLL import resolves outside package providers for $(basename "$current"): $dll_name -> $dll_path"
 
             dll_name="$(basename "$dll_path")"
             cp -f "$dll_path" "$bin_dir/$dll_name"
@@ -1923,57 +1896,6 @@ create_windows_python_dll_aliases() {
             log "  created Python runtime alias: $alias"
         fi
     done
-}
-
-verify_windows_runtime_dlls() {
-    local bin_dir="$1"
-    local current
-    local imports
-    local dll_name
-    local missing=0
-
-    if ! is_windows_platform "$HOST_PLATFORM"; then
-        return 0
-    fi
-
-    if [ ! -d "$bin_dir" ]; then
-        return 0
-    fi
-
-    if [ -z "$(windows_pe_import_tool)" ]; then
-        die "llvm-objdump or objdump is required to verify Windows runtime DLLs"
-    fi
-
-    log "verifying Windows runtime DLL imports in $bin_dir"
-
-    while IFS= read -r current; do
-        [ -n "$current" ] || continue
-
-        if ! imports="$(windows_pe_import_dll_names "$current")"; then
-            die "failed to inspect Windows PE imports for $(basename "$current")"
-        fi
-        while IFS= read -r dll_name; do
-            [ -n "$dll_name" ] || continue
-
-            windows_runtime_dll_name_is_safe "$dll_name" ||
-                die "unsafe Windows runtime DLL import name for $(basename "$current"): $dll_name"
-
-            if windows_runtime_dll_name_is_system "$dll_name"; then
-                continue
-            fi
-
-            if [ -f "$bin_dir/$dll_name" ]; then
-                continue
-            fi
-
-            log "  missing packaged Windows runtime DLL import for $(basename "$current"): $dll_name"
-            missing=1
-        done <<< "$imports"
-    done < <(collect_windows_package_pe_files "$bin_dir" | sort -u)
-
-    if [ "$missing" -ne 0 ]; then
-        die "Windows package has unresolved non-system DLL imports"
-    fi
 }
 
 package_relative_path_is_safe() {

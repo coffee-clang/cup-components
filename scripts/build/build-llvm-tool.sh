@@ -1972,7 +1972,6 @@ build_llvm_tool() {
 
     copy_clang_sanitizer_runtime_dlls
     copy_windows_runtime_dlls "$PREFIX/bin"
-    verify_windows_runtime_dlls "$PREFIX/bin"
 }
 
 llvm_exe_suffix() {

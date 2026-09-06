@@ -1102,7 +1102,6 @@ build_gcc_final() {
     ensure_prefixed_gcc_tools
     prune_native_windows_prefixed_binutils_from_bin
     copy_windows_runtime_dlls "$PREFIX/bin"
-    verify_windows_runtime_dlls "$PREFIX/bin"
 }
 
 

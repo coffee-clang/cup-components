@@ -311,7 +311,6 @@ build_gdb() {
         fi
         copy_windows_python_runtime
         copy_windows_runtime_dlls "$PREFIX/bin"
-        verify_windows_runtime_dlls "$PREFIX/bin"
     else
         package_gdb_source_highlight_data
         copy_posix_python_runtime "$python_cmd"

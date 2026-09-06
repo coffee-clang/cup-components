@@ -226,7 +226,11 @@ assert_publication_not_called() {
 for workflow in "$ROOT"/.github/workflows/build-*.yml; do
     grep -F 'Initialize build records' "$workflow" >/dev/null || { echo "build records is not initialized: $workflow" >&2; exit 1; }
     grep -F 'scripts/workflow/build-records.sh finalize' "$workflow" >/dev/null || { echo "build records is not finalized: $workflow" >&2; exit 1; }
-    grep -F 'name: build-records-${{ github.run_id }}-${{ github.run_attempt }}' "$workflow" >/dev/null || { echo "build records artifact identity is missing: $workflow" >&2; exit 1; }
+    if [ "$(basename "$workflow")" = build-llvm.yml ]; then
+        grep -F 'name: build-records-${{ matrix.tool }}-${{ inputs.version }}-${{ matrix.host_platform }}-${{ matrix.target_platform }}-${{ github.run_id }}-${{ github.run_attempt }}' "$workflow" >/dev/null || { echo "LLVM matrix build-records artifact identity is missing: $workflow" >&2; exit 1; }
+    else
+        grep -F 'name: build-records-${{ github.run_id }}-${{ github.run_attempt }}' "$workflow" >/dev/null || { echo "build records artifact identity is missing: $workflow" >&2; exit 1; }
+    fi
     [ "$(grep -Fc 'if: ${{ always() }}' "$workflow")" -ge 2 ] || { echo "build records is not preserved on workflow failure: $workflow" >&2; exit 1; }
     grep -F 'path: .cup-build/build-records' "$workflow" >/dev/null || { echo "build records artifact path is missing: $workflow" >&2; exit 1; }
     grep -F 'if: ${{ inputs.publish }}' "$workflow" >/dev/null || { echo "publish=true gate missing: $workflow" >&2; exit 1; }
@@ -283,6 +287,16 @@ printf 'workflow input/publication contract tests passed\n'
 
 llvm_builder="$ROOT/scripts/build/build-llvm-tool.sh"
 llvm_workflow="$ROOT/.github/workflows/build-llvm.yml"
+llvm_inputs="$(workflow_inputs "$llvm_workflow")"
+printf '%s\n' "$llvm_inputs" | grep -Eq '^[[:space:]]+full_matrix:' || { echo 'LLVM workflow is missing full_matrix input' >&2; exit 1; }
+grep -F 'default: false' "$llvm_workflow" >/dev/null || { echo 'LLVM full matrix is not opt-in' >&2; exit 1; }
+[ "$(grep -Fc '          - select' "$llvm_workflow")" -eq 2 ] || { echo 'LLVM single-cell selectors do not expose select sentinels' >&2; exit 1; }
+grep -F 'tool and platform must be selected when full_matrix is disabled' "$llvm_workflow" >/dev/null || { echo 'LLVM single-cell validation is missing' >&2; exit 1; }
+grep -F 'for tool in clang lld lldb clangd clang-format clang-tidy; do' "$llvm_workflow" >/dev/null || { echo 'LLVM full matrix tool set is incomplete' >&2; exit 1; }
+grep -F 'for platform in linux-x64 linux-arm64 windows-x64 macos-x64 macos-arm64; do' "$llvm_workflow" >/dev/null || { echo 'LLVM full matrix platform set is incomplete' >&2; exit 1; }
+grep -F 'fail-fast: false' "$llvm_workflow" >/dev/null || { echo 'LLVM matrix does not preserve independent cell evidence' >&2; exit 1; }
+grep -F 'matrix: ${{ fromJSON(needs.select.outputs.matrix) }}' "$llvm_workflow" >/dev/null || { echo 'LLVM build job does not consume the selected matrix' >&2; exit 1; }
+grep -F '\"host_platform\":\"$platform\",\"target_platform\":\"$platform\"' "$llvm_workflow" >/dev/null || { echo 'LLVM matrix lost native host/target identity' >&2; exit 1; }
 grep -F 'macos-x64) runner="macos-15-intel"' "$llvm_workflow" >/dev/null || { echo 'macOS x64 workflow path is missing' >&2; exit 1; }
 grep -F 'macos-arm64) runner="macos-15"' "$llvm_workflow" >/dev/null || { echo 'macOS arm64 workflow path is missing' >&2; exit 1; }
 grep -F "printf '%s\\n' '15.0'" "$llvm_builder" >/dev/null || {

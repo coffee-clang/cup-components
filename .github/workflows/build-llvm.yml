@@ -3,17 +3,24 @@ name: Build LLVM tool
 on:
   workflow_dispatch:
     inputs:
+      full_matrix:
+        description: Run all supported LLVM tools on all supported native platforms
+        required: true
+        type: boolean
+        default: false
       tool:
-        description: LLVM tool to build
+        description: Used only when full matrix is disabled
         required: true
         type: choice
         options:
+          - select
           - clang
           - lld
           - lldb
           - clangd
           - clang-format
           - clang-tidy
+        default: select
       version:
         description: Tool version, or stable
         required: true
@@ -23,16 +30,17 @@ on:
         required: false
         default: ''
       platform:
-        description: Platform (host and target)
+        description: Used only when full matrix is disabled
         required: true
         type: choice
         options:
+          - select
           - linux-x64
           - linux-arm64
           - windows-x64
           - macos-x64
           - macos-arm64
-        default: linux-x64
+        default: select
       publish:
         description: Publish packages as GitHub Release assets
         required: true
@@ -46,30 +54,55 @@ jobs:
   select:
     runs-on: ubuntu-24.04
     outputs:
-      runner: ${{ steps.platform.outputs.runner }}
-      host_platform: ${{ steps.platform.outputs.host_platform }}
-      target_platform: ${{ steps.platform.outputs.target_platform }}
+      matrix: ${{ steps.platform.outputs.matrix }}
     steps:
       - id: platform
         shell: bash
         run: |
-          platform="${{ inputs.platform }}"
+          full_matrix="${{ inputs.full_matrix }}"
+          selected_tool="${{ inputs.tool }}"
+          selected_platform="${{ inputs.platform }}"
 
-          case "$platform" in
-            linux-x64) runner="ubuntu-24.04" ;;
-            linux-arm64) runner="ubuntu-24.04-arm" ;;
-            windows-x64) runner="windows-2025" ;;
-            macos-x64) runner="macos-15-intel" ;;
-            macos-arm64) runner="macos-15" ;;
-            *)
-              echo "Unsupported LLVM platform: $platform" >&2
+          runner_for_platform() {
+            case "$1" in
+              linux-x64) runner="ubuntu-24.04" ;;
+              linux-arm64) runner="ubuntu-24.04-arm" ;;
+              windows-x64) runner="windows-2025" ;;
+              macos-x64) runner="macos-15-intel" ;;
+              macos-arm64) runner="macos-15" ;;
+              *)
+                echo "Unsupported LLVM platform: $1" >&2
+                exit 1
+                ;;
+            esac
+          }
+
+          matrix='{"include":['
+          separator=''
+          add_entry() {
+            tool="$1"
+            platform="$2"
+            runner_for_platform "$platform"
+            matrix="${matrix}${separator}{\"tool\":\"$tool\",\"platform\":\"$platform\",\"runner\":\"$runner\",\"host_platform\":\"$platform\",\"target_platform\":\"$platform\"}"
+            separator=','
+          }
+
+          if [ "$full_matrix" = true ]; then
+            for tool in clang lld lldb clangd clang-format clang-tidy; do
+              for platform in linux-x64 linux-arm64 windows-x64 macos-x64 macos-arm64; do
+                add_entry "$tool" "$platform"
+              done
+            done
+          else
+            if [ "$selected_tool" = select ] || [ "$selected_platform" = select ]; then
+              echo "tool and platform must be selected when full_matrix is disabled" >&2
               exit 1
-              ;;
-          esac
+            fi
+            add_entry "$selected_tool" "$selected_platform"
+          fi
 
-          echo "runner=$runner" >> "$GITHUB_OUTPUT"
-          echo "host_platform=$platform" >> "$GITHUB_OUTPUT"
-          echo "target_platform=$platform" >> "$GITHUB_OUTPUT"
+          matrix="${matrix}]}"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
       - name: Checkout for package-contract verification
         uses: actions/checkout@v5
@@ -80,7 +113,11 @@ jobs:
 
   build:
     needs: select
-    runs-on: ${{ needs.select.outputs.runner }}
+    name: ${{ matrix.tool }} ${{ inputs.version }} ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - name: Checkout
@@ -92,17 +129,17 @@ jobs:
           CUP_SOURCE_SHA256: ${{ inputs.source_sha256 }}
         run: |
           bash scripts/workflow/build-records.sh init \
-            "${{ inputs.tool }}" \
+            "${{ matrix.tool }}" \
             "${{ inputs.version }}" \
-            "${{ needs.select.outputs.host_platform }}" \
-            "${{ needs.select.outputs.target_platform }}"
+            "${{ matrix.host_platform }}" \
+            "${{ matrix.target_platform }}"
 
       - name: Build Docker image
-        if: ${{ startsWith(needs.select.outputs.host_platform, 'linux-') }}
+        if: ${{ startsWith(matrix.host_platform, 'linux-') }}
         run: bash scripts/workflow/build-records.sh run builder-setup docker build -f docker/llvm-builder.Dockerfile -t cup-llvm-builder .
 
       - name: Build package (Linux)
-        if: ${{ startsWith(needs.select.outputs.host_platform, 'linux-') }}
+        if: ${{ startsWith(matrix.host_platform, 'linux-') }}
         run: |
           docker run --rm \
             -e CUP_BUILD_ENVIRONMENT=docker-llvm \
@@ -112,22 +149,22 @@ jobs:
             cup-llvm-builder \
             bash scripts/workflow/build-records.sh run build \
               bash scripts/build/build-llvm-tool.sh \
-                "${{ inputs.tool }}" \
+                "${{ matrix.tool }}" \
                 "${{ inputs.version }}" \
-                "${{ needs.select.outputs.host_platform }}"
+                "${{ matrix.host_platform }}"
 
       - name: Test packaged LLVM tool (Linux)
-        if: ${{ startsWith(needs.select.outputs.host_platform, 'linux-') }}
+        if: ${{ startsWith(matrix.host_platform, 'linux-') }}
         run: |
           docker run --rm \
             -v "$PWD:/workspace" \
             -w /workspace \
             cup-llvm-builder \
             bash scripts/workflow/build-records.sh run product-test \
-              bash scripts/test/test-llvm-tool.sh "${{ inputs.tool }}"
+              bash scripts/test/test-llvm-tool.sh "${{ matrix.tool }}"
 
       - name: Set up MSYS2 CLANG64
-        if: ${{ startsWith(needs.select.outputs.host_platform, 'windows-') }}
+        if: ${{ startsWith(matrix.host_platform, 'windows-') }}
         id: msys2
         uses: msys2/setup-msys2@v2
         with:
@@ -135,36 +172,36 @@ jobs:
           update: true
 
       - name: Install build dependencies (Windows CLANG64)
-        if: ${{ startsWith(needs.select.outputs.host_platform, 'windows-') }}
+        if: ${{ startsWith(matrix.host_platform, 'windows-') }}
         shell: msys2 {0}
         run: bash scripts/workflow/build-records.sh run dependencies bash scripts/setup/setup-windows-msys2.sh clang64
 
       - name: Build package (Windows)
-        if: ${{ startsWith(needs.select.outputs.host_platform, 'windows-') }}
+        if: ${{ startsWith(matrix.host_platform, 'windows-') }}
         shell: msys2 {0}
         run: |
           export CUP_BUILD_ENVIRONMENT=msys2-clang64
           export CUP_SOURCE_SHA256="${{ inputs.source_sha256 }}"
           bash scripts/workflow/build-records.sh run build \
             bash scripts/build/build-llvm-tool.sh \
-              "${{ inputs.tool }}" \
+              "${{ matrix.tool }}" \
               "${{ inputs.version }}" \
-              "${{ needs.select.outputs.host_platform }}"
+              "${{ matrix.host_platform }}"
 
       - name: Test packaged LLVM tool (Windows)
-        if: ${{ startsWith(needs.select.outputs.host_platform, 'windows-') }}
+        if: ${{ startsWith(matrix.host_platform, 'windows-') }}
         shell: pwsh
         run: |
           $env:Path = "${{ steps.msys2.outputs.msys2-location }}\clang64\bin;$env:Path"
-          scripts/workflow/build-records-windows.ps1 -Phase product-test -Script scripts/test/test-llvm-tool-windows.ps1 -Arguments @('-Tool', '${{ inputs.tool }}')
+          scripts/workflow/build-records-windows.ps1 -Phase product-test -Script scripts/test/test-llvm-tool-windows.ps1 -Arguments @('-Tool', '${{ matrix.tool }}')
 
       - name: Install build dependencies (macOS)
-        if: ${{ startsWith(needs.select.outputs.host_platform, 'macos-') }}
+        if: ${{ startsWith(matrix.host_platform, 'macos-') }}
         shell: bash
         run: bash scripts/workflow/build-records.sh run dependencies bash scripts/setup/setup-macos-builder.sh
 
       - name: Build package (macOS)
-        if: ${{ startsWith(needs.select.outputs.host_platform, 'macos-') }}
+        if: ${{ startsWith(matrix.host_platform, 'macos-') }}
         shell: bash
         run: |
           brew_bash="$(brew --prefix bash)/bin/bash"
@@ -172,17 +209,17 @@ jobs:
           export CUP_SOURCE_SHA256="${{ inputs.source_sha256 }}"
           "$brew_bash" scripts/workflow/build-records.sh run build \
             "$brew_bash" scripts/build/build-llvm-tool.sh \
-              "${{ inputs.tool }}" \
+              "${{ matrix.tool }}" \
               "${{ inputs.version }}" \
-              "${{ needs.select.outputs.host_platform }}"
+              "${{ matrix.host_platform }}"
 
       - name: Test packaged LLVM tool (macOS)
-        if: ${{ startsWith(needs.select.outputs.host_platform, 'macos-') }}
+        if: ${{ startsWith(matrix.host_platform, 'macos-') }}
         shell: bash
         run: |
           brew_bash="$(brew --prefix bash)/bin/bash"
           "$brew_bash" scripts/workflow/build-records.sh run product-test \
-            "$brew_bash" scripts/test/test-llvm-tool.sh "${{ inputs.tool }}"
+            "$brew_bash" scripts/test/test-llvm-tool.sh "${{ matrix.tool }}"
 
       - name: Load release metadata
         id: release
@@ -260,6 +297,6 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v6
         with:
-          name: build-records-${{ github.run_id }}-${{ github.run_attempt }}
+          name: build-records-${{ matrix.tool }}-${{ inputs.version }}-${{ matrix.host_platform }}-${{ matrix.target_platform }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: .cup-build/build-records
           if-no-files-found: error

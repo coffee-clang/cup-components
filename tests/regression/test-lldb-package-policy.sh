@@ -85,6 +85,22 @@ grep -F "process launch --stop-at-entry -- '\$work/remote-test' '\$marker'" "$RO
     echo 'LLDB remote probe no longer launches the inferior from the connected client' >&2
     exit 1
 }
+grep -F 'while [ "$attempt" -lt 600 ] && kill -0 "$lldb_client_pid" 2>/dev/null; do' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
+    echo 'LLDB remote client no longer has a bounded completion wait' >&2
+    exit 1
+}
+grep -F 'packaged LLDB remote-debugging client timed out at relocation $label' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
+    echo 'LLDB remote client timeout no longer fails closed with evidence' >&2
+    exit 1
+}
+grep -F 'while [ "$attempt" -lt 20 ] && kill -0 "$lldb_server_pid" 2>/dev/null; do' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
+    echo 'LLDB targetless remote server cleanup is no longer bounded after a successful session' >&2
+    exit 1
+}
+if grep -F 'if ! wait "$lldb_server_pid"; then' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null; then
+    echo 'LLDB remote probe regressed to an unbounded wait for targetless server exit' >&2
+    exit 1
+fi
 grep -F "if ((Test-InfoBool 'features.process_launch') -and -not (Test-Path \"\$root\bin\lldb-argdumper.exe\")) {" "$WINDOWS_TEST" >/dev/null || {
     echo 'LLDB Windows process-launch capability gate has invalid PowerShell boolean grouping' >&2
     exit 1

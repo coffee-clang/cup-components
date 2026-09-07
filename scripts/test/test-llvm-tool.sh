@@ -27,10 +27,15 @@ source dist/release.env
 tmp_root="$(mktemp -d /tmp/cup-llvm-test.XXXXXX)"
 lldb_server_pid=""
 lldb_port_reader_pid=""
+lldb_client_pid=""
 cleanup() {
     if [ -n "${lldb_port_reader_pid:-}" ]; then
         kill "$lldb_port_reader_pid" 2>/dev/null || true
         wait "$lldb_port_reader_pid" 2>/dev/null || true
+    fi
+    if [ -n "${lldb_client_pid:-}" ]; then
+        kill "$lldb_client_pid" 2>/dev/null || true
+        wait "$lldb_client_pid" 2>/dev/null || true
     fi
     if [ -n "${lldb_server_pid:-}" ]; then
         kill "$lldb_server_pid" 2>/dev/null || true
@@ -456,6 +461,8 @@ lldb_remote_debug_probe() {
     local port=""
     local attempt=0
     local reader_status
+    local client_status
+    local server_status
 
     mkdir -p "$work"
     cat > "$work/remote-test.c" <<'C_REMOTE_EOF'
@@ -536,7 +543,31 @@ C_REMOTE_EOF
  process detach
  quit
 EOF_REMOTE_CMD
-    if ! run_lldb_clean "$candidate" -b -s "$work/client.cmd" > "$client_out" 2>&1; then
+    env -i HOME="$tmp_root/clean-home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
+        PYTHONDONTWRITEBYTECODE=1 "$candidate/bin/lldb" -b -s "$work/client.cmd" \
+        > "$client_out" 2>&1 &
+    lldb_client_pid=$!
+    attempt=0
+    while [ "$attempt" -lt 600 ] && kill -0 "$lldb_client_pid" 2>/dev/null; do
+        sleep 0.1
+        attempt=$((attempt + 1))
+    done
+    if kill -0 "$lldb_client_pid" 2>/dev/null; then
+        kill "$lldb_client_pid" 2>/dev/null || true
+        sleep 0.1
+        kill -0 "$lldb_client_pid" 2>/dev/null && kill -KILL "$lldb_client_pid" 2>/dev/null || true
+        wait "$lldb_client_pid" 2>/dev/null || true
+        lldb_client_pid=""
+        echo "packaged LLDB remote-debugging client timed out at relocation $label" >&2
+        cat "$server_out" "$client_out" >&2
+        return 1
+    fi
+    set +e
+    wait "$lldb_client_pid"
+    client_status=$?
+    set -e
+    lldb_client_pid=""
+    if [ "$client_status" -ne 0 ]; then
         echo "packaged LLDB remote-debugging session failed at relocation $label" >&2
         cat "$server_out" "$client_out" >&2
         return 1
@@ -561,11 +592,29 @@ EOF_REMOTE_CMD
         cat "$server_out" "$client_out" >&2
         return 1
     }
-    if ! wait "$lldb_server_pid"; then
-        lldb_server_pid=""
-        echo "packaged lldb-server exited unsuccessfully at relocation $label" >&2
-        cat "$server_out" "$client_out" >&2
-        return 1
+    if kill -0 "$lldb_server_pid" 2>/dev/null; then
+        # A targetless gdbserver may remain available after the client detaches.
+        # The completed remote session above is the product property; stop the
+        # test-owned server instead of waiting indefinitely for natural exit.
+        kill "$lldb_server_pid" 2>/dev/null || true
+        attempt=0
+        while [ "$attempt" -lt 20 ] && kill -0 "$lldb_server_pid" 2>/dev/null; do
+            sleep 0.05
+            attempt=$((attempt + 1))
+        done
+        kill -0 "$lldb_server_pid" 2>/dev/null && kill -KILL "$lldb_server_pid" 2>/dev/null || true
+        wait "$lldb_server_pid" 2>/dev/null || true
+    else
+        set +e
+        wait "$lldb_server_pid"
+        server_status=$?
+        set -e
+        if [ "$server_status" -ne 0 ]; then
+            lldb_server_pid=""
+            echo "packaged lldb-server exited unsuccessfully at relocation $label" >&2
+            cat "$server_out" "$client_out" >&2
+            return 1
+        fi
     fi
     lldb_server_pid=""
     echo "LLDB remote-debugging session passed at relocation $label on port $port"

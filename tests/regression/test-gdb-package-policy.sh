@@ -94,8 +94,23 @@ grep -F 'target remote 127.0.0.1:$port' "$PRODUCT_TEST" >/dev/null || {
     exit 1
 }
 
-grep -F 'PYTHONDONTWRITEBYTECODE=1 "$gdb_bin"' "$SCRIPT" >/dev/null || {
-    echo 'GDB metadata probe can regenerate Python bytecode caches inside the package' >&2
+[ "$(grep -F 'PYTHONDONTWRITEBYTECODE=1 "$gdb_bin"' "$SCRIPT" | wc -l)" -eq 2 ] || {
+    echo 'GDB Python/TUI metadata probes are not both protected from bytecode-cache regeneration' >&2
+    exit 1
+}
+grep -F 'for python_dir in "$PACKAGE_PREFIX"/lib/python[0-9]*; do' "$SCRIPT" >/dev/null || {
+    echo 'GDB package seed lost its bounded final Python-runtime cleanup loop' >&2
+    exit 1
+}
+grep -F 'prune_python_runtime_nonruntime_payload "$python_dir"' "$SCRIPT" >/dev/null || {
+    echo 'GDB package seed lost its final Python non-runtime cleanup boundary' >&2
+    exit 1
+}
+seed_line="$(grep -n -F 'prepare_gdb_package_seed' "$SCRIPT" | tail -n 1 | cut -d: -f1)"
+python_cleanup_line="$(grep -n -F 'prune_python_runtime_nonruntime_payload "$python_dir"' "$SCRIPT" | tail -n 1 | cut -d: -f1)"
+archive_line="$(grep -n -F 'create_packages "$TOOL"' "$SCRIPT" | tail -n 1 | cut -d: -f1)"
+[ "$seed_line" -lt "$python_cleanup_line" ] && [ "$python_cleanup_line" -lt "$archive_line" ] || {
+    echo 'GDB final Python cleanup is not bounded between package-seed materialization and archive creation' >&2
     exit 1
 }
 

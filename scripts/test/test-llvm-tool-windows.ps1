@@ -232,7 +232,7 @@ int main(void) {
 "@ | Set-Content (Join-Path $projectDir 'compile_commands.json')
 
     $runOutput = Invoke-NativeCapture -FilePath (Join-Path $PackageRoot 'bin\run-clang-tidy.bat') -ArgumentList @(
-        '-p', $projectDir, '-j', '1', '-checks=-*,clang-analyzer-core.NullDereference', $sourcePath
+        '-p', $projectDir, '-j', '1', '-checks=-*,clang-analyzer-core.NullDereference', 'main[.]c$'
     )
     Assert-OutputContains -Output $runOutput -Pattern 'clang-analyzer-core.NullDereference'
 
@@ -485,7 +485,7 @@ int main(void) {
     }
 
     'lldb' {
-        if (Test-InfoBool 'features.process_launch' -and -not (Test-Path "$root\bin\lldb-argdumper.exe")) {
+        if ((Test-InfoBool 'features.process_launch') -and -not (Test-Path "$root\bin\lldb-argdumper.exe")) {
             throw 'LLDB process-launch capability is missing lldb-argdumper.exe'
         }
         Show-PEImports "$root\bin\lldb.exe"

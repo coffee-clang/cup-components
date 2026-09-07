@@ -69,6 +69,26 @@ grep -F 'lldb_remote_debug_probe "$reloc_c" C' "$ROOT/scripts/test/test-llvm-too
     echo 'LLDB remote-debugging qualification is no longer bound to relocation C' >&2
     exit 1
 }
+grep -F -- '--named-pipe "$fifo" 127.0.0.1:0' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
+    echo 'LLDB remote-debugging probe no longer starts lldb-server targetless' >&2
+    exit 1
+}
+if grep -F -- '--named-pipe "$fifo" 127.0.0.1:0 -- "$work/remote-test"' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null; then
+    echo 'LLDB remote-debugging probe regressed to server-side inferior launch' >&2
+    exit 1
+fi
+grep -F 'settings set target.disable-aslr false' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
+    echo 'LLDB remote client no longer owns the container-compatible ASLR setting' >&2
+    exit 1
+}
+grep -F "process launch --stop-at-entry -- '\$work/remote-test' '\$marker'" "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
+    echo 'LLDB remote probe no longer launches the inferior from the connected client' >&2
+    exit 1
+}
+grep -F "if ((Test-InfoBool 'features.process_launch') -and -not (Test-Path \"\$root\bin\lldb-argdumper.exe\")) {" "$WINDOWS_TEST" >/dev/null || {
+    echo 'LLDB Windows process-launch capability gate has invalid PowerShell boolean grouping' >&2
+    exit 1
+}
 grep -F 'if [[ "$(info_value platform.host)" == linux-* || "$(info_value platform.host)" == macos-* ]]; then' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
     echo 'LLDB POSIX relocation no longer includes macOS previous-root isolation' >&2
     exit 1

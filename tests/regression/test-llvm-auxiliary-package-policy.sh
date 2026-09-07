@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD_SCRIPT="$ROOT/scripts/build/build-llvm-tool.sh"
 PACKAGE_COMMON="$ROOT/scripts/package/package-common.sh"
+WINDOWS_TEST="$ROOT/scripts/test/test-llvm-tool-windows.ps1"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -111,6 +112,11 @@ if grep -F 'clang-format) printf '''%s\n''' git-clang-format' "$BUILD_SCRIPT" >/
 fi
 grep -F '[ "$TOOL" = clang-tidy ] || return 0' "$BUILD_SCRIPT" >/dev/null ||
     fail 'LLVM Python helper packaging is no longer bounded to clang-tidy'
+grep -F "'-checks=-*,clang-analyzer-core.NullDereference', 'main[.]c$'" "$WINDOWS_TEST" >/dev/null ||
+    fail 'Windows run-clang-tidy probe no longer uses a filesystem-independent file regex'
+if grep -F "'-checks=-*,clang-analyzer-core.NullDereference', \$sourcePath" "$WINDOWS_TEST" >/dev/null; then
+    fail 'Windows run-clang-tidy probe passes a filesystem path as a regular expression'
+fi
 
 # shellcheck source=/dev/null
 source "$PACKAGE_COMMON"

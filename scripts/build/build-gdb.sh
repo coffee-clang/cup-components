@@ -208,7 +208,7 @@ gdb_supports_tui() {
         return 0
     }
 
-    if output="$(LC_ALL=C "$gdb_bin" -q -batch -ex 'help tui' 2>&1)" \
+    if output="$(LC_ALL=C PYTHONDONTWRITEBYTECODE=1 "$gdb_bin" -q -batch -ex 'help tui' 2>&1)" \
         && ! printf '%s\n' "$output" | grep -F 'Undefined command' >/dev/null \
         && printf '%s\n' "$output" | grep -Ei 'text user interface|^tui[[:space:]]+--' >/dev/null; then
         printf '%s\n' true
@@ -491,6 +491,11 @@ main() {
     build_gdb "$source_dir"
     write_gdb_info
     prepare_gdb_package_seed
+    local python_dir
+    for python_dir in "$PACKAGE_PREFIX"/lib/python[0-9]*; do
+        [ -d "$python_dir" ] || continue
+        prune_python_runtime_nonruntime_payload "$python_dir"
+    done
     create_packages "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION" "$PACKAGE_PREFIX"
 }
 

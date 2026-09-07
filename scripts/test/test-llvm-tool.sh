@@ -488,7 +488,7 @@ C_REMOTE_EOF
     env -i HOME="$tmp_root/lldb-server-home-$label" PATH=/usr/bin:/bin \
         LANG=C LC_ALL=C TZ=UTC \
         "$candidate/bin/lldb-server" gdbserver \
-        --named-pipe "$fifo" 127.0.0.1:0 -- "$work/remote-test" "$marker" \
+        --named-pipe "$fifo" 127.0.0.1:0 \
         > "$server_out" 2>&1 &
     lldb_server_pid=$!
 
@@ -527,8 +527,9 @@ C_REMOTE_EOF
     rm -f "$fifo"
 
     cat > "$work/client.cmd" <<EOF_REMOTE_CMD
- target create '$work/remote-test'
+ settings set target.disable-aslr false
  gdb-remote 127.0.0.1:$port
+ process launch --stop-at-entry -- '$work/remote-test' '$marker'
  breakpoint set -n cup_lldb_remote_stop
  continue
  expression -- (int)(cup_lldb_remote_value + 5)

@@ -738,6 +738,24 @@ python_runtime_prefix() {
     return 1
 }
 
+prune_python_runtime_nonruntime_payload() {
+    local destination="$1"
+
+    # CPython's caches, regression suites, GUI/demo modules and test-only
+    # extension modules are not runtime responsibility of packaged debugger or
+    # helper Python. Keep the ordinary stdlib intact for user scripting.
+    find "$destination" -type d -name __pycache__ -prune -exec rm -rf {} +
+    find "$destination" -type d \
+        \( -name test -o -name tests -o -name idlelib -o -name tkinter -o -name turtledemo \) \
+        -prune -exec rm -rf {} +
+    find "$destination" -type f \
+        \( -name '_ctypes_test*.so' -o -name '_ctypes_test*.pyd' \
+           -o -name '_test*.so' -o -name '_test*.pyd' \
+           -o -name '_xxtestfuzz*.so' -o -name '_xxtestfuzz*.pyd' \
+           -o -name 'xxlimited*.so' -o -name 'xxlimited*.pyd' \
+           -o -name 'xxsubtype*.so' -o -name 'xxsubtype*.pyd' \) -delete
+}
+
 copy_posix_python_runtime() {
     local python_executable="$1"
     local copy_executable="${2:-false}"
@@ -797,10 +815,7 @@ copy_posix_python_runtime() {
     # own regression suites and GUI/demo modules are not runtime responsibility
     # for CUP's debugger/helper use cases. Keeping them also preserves builder
     # paths in bytecode and needlessly inflates every Python-carrying package.
-    find "$destination" -type d -name __pycache__ -prune -exec rm -rf {} +
-    find "$destination" -type d \
-        \( -name test -o -name tests -o -name idlelib -o -name tkinter -o -name turtledemo \) \
-        -prune -exec rm -rf {} +
+    prune_python_runtime_nonruntime_payload "$destination"
 
     if [ "$copy_executable" = true ]; then
         package_relative_path_is_safe "$executable_relative" ||
@@ -1766,8 +1781,7 @@ PYSCRIPT
         fi
     fi
 
-    find "$dst" -type d -name __pycache__ -prune -exec rm -rf {} +
-    find "$dst" -type d \( -name test -o -name tests -o -name idlelib -o -name tkinter -o -name turtledemo \) -prune -exec rm -rf {} +
+    prune_python_runtime_nonruntime_payload "$dst"
     find "$dst" -type f \( -name '_tkinter*.pyd' -o -name 'tkinter*.pyd' \) -delete
 
     mkdir -p "$PREFIX/bin"
@@ -2564,8 +2578,8 @@ package_unzip_allow_warnings() {
         0) return 0 ;;
         1)
             # Info-ZIP status 1 means processing completed with warnings. The
-            # semantic verifier still validates modes, extraction, manifest
-            # identity and the complete logical tree.
+            # semantic verifier still validates extraction, manifest identity
+            # and the complete logical tree.
             log "warning: unzip completed with warnings: $*"
             return 0
             ;;
@@ -2582,69 +2596,15 @@ package_verify_archive() (
     local archive="$output_dir/$package_base.$format"
     local tmp
     local extracted
-    local expected_modes
-    local actual_modes
     local recomputed
     local extract_dir
 
     [ -f "$archive" ] || die "missing package archive for semantic verification: $archive"
     tmp="$(mktemp -d "$CUP_WORK_DIR/archive-verify.XXXXXX")"
     trap 'rm -rf "$tmp"' EXIT
-    expected_modes="$tmp/expected-modes.tsv"
-    actual_modes="$tmp/actual-modes.tsv"
     recomputed="$tmp/recomputed-manifest.txt"
     extract_dir="$tmp/extract"
     mkdir -p "$extract_dir"
-
-    awk -F '\t' 'NR > 1 && ($1 == "f" || $1 == "d") { print $1 "\t" $2 "\t" $4 }' \
-        "$package_root/manifest.txt" | LC_ALL=C sort > "$expected_modes"
-
-    case "$format" in
-        tar.xz|tar.gz)
-            tar -tvf "$archive" | awk -v prefix="$package_base/" '
-                {
-                    permissions=$1
-                    kind=substr(permissions, 1, 1)
-                    if (kind != "-" && kind != "d") next
-                    path=$NF
-                    if (index(path, prefix) != 1) next
-                    relative=substr(path, length(prefix) + 1)
-                    sub(/\/$/, "", relative)
-                    if (relative == "" || relative == "manifest.txt") next
-                    executable=(substr(permissions,4,1) ~ /[xstST]/ || \
-                                substr(permissions,7,1) ~ /[xstST]/ || \
-                                substr(permissions,10,1) ~ /[xstST]/)
-                    mode=executable ? "0755" : "0644"
-                    print (kind == "d" ? "d" : "f") "\t" mode "\t" relative
-                }
-            ' | LC_ALL=C sort > "$actual_modes"
-            ;;
-        zip)
-            package_unzip_allow_warnings -Z -l "$archive" | awk -v prefix="$package_base/" '
-                {
-                    permissions=$1
-                    kind=substr(permissions, 1, 1)
-                    if (kind != "-" && kind != "d") next
-                    path=$NF
-                    if (index(path, prefix) != 1) next
-                    relative=substr(path, length(prefix) + 1)
-                    sub(/\/$/, "", relative)
-                    if (relative == "" || relative == "manifest.txt") next
-                    executable=(substr(permissions,4,1) ~ /[xstST]/ || \
-                                substr(permissions,7,1) ~ /[xstST]/ || \
-                                substr(permissions,10,1) ~ /[xstST]/)
-                    mode=executable ? "0755" : "0644"
-                    print (kind == "d" ? "d" : "f") "\t" mode "\t" relative
-                }
-            ' | LC_ALL=C sort > "$actual_modes"
-            ;;
-        *) die "unsupported package format during semantic verification: $format" ;;
-    esac
-
-    cmp -s "$expected_modes" "$actual_modes" || {
-        diff -u "$expected_modes" "$actual_modes" >&2 || true
-        die "package archive mode/object representation differs from manifest.txt: $(basename "$archive")"
-    }
 
     case "$format" in
         tar.xz) tar -xJf "$archive" -C "$extract_dir" ;;

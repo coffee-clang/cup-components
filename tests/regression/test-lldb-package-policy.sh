@@ -100,6 +100,18 @@ grep -F -- '-DLLDB_ENABLE_PYTHON_LIMITED_API=OFF' "$SCRIPT" >/dev/null || {
     echo 'LLDB Windows no longer disables the failing limited Python API linkage path' >&2
     exit 1
 }
+grep -F 'info_file="$tmp_root/package-info.txt"' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
+    echo 'LLDB qualification no longer snapshots package metadata before relocation' >&2
+    exit 1
+}
+grep -F 'grep -F "${key}=" "$info_file"' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
+    echo 'LLDB capability gates reverted to reading the moved package root' >&2
+    exit 1
+}
+grep -F 'candidate="$(cd "$candidate" && pwd -P)"' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
+    echo 'LLDB identity probe no longer canonicalizes macOS /tmp filesystem identity' >&2
+    exit 1
+}
 if grep -F 'feature_enabled ' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null; then
     echo 'LLDB product test references undefined feature_enabled instead of existing info_bool' >&2
     exit 1

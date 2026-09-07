@@ -94,4 +94,9 @@ grep -F 'target remote 127.0.0.1:$port' "$PRODUCT_TEST" >/dev/null || {
     exit 1
 }
 
+grep -F 'PYTHONDONTWRITEBYTECODE=1 "$gdb_bin"' "$SCRIPT" >/dev/null || {
+    echo 'GDB metadata probe can regenerate Python bytecode caches inside the package' >&2
+    exit 1
+}
+
 echo GDB_PACKAGE_POLICY=PASS

@@ -673,6 +673,7 @@ build_native_binutils() {
         --disable-werror \
         --disable-nls \
         --without-debuginfod \
+        --disable-gprofng \
         --enable-ld \
         --enable-plugins
 }
@@ -1338,6 +1339,7 @@ main() {
     fi
 
     strip_gcc_package_binaries
+    rmdir "$PREFIX/include" "$PREFIX/share/man/man3" 2>/dev/null || true
     write_gcc_info
     if is_linux_platform "$HOST_PLATFORM"; then
         export CUP_REPRODUCIBLE_ARCHIVES=true

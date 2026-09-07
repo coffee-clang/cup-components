@@ -98,6 +98,19 @@ function Assert-NoLlvmDevelopmentPayload {
         }
     }
 
+    foreach ($pattern in @(
+        'libLTO.dll', 'libLTO-*.dll', 'libLTO.*.dll',
+        'libRemarks.dll', 'libRemarks-*.dll', 'libRemarks.*.dll',
+        'libclang.dll', 'libclang-*.dll', 'libclang.*.dll',
+        'libclang-cpp.dll', 'libclang-cpp-*.dll', 'libclang-cpp.*.dll',
+        'libClangdXPCLib.dll', 'libClangdXPCLib-*.dll', 'libClangdXPCLib.*.dll'
+    )) {
+        $leak = Get-ChildItem -Path (Join-Path $root 'bin') -File -Filter $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($leak) {
+            throw "LLVM shared development API leaked into package: $($leak.FullName)"
+        }
+    }
+
     foreach ($libRelative in @('lib', 'lib64')) {
         $libDir = Join-Path $root $libRelative
         if (-not (Test-Path $libDir)) { continue }

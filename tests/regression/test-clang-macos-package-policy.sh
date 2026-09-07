@@ -248,6 +248,16 @@ test_package_contract_helper() {
         MOCK_ARCH=x86_64 MOCK_PRIMARY_MINOS=15.0 MOCK_DEP_MINOS=14.0 \
         assert_macos_clang_package_contract "$candidate" x86_64 >/dev/null
 
+    PATH="$fake_bin:$PATH" \
+        MOCK_ARCH='x86_64 x86_64h' MOCK_PRIMARY_MINOS=15.0 MOCK_DEP_MINOS=14.0 \
+        assert_macos_clang_package_contract "$candidate" x86_64 >/dev/null
+
+    if (PATH="$fake_bin:$PATH" \
+        MOCK_ARCH=x86_64h MOCK_PRIMARY_MINOS=15.0 MOCK_DEP_MINOS=14.0 \
+        assert_macos_clang_package_contract "$candidate" x86_64 >/dev/null 2>&1); then
+        fail 'x86_64h-only Mach-O package was accepted without the required x86_64 slice'
+    fi
+
     if (PATH="$fake_bin:$PATH" \
         MOCK_ARCH=arm64 MOCK_PRIMARY_MINOS=15.0 MOCK_DEP_MINOS=14.0 \
         assert_macos_clang_package_contract "$candidate" x86_64 >/dev/null 2>&1); then

@@ -807,7 +807,7 @@ prepare_lldb_package_seed() {
 
     PACKAGE_PREFIX="$CUP_STAGE_DIR/lldb-$PACKAGE_VERSION-$HOST_PLATFORM-package-seed"
     rm -rf "$PACKAGE_PREFIX"
-    mkdir -p "$PACKAGE_PREFIX/bin" "$PACKAGE_PREFIX/lib" "$PACKAGE_PREFIX/share"
+    mkdir -p "$PACKAGE_PREFIX/bin" "$PACKAGE_PREFIX/lib"
 
     llvm_copy_path_into_seed bin/lldb
     llvm_copy_path_into_seed bin/lldb-dap
@@ -923,11 +923,11 @@ prune_llvm_auxiliary_share_payload() {
             rm -rf "$PREFIX/share/opt-viewer"
             rmdir "$PREFIX/share" 2>/dev/null || true
             ;;
-        clangd|clang-format|clang-tidy)
-            # clang-tools-extra installs sibling documentation/analyzer payload
-            # alongside several standalone tools. None of these directories is
-            # runtime responsibility for CUP's clangd/clang-format/clang-tidy
-            # command packages. clang-tidy-diff is normalized before this step.
+        clang|lldb|clangd|clang-format|clang-tidy)
+            # The monorepo install contributes sibling analyzer/editor payload
+            # to several standalone packages. None of these paths is runtime
+            # responsibility of these CUP tools. Deliberate Clang data such as
+            # share/libc++ and sanitizer ignorelists is not matched.
             rm -rf \
                 "$PREFIX/share/clang" \
                 "$PREFIX/share/clang-doc" \
@@ -1038,10 +1038,6 @@ prune_llvm_development_payload() {
         "$PREFIX/lib/cmake" \
         "$PREFIX/lib64/cmake"
 
-    if [ "$TOOL" = lld ]; then
-        rmdir "$PREFIX/include" 2>/dev/null || true
-    fi
-
     case "$TOOL" in
         clangd|clang-format|clang-tidy)
             # The monorepo install also contributes clang-tidy development
@@ -1062,6 +1058,19 @@ prune_llvm_development_payload() {
             rmdir "$PREFIX/include" 2>/dev/null || true
             ;;
     esac
+
+    if is_windows_platform "$HOST_PLATFORM"; then
+        # LLVM installs embedding/development DLLs in bin/ on Windows. They are
+        # not public command payload. Runtime closure runs after pruning and
+        # therefore restores any library that a deliberate executable actually
+        # imports.
+        rm -f \
+            "$PREFIX/bin"/libLTO.dll "$PREFIX/bin"/libLTO-[0-9]*.dll "$PREFIX/bin"/libLTO.[0-9]*.dll \
+            "$PREFIX/bin"/libRemarks.dll "$PREFIX/bin"/libRemarks-[0-9]*.dll "$PREFIX/bin"/libRemarks.[0-9]*.dll \
+            "$PREFIX/bin"/libclang.dll "$PREFIX/bin"/libclang-[0-9]*.dll "$PREFIX/bin"/libclang.[0-9]*.dll \
+            "$PREFIX/bin"/libclang-cpp.dll "$PREFIX/bin"/libclang-cpp-[0-9]*.dll "$PREFIX/bin"/libclang-cpp.[0-9]*.dll \
+            "$PREFIX/bin"/libClangdXPCLib.dll "$PREFIX/bin"/libClangdXPCLib-[0-9]*.dll "$PREFIX/bin"/libClangdXPCLib.[0-9]*.dll
+    fi
 
     for lib_dir in "$PREFIX/lib" "$PREFIX/lib64"; do
         [ -d "$lib_dir" ] || continue
@@ -1089,6 +1098,8 @@ prune_llvm_development_payload() {
         done < <(find "$lib_dir" ! -path "$lib_dir" -prune -type f \
             \( -name '*.a' -o -name '*.lib' -o -name '*.dll.a' \) -print0)
     done
+
+    rmdir "$PREFIX/include" "$PREFIX/lib" "$PREFIX/lib64" 2>/dev/null || true
 }
 
 

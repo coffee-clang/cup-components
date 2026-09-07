@@ -59,6 +59,8 @@ macos_sdk_args() {
 }
 
 bash scripts/test/package-capabilities.sh "$root" "$LLVM_TOOL"
+info_file="$tmp_root/package-info.txt"
+cp -p "$root/info.txt" "$info_file"
 
 require_executable() {
     local path="$1"
@@ -93,7 +95,7 @@ assert_output_contains() {
 
 info_value() {
     local key="$1"
-    grep -F "${key}=" "$root/info.txt" | tail -n 1 | sed 's/^[^=]*=//' || true
+    grep -F "${key}=" "$info_file" | tail -n 1 | sed 's/^[^=]*=//' || true
 }
 
 info_bool() {
@@ -344,7 +346,24 @@ assert_macos_clang_package_contract() {
         count=$((count + 1))
 
         archs="$(lipo -archs "$path")"
-        if [ "$archs" != "$expected_arch" ]; then
+        if [ "$expected_arch" = x86_64 ]; then
+            case " $archs " in
+                *' x86_64 '*) ;;
+                *)
+                    echo "missing x86_64 Mach-O slice for ${path#"$candidate"/}: $archs" >&2
+                    exit 1
+                    ;;
+            esac
+            for arch in $archs; do
+                case "$arch" in
+                    x86_64|x86_64h) ;;
+                    *)
+                        echo "unexpected Mach-O architecture for ${path#"$candidate"/}: $archs (expected x86_64 family)" >&2
+                        exit 1
+                        ;;
+                esac
+            done
+        elif [ "$archs" != "$expected_arch" ]; then
             echo "unexpected Mach-O architecture for ${path#"$candidate"/}: $archs (expected $expected_arch)" >&2
             exit 1
         fi
@@ -555,6 +574,8 @@ EOF_REMOTE_CMD
 lldb_identity_probe() {
     local candidate="$1"
     local label="$2"
+
+    candidate="$(cd "$candidate" && pwd -P)"
     local out="$tmp_root/lldb-identity-$label.txt"
     local json="$tmp_root/lldb-interpreter-$label.json"
     local clean_home="$tmp_root/clean-home-$label"
@@ -632,6 +653,20 @@ assert_no_llvm_development_payload() {
             exit 1
         fi
     done
+
+    if [ -d "$root/bin" ]; then
+        for path in \
+            "$root/bin"/libLTO.dll "$root/bin"/libLTO-[0-9]*.dll "$root/bin"/libLTO.[0-9]*.dll \
+            "$root/bin"/libRemarks.dll "$root/bin"/libRemarks-[0-9]*.dll "$root/bin"/libRemarks.[0-9]*.dll \
+            "$root/bin"/libclang.dll "$root/bin"/libclang-[0-9]*.dll "$root/bin"/libclang.[0-9]*.dll \
+            "$root/bin"/libclang-cpp.dll "$root/bin"/libclang-cpp-[0-9]*.dll "$root/bin"/libclang-cpp.[0-9]*.dll \
+            "$root/bin"/libClangdXPCLib.dll "$root/bin"/libClangdXPCLib-[0-9]*.dll "$root/bin"/libClangdXPCLib.[0-9]*.dll; do
+            if [ -e "$path" ] || [ -L "$path" ]; then
+                echo "LLVM shared development API leaked into package: ${path#"$root/"}" >&2
+                exit 1
+            fi
+        done
+    fi
 
     for lib_dir in "$root/lib" "$root/lib64"; do
         [ -d "$lib_dir" ] || continue
@@ -1096,15 +1131,12 @@ esac
 
 # Relocation is exercised with a real tool operation, not only file existence.
 reloc_root="$tmp_root/relocated-$LLVM_TOOL"
-cp -RPp "$root" "$reloc_root"
 unset PYTHONHOME PYTHONPATH || true
-export PATH="$reloc_root/bin:$host_path"
 case "$LLVM_TOOL" in
     clang)
         mapfile -t sdk_args < <(macos_sdk_args)
         if [ "$(uname -s)" = "Linux" ]; then
             # A must disappear before B, and B before C. C contains real spaces.
-            rm -rf "$reloc_root"
             reloc_b="$tmp_root/relocated-clang-b"
             reloc_c="$tmp_root/relocation c with spaces"
             cp -RPp "$root" "$reloc_b"
@@ -1126,7 +1158,6 @@ case "$LLVM_TOOL" in
         elif [ "$(uname -s)" = "Darwin" ]; then
             # macOS must prove the same relocation model: A unavailable before B,
             # B unavailable before C, and C contains real spaces.
-            rm -rf "$reloc_root"
             reloc_b="$tmp_root/relocated-clang-macos-b"
             reloc_c="$tmp_root/relocation clang macos c with real spaces"
             expected_arch="$(macos_expected_native_arch)" || {
@@ -1156,12 +1187,16 @@ case "$LLVM_TOOL" in
             printf 'CLANG_MACOS_RELOCATION_A_TO_B_TO_C=PASS\n'
             printf 'CLANG_MACOS_REAL_SPACES=PASS\n'
         else
+            cp -RPp "$root" "$reloc_root"
+            export PATH="$reloc_root/bin:$host_path"
             "$reloc_root/bin/clang" -flto -fuse-ld=lld "$tmp_root/clang-test.c" \
                 -o "$tmp_root/clang-relocated-test"
             "$tmp_root/clang-relocated-test" | grep -F "hello clang 42"
         fi
         ;;
     lld)
+        cp -RPp "$root" "$reloc_root"
+        export PATH="$reloc_root/bin:$host_path"
         "$reloc_root/bin/ld.lld" --version
         if [ "$(uname -s)" = "Darwin" ]; then
             require_executable "$reloc_root/bin/ld64.lld"
@@ -1177,7 +1212,6 @@ case "$LLVM_TOOL" in
             # LLDB carries package-owned Python/resource state on POSIX hosts. A
             # must disappear before B, and B before C, so absolute fallbacks
             # cannot satisfy the identity checks. C contains real spaces.
-            rm -rf "$reloc_root"
             reloc_b="$tmp_root/relocated-lldb-b"
             reloc_c="$tmp_root/relocation c with spaces"
             cp -RPp "$root" "$reloc_b"
@@ -1202,6 +1236,8 @@ case "$LLVM_TOOL" in
                 lldb_remote_debug_probe "$reloc_c" C
             fi
         else
+            cp -RPp "$root" "$reloc_root"
+            export PATH="$reloc_root/bin:$host_path"
             "$reloc_root/bin/lldb" --version
             "$reloc_root/bin/lldb" -b \
                 -o "script import sys; print('python-reloc-ok', sys.version_info[0], sys.version_info[1])" \
@@ -1213,7 +1249,6 @@ case "$LLVM_TOOL" in
         fi
         ;;
     clangd)
-        rm -rf "$reloc_root"
         reloc_b="$tmp_root/relocated-clangd-b"
         reloc_c="$tmp_root/relocation clangd c with spaces"
         cp -RPp "$root" "$reloc_b"
@@ -1229,7 +1264,6 @@ case "$LLVM_TOOL" in
         assert_output_contains "$tmp_root/clangd-reloc-c-output.txt" "All checks completed|Testing on source file"
         ;;
     clang-format)
-        rm -rf "$reloc_root"
         reloc_b="$tmp_root/relocated-clang-format-b"
         reloc_c="$tmp_root/relocation clang-format c with spaces"
         cp -RPp "$root" "$reloc_b"
@@ -1244,7 +1278,6 @@ case "$LLVM_TOOL" in
         printf 'CLANG_FORMAT_RELOCATION_A_TO_B_TO_C=PASS\n'
         ;;
     clang-tidy)
-        rm -rf "$reloc_root"
         reloc_b="$tmp_root/relocated-clang-tidy-b"
         reloc_c="$tmp_root/relocation clang-tidy c with spaces"
         cp -RPp "$root" "$reloc_b"

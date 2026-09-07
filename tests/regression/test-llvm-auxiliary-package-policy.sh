@@ -238,4 +238,34 @@ echo 'CLANG_TIDY_SIBLING_PAYLOAD_PRUNING=PASS'
 echo 'CLANGD_VERSIONED_DYLIB_AND_XPC_PRUNING=PASS'
 echo 'LLD_AUXILIARY_PRUNING=PASS'
 echo 'WINDOWS_LLVM_COMMAND_NAME_POLICY=PASS'
+
+# Clang and LLDB inherit analyzer/editor share payload from the monorepo even
+# though neither package exposes scan-build, scan-view or opt-viewer.
+for tool in clang lldb; do
+    prefix="$TMP/$tool-aux"
+    rm -rf "$prefix"
+    make_payload_noise "$prefix"
+    mkdir -p "$prefix/share/libc++"
+    printf 'keep\n' > "$prefix/share/libc++/module"
+    PREFIX="$prefix" TOOL="$tool" prune_llvm_auxiliary_share_payload
+    [ -f "$prefix/share/libc++/module" ] || fail "$tool pruning removed deliberate share/libc++ payload"
+    for forbidden in share/clang share/clang-doc share/opt-viewer share/scan-build share/scan-view share/man/man1/scan-build.1; do
+        [ ! -e "$prefix/$forbidden" ] || fail "$tool retained sibling auxiliary payload: $forbidden"
+    done
+done
+
+# Windows embedding/development DLLs live in bin rather than lib. Runtime
+# closure follows this pruning step and can restore only real import edges.
+prefix="$TMP/windows-dev-dlls"
+mkdir -p "$prefix/bin" "$prefix/lib"
+for dll in libLTO.dll libRemarks.dll libclang.dll libclang-cpp.dll libClangdXPCLib.dll; do
+    printf 'dev\n' > "$prefix/bin/$dll"
+done
+printf 'runtime\n' > "$prefix/bin/liblldb.dll"
+PREFIX="$prefix" HOST_PLATFORM=windows-x64 TOOL=clangd prune_llvm_development_payload
+for dll in libLTO.dll libRemarks.dll libclang.dll libclang-cpp.dll libClangdXPCLib.dll; do
+    [ ! -e "$prefix/bin/$dll" ] || fail "Windows development DLL survived pruning: $dll"
+done
+[ -f "$prefix/bin/liblldb.dll" ] || fail 'unrelated runtime DLL was pruned'
+
 echo 'LLVM_AUXILIARY_PACKAGE_POLICY=PASS'

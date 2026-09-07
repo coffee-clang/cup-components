@@ -58,4 +58,9 @@ if ( require_package_owned_file "$package_root" "$compiler" libgcc.a ) >/dev/nul
     exit 1
 fi
 
+grep -F -- '--disable-gprofng' "$ROOT/scripts/build/build-gcc.sh" >/dev/null || {
+    echo 'GCC bundled Binutils still builds unowned gprofng payload' >&2
+    exit 1
+}
+
 printf '%s\n' 'GCC_PACKAGE_OWNERSHIP=PASS'

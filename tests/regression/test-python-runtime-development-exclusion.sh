@@ -30,6 +30,7 @@ mkdir -p \
     "$STDLIB/tkinter" \
     "$STDLIB/turtledemo" \
     "$STDLIB/json/__pycache__" \
+    "$STDLIB/lib-dynload" \
     "$PY_PREFIX/Resources/Python.app/Contents/MacOS" \
     "$TMP/host-python-site" \
     "$PREFIX/lib/python3.12/site-packages"
@@ -67,6 +68,10 @@ printf 'idle\n' > "$STDLIB/idlelib/idle.py"
 printf 'tk\n' > "$STDLIB/tkinter/__init__.py"
 printf 'turtle\n' > "$STDLIB/turtledemo/demo.py"
 printf 'cached\n' > "$STDLIB/json/__pycache__/json.cpython-312.pyc"
+for test_module in _ctypes_test _testcapi _testinternalcapi _xxtestfuzz xxlimited xxsubtype; do
+    printf 'test-extension\n' > "$STDLIB/lib-dynload/${test_module}.cpython-312-x86_64-linux-gnu.so"
+done
+printf 'runtime-extension\n' > "$STDLIB/lib-dynload/_ssl.cpython-312-x86_64-linux-gnu.so"
 printf '#!/bin/sh\nexit 0\n' > "$PY_PREFIX/Resources/Python.app/Contents/MacOS/Python"
 chmod 0755 "$PY_PREFIX/Resources/Python.app/Contents/MacOS/Python"
 
@@ -129,6 +134,16 @@ if find "$PREFIX/lib/python3.12" -type d -name __pycache__ -print -quit | grep -
     echo 'Python __pycache__ payload leaked into package runtime' >&2
     exit 1
 fi
+for test_module in _ctypes_test _testcapi _testinternalcapi _xxtestfuzz xxlimited xxsubtype; do
+    if find "$PREFIX/lib/python3.12/lib-dynload" -maxdepth 1 -type f -name "${test_module}*.so" -print -quit | grep -q .; then
+        echo "CPython test-only extension leaked into package runtime: $test_module" >&2
+        exit 1
+    fi
+done
+[ -f "$PREFIX/lib/python3.12/lib-dynload/_ssl.cpython-312-x86_64-linux-gnu.so" ] || {
+    echo 'ordinary CPython runtime extension was pruned with test modules' >&2
+    exit 1
+}
 [ -x "$PREFIX/bin/python3.12" ] || {
     echo 'requested package-owned Python executable was not copied' >&2
     exit 1

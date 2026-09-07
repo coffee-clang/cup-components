@@ -186,7 +186,7 @@ gdb_supports_python() {
         return 0
     }
 
-    if output="$($gdb_bin -q -batch -ex 'python import sys, gdb; print("python-ok")' 2>/dev/null)" \
+    if output="$(PYTHONDONTWRITEBYTECODE=1 "$gdb_bin" -q -batch -ex 'python import sys, gdb; print("python-ok")' 2>/dev/null)" \
         && printf '%s\n' "$output" | grep -F 'python-ok' >/dev/null; then
         printf '%s\n' true
     else

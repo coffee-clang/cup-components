@@ -289,7 +289,7 @@ function Assert-LldbPythonRuntime {
     $output = Invoke-NativeCapture -FilePath (Join-Path $PackageRoot 'bin\lldb.exe') -ArgumentList @(
         '-b',
         '-o',
-        'script import sys, lldb; print("python-isolated=" + str(sys.flags.isolated)); print("python-version=" + ".".join(map(str, sys.version_info[:3]))); [print("python-path=" + p) for p in sys.path]',
+        'script import sys, lldb; print("python-isolated=" + str(sys.flags.isolated)); print("python-version=" + ".".join(map(str, sys.version_info[:3]))); print("lldb-file=" + str(lldb.__file__)); [print("python-path=" + p) for p in sys.path]',
         '-o',
         'quit'
     )
@@ -298,6 +298,16 @@ function Assert-LldbPythonRuntime {
     Assert-OutputContains -Output $output -Pattern ("(?m)^python-version=" + [regex]::Escape($expectedVersion) + '$')
 
     $packageFull = [IO.Path]::GetFullPath($PackageRoot).TrimEnd('\') + '\'
+    $lldbFileLine = @($output | ForEach-Object { "$($_)" } | Where-Object { $_ -like 'lldb-file=*' } | Select-Object -Last 1)
+    if ($lldbFileLine.Count -ne 1) {
+        throw "LLDB Python module identity probe produced no unique path at relocation $Label"
+    }
+    $lldbFile = $lldbFileLine[0] -replace '^lldb-file=', ''
+    $lldbFileFull = [IO.Path]::GetFullPath($lldbFile)
+    if (-not $lldbFileFull.StartsWith($packageFull, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "LLDB Python module escaped the package at relocation ${Label}: $lldbFile"
+    }
+
     $pythonPaths = @($output | ForEach-Object { "$($_)" } | Where-Object { $_ -like 'python-path=*' })
     if ($pythonPaths.Count -eq 0) {
         throw "LLDB Python sys.path probe produced no entries at relocation $Label"
@@ -307,6 +317,12 @@ function Assert-LldbPythonRuntime {
         $path = $line -replace '^python-path=', ''
         if ([string]::IsNullOrWhiteSpace($path)) {
             throw "LLDB Python sys.path contains an ambient empty entry at relocation $Label"
+        }
+        if ($path -eq '.') {
+            continue
+        }
+        if (-not [IO.Path]::IsPathRooted($path)) {
+            throw "LLDB Python sys.path contains an unexpected relative entry at relocation ${Label}: $path"
         }
         $full = [IO.Path]::GetFullPath($path)
         if (-not $full.StartsWith($packageFull, [StringComparison]::OrdinalIgnoreCase)) {

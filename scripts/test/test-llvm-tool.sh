@@ -534,9 +534,10 @@ C_REMOTE_EOF
     rm -f "$fifo"
 
     cat > "$work/client.cmd" <<EOF_REMOTE_CMD
+ target create '$work/remote-test'
  settings set target.disable-aslr false
  gdb-remote 127.0.0.1:$port
- process launch --stop-at-entry -- '$work/remote-test' '$marker'
+ process launch --stop-at-entry -- '$marker'
  breakpoint set -n cup_lldb_remote_stop
  continue
  expression -- (int)(cup_lldb_remote_value + 5)

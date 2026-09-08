@@ -81,10 +81,20 @@ grep -F 'settings set target.disable-aslr false' "$ROOT/scripts/test/test-llvm-t
     echo 'LLDB remote client no longer owns the container-compatible ASLR setting' >&2
     exit 1
 }
-grep -F "process launch --stop-at-entry -- '\$work/remote-test' '\$marker'" "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
-    echo 'LLDB remote probe no longer launches the inferior from the connected client' >&2
+remote_target_line="$(grep -nF "target create '\$work/remote-test'" "$ROOT/scripts/test/test-llvm-tool.sh" | head -1 | cut -d: -f1 || true)"
+remote_connect_line="$(grep -nF 'gdb-remote 127.0.0.1:$port' "$ROOT/scripts/test/test-llvm-tool.sh" | head -1 | cut -d: -f1 || true)"
+[ -n "$remote_target_line" ] && [ -n "$remote_connect_line" ] && [ "$remote_target_line" -lt "$remote_connect_line" ] || {
+    echo 'LLDB targetless remote client must establish target identity before gdb-remote' >&2
     exit 1
 }
+grep -F "process launch --stop-at-entry -- '\$marker'" "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
+    echo 'LLDB remote probe no longer launches the target from the connected client with marker argv' >&2
+    exit 1
+}
+if grep -F "process launch --stop-at-entry -- '\$work/remote-test' '\$marker'" "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null; then
+    echo 'LLDB remote probe regressed to passing the executable as process argv' >&2
+    exit 1
+fi
 grep -F 'while [ "$attempt" -lt 600 ] && kill -0 "$lldb_client_pid" 2>/dev/null; do' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
     echo 'LLDB remote client no longer has a bounded completion wait' >&2
     exit 1
@@ -103,6 +113,22 @@ if grep -F 'if ! wait "$lldb_server_pid"; then' "$ROOT/scripts/test/test-llvm-to
 fi
 grep -F "if ((Test-InfoBool 'features.process_launch') -and -not (Test-Path \"\$root\bin\lldb-argdumper.exe\")) {" "$WINDOWS_TEST" >/dev/null || {
     echo 'LLDB Windows process-launch capability gate has invalid PowerShell boolean grouping' >&2
+    exit 1
+}
+grep -F "if (\$path -eq '.') {" "$WINDOWS_TEST" >/dev/null || {
+    echo 'LLDB Windows Python qualification no longer permits the deliberate upstream current-directory entry' >&2
+    exit 1
+}
+grep -F 'if (-not [IO.Path]::IsPathRooted($path)) {' "$WINDOWS_TEST" >/dev/null || {
+    echo 'LLDB Windows Python qualification no longer rejects unexpected relative sys.path entries' >&2
+    exit 1
+}
+grep -F 'print("lldb-file=" + str(lldb.__file__))' "$WINDOWS_TEST" >/dev/null || {
+    echo 'LLDB Windows Python qualification no longer records the package-owned lldb module identity' >&2
+    exit 1
+}
+grep -F 'LLDB Python module escaped the package at relocation ${Label}: $lldbFile' "$WINDOWS_TEST" >/dev/null || {
+    echo 'LLDB Windows Python qualification no longer fails closed on an external lldb module' >&2
     exit 1
 }
 grep -F 'if [[ "$(info_value platform.host)" == linux-* || "$(info_value platform.host)" == macos-* ]]; then' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {

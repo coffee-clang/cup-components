@@ -128,6 +128,7 @@ LLVM_RUNTIMES="$(llvm_runtimes_for_tool)"
 LLVM_RUNTIME_BUILD_DIR=""
 LLVM_BUILD_DIR=""
 LLDB_PACKAGED_PYTHON_RELATIVE=""
+CLANG_CXX_RUNTIME_DEFAULT=false
 
 llvm_runtimes_enabled() {
     [ "$TOOL" = "clang" ] && [ -n "$LLVM_RUNTIMES" ]
@@ -540,6 +541,8 @@ EOF
     cat > "$target_cfg_1" <<'EOF'
 # The driver-specific clang.cfg/clang++.cfg files carry the package defaults.
 EOF
+
+    CLANG_CXX_RUNTIME_DEFAULT=true
 
     if [ "$target_cfg_2" != "$target_cfg_1" ]; then
         cat > "$target_cfg_2" <<'EOF'
@@ -2040,7 +2043,6 @@ write_llvm_info() {
     local has_resource_dir
     local has_lld
     local has_lld_link
-    local has_wasm_ld
     local has_ld64_lld
     local has_native_lld
     local has_lldb
@@ -2068,23 +2070,39 @@ write_llvm_info() {
     local has_sanitizers
     local has_profile_runtime
     local has_cxx_runtime
+    local cxx_runtime_default
     local has_llvm_runtimes
     local has_mingw_sysroot
     local has_driver_config
     local lldb_resource_dir=""
     local has_lldb_clang_resources=false
+    local lld_link_elf=false
+    local lld_link_coff=false
+    local lld_link_macho=false
+    local lldb_process_launch=false
+    local lldb_server_feature=false
+    local lldb_dap_feature=false
+    local lldb_remote_debugging=false
 
     has_clang="$(metadata_bool_for_executable "$PREFIX" clang)"
     has_clangpp="$(metadata_bool_for_executable "$PREFIX" clang++)"
     has_resource_dir="$(metadata_bool_for_dirs "$PREFIX" 'clang')"
     has_lld="$(metadata_bool_for_executable "$PREFIX" ld.lld)"
     has_lld_link="$(metadata_bool_for_executable "$PREFIX" lld-link)"
-    has_wasm_ld="$(metadata_bool_for_executable "$PREFIX" wasm-ld)"
     has_ld64_lld="$(metadata_bool_for_executable "$PREFIX" ld64.lld)"
     has_native_lld="$has_lld"
-    if is_macos_platform "$HOST_PLATFORM"; then
-        has_native_lld="$has_ld64_lld"
-    fi
+    case "$HOST_PLATFORM" in
+        linux-*)
+            lld_link_elf="$has_lld"
+            ;;
+        windows-x64)
+            lld_link_coff="$has_lld_link"
+            ;;
+        macos-*)
+            has_native_lld="$has_ld64_lld"
+            lld_link_macho="$has_ld64_lld"
+            ;;
+    esac
     has_lldb="$(metadata_bool_for_executable "$PREFIX" lldb)"
     has_lldb_server="$(metadata_bool_for_executable "$PREFIX" lldb-server)"
     has_lldb_dap="$(metadata_bool_for_executable "$PREFIX" lldb-dap)"
@@ -2119,6 +2137,10 @@ write_llvm_info() {
     fi
     has_profile_runtime="$(metadata_bool_for_files "$PREFIX" 'clang_rt.profile*' 'libclang_rt.profile*')"
     has_cxx_runtime="$(llvm_cxx_runtime_files_present)"
+    cxx_runtime_default="$CLANG_CXX_RUNTIME_DEFAULT"
+    if [ "$cxx_runtime_default" = true ] && [ "$has_cxx_runtime" != true ]; then
+        die "Clang declares bundled libc++ as the default without a packaged C++ runtime"
+    fi
     has_llvm_runtimes="$(llvm_runtime_files_present)"
     if is_windows_platform "$HOST_PLATFORM" && [ "$TOOL" = "clang" ] && \
         [ -d "$PREFIX/$HOST_TRIPLE/include" ] && [ -d "$PREFIX/$HOST_TRIPLE/lib" ]; then
@@ -2172,15 +2194,11 @@ write_llvm_info() {
                 "config.llvm_runtimes_enabled=$(llvm_runtimes_enabled && printf true || printf false)"
                 "$(info_required_entry entry.clang "$PREFIX" clang)"
                 "$(info_required_entry entry.clang++ "$PREFIX" clang++)"
-                "$(info_entry_if_present entry.lld "$PREFIX" ld.lld)"
                 "features.c=$has_clang"
                 "features.cpp=$has_clangpp"
                 "features.resource_dir=$has_resource_dir"
                 "features.lld_integration=$has_native_lld"
                 "features.lto=$has_native_lld"
-                "features.llvm_ar=$(metadata_bool_for_executable "$PREFIX" llvm-ar)"
-                "features.llvm_ranlib=$(metadata_bool_for_executable "$PREFIX" llvm-ranlib)"
-                "features.llvm_objdump=$(metadata_bool_for_executable "$PREFIX" llvm-objdump)"
                 "features.target_x86=$has_target_x86"
                 "features.target_aarch64=$has_target_aarch64"
                 "features.target_linux_x64=$( [ "$TARGET_PLATFORM" = "linux-x64" ] && printf true || printf false )"
@@ -2195,22 +2213,31 @@ write_llvm_info() {
                 "features.ubsan=$has_ubsan"
                 "features.profile_runtime=$has_profile_runtime"
                 "features.cxx_runtime=$has_cxx_runtime"
-                "features.cxx_runtime_default=false"
+                "features.cxx_runtime_default=$cxx_runtime_default"
                 "contents.mingw_sysroot=$has_mingw_sysroot"
                 "features.sysroot=$has_mingw_sysroot"
                 "config.driver_config=$has_driver_config"
             )
+            if is_macos_platform "$HOST_PLATFORM"; then
+                info+=(
+                    "requires.apple_developer_tools=true"
+                    "requires.macos_sdk=true"
+                )
+            fi
             ;;
         lld)
             info+=(
                 "$(info_required_entry entry.ld_lld "$PREFIX" ld.lld)"
-                "$(info_entry_if_present entry.lld_link "$PREFIX" lld-link)"
-                "$(info_entry_if_present entry.wasm_ld "$PREFIX" wasm-ld)"
-                "features.link_elf=$has_lld"
-                "features.link_coff=$has_lld_link"
-                "features.link_wasm=$has_wasm_ld"
-                "features.link_macho=$has_ld64_lld"
+                "features.link_elf=$lld_link_elf"
+                "features.link_coff=$lld_link_coff"
+                "features.link_wasm=false"
+                "features.link_macho=$lld_link_macho"
             )
+            if is_windows_platform "$HOST_PLATFORM"; then
+                info+=("$(info_required_entry entry.lld_link "$PREFIX" lld-link)")
+            elif is_macos_platform "$HOST_PLATFORM"; then
+                info+=("$(info_required_entry entry.ld64_lld "$PREFIX" ld64.lld)")
+            fi
             ;;
         lldb)
             if lldb_resource_dir="$(clang_resource_dir)" &&
@@ -2218,6 +2245,19 @@ write_llvm_info() {
                [ "$(find "$lldb_resource_dir/include" -type f -print -quit)" ]; then
                 has_lldb_clang_resources=true
             fi
+            # Entry presence is not equivalent to a qualified behavioral feature.
+            # Local process control and DAP are deliberate LLDB capabilities on all
+            # supported hosts. On macOS upstream intentionally uses Apple's system
+            # debugserver, so that external developer-platform prerequisite is made
+            # explicit below. CUP does not claim self-contained remote debugging on
+            # macOS because the remote target also needs a deployable debugserver.
+            lldb_process_launch="$has_lldb"
+            lldb_dap_feature="$has_lldb_dap"
+            if ! is_macos_platform "$HOST_PLATFORM"; then
+                lldb_server_feature="$has_lldb_server"
+                lldb_remote_debugging="$has_lldb_server"
+            fi
+
             info+=(
                 "contents.python_runtime=packaged"
                 "contents.python_runtime.version=$PACKAGED_PYTHON_RUNTIME_VERSION"
@@ -2228,8 +2268,8 @@ write_llvm_info() {
             fi
             info+=(
                 "$(info_required_entry entry.lldb "$PREFIX" lldb)"
-                "$(info_entry_if_present entry.lldb_server "$PREFIX" lldb-server)"
-                "$(info_entry_if_present entry.lldb_dap "$PREFIX" lldb-dap)"
+                "$(info_required_entry entry.lldb_dap "$PREFIX" lldb-dap)"
+                "contents.lldb_server=$has_lldb_server"
                 "config.python=$cmake_python"
                 "config.libxml2=$cmake_libxml2"
                 "config.lzma=$cmake_lzma"
@@ -2239,21 +2279,27 @@ write_llvm_info() {
                 "features.target_create=$has_lldb"
                 "features.breakpoints=$has_lldb"
                 "features.symbol_lookup=$has_lldb"
-                "features.process_launch=$has_lldb"
-                "features.lldb_server=$has_lldb_server"
-                "features.lldb_dap=$has_lldb_dap"
-                "features.remote_debugging=$has_lldb_server"
+                "features.process_launch=$lldb_process_launch"
+                "features.lldb_server=$lldb_server_feature"
+                "features.lldb_dap=$lldb_dap_feature"
+                "features.remote_debugging=$lldb_remote_debugging"
             )
+            if is_macos_platform "$HOST_PLATFORM"; then
+                info+=(
+                    "requires.apple_developer_tools=true"
+                    "requires.system_debugserver=true"
+                )
+            else
+                info+=("$(info_required_entry entry.lldb_server "$PREFIX" lldb-server)")
+            fi
             ;;
         clangd)
             info+=(
                 "$(info_required_entry entry.clangd "$PREFIX" clangd)"
-                "$(info_entry_if_present entry.clangd_indexer "$PREFIX" clangd-indexer)"
+                "contents.clangd_indexer=$has_clangd_indexer"
                 "contents.clang_resources=$has_resource_dir"
                 "features.resource_dir=$has_resource_dir"
                 "features.check_compile_commands=$has_clangd"
-                "features.background_index=$has_clangd"
-                "features.indexer=$has_clangd_indexer"
             )
             ;;
         clang-format)

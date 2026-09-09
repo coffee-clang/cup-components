@@ -107,20 +107,22 @@ Clang checks include:
 - Linux and macOS relocation behavior;
 - Windows sysroot/driver behavior on the Windows path.
 
-LLD checks the selected linker frontends and their reported link formats.
+LLD performs a real native-format link for the package host: ELF on Linux, PE/COFF on Windows and Mach-O on macOS. Additional upstream frontends can remain package contents, but their presence alone is not a CUP capability claim.
 
 LLDB checks include:
 
-- `lldb` and optional `lldb-server` / `lldb-dap`;
+- required `lldb` and `lldb-dap` public commands, plus `lldb-server` on Linux/Windows and the private `lldb-argdumper` process-launch helper;
 - package-owned Python interpreter/module identity and runtime-version provenance;
 - isolated package-owned Python search paths on Windows;
 - Clang resource-directory ownership;
 - target creation, breakpoint and symbol lookup behavior;
-- process launch where the runner permits debugger process control;
-- on Linux, a real packaged `lldb-server gdbserver` loopback session when remote debugging is declared, including structured ephemeral-port publication, breakpoint/expression, detach and inferior-owned completion;
+- process launch whenever `features.process_launch=true`; an environment restriction is an evidence failure rather than a package PASS;
+- a real `lldb-dap` protocol session when DAP is declared;
+- on Linux and Windows, a real packaged `lldb-server platform` session when remote debugging is declared, with native remote launch, breakpoint/expression and bounded cleanup;
+- on macOS, the declared Apple system `debugserver` prerequisite is exercised by local process launch/DAP, while remote debugging remains undeclared;
 - POSIX relocation with previous roots unavailable; the final path contains real spaces.
 
-clangd checks the language-server entry, matching Clang resource headers and optional `clangd-indexer`.
+clangd checks the language-server entry, matching Clang resource headers, compile-command consumption and a real bounded LSP initialize/document-symbol/shutdown session. `clangd-indexer` remains optional payload when upstream installs it; background indexing is not a separate CUP capability claim.
 
 clang-format checks formatting behavior, style-file discovery, dry-run failure semantics and relocation; `git-clang-format` is deliberately absent from the standalone self-contained package.
 
@@ -185,6 +187,8 @@ test-ld-builder-synthetic.sh
 test-ld-product-model.sh
 test-lldb-clang-resource-materialization.sh
 test-lldb-package-policy.sh
+test-llvm-auxiliary-package-policy.sh
+test-llvm-capability-scope-policy.sh
 test-package-capability-reporter.sh
 test-producer-interfaces.sh
 test-python-runtime-development-exclusion.sh

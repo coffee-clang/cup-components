@@ -51,7 +51,7 @@ function Show-Executable {
         $declared = Get-InfoValue $DeclaredKey
         $line += " declared:$DeclaredKey=$declared"
         if ($declared -eq 'true' -and -not $present) { $line += '  WARNING: declared true but executable missing' }
-        elseif ($declared -ne 'true' -and $present) { $line += '  note: executable present but feature not declared true' }
+        elseif ($declared -ne 'true' -and $present) { $line += '  note: executable present but metadata not declared true' }
     }
     Write-Host $line
 }
@@ -102,6 +102,10 @@ function Show-InfoContract {
     Get-Content $info | Where-Object { $_ -match '^features\.' } | Sort-Object | ForEach-Object { Write-Host "  $_" }
 
     Write-Host ""
+    Write-Host '[external requirements declared in info.txt]'
+    Get-Content $info | Where-Object { $_ -match '^requires\.' } | Sort-Object | ForEach-Object { Write-Host "  $_" }
+
+    Write-Host ""
     Write-Host '[contents/config/bundle metadata]'
     Get-Content $info | Where-Object { $_ -match '^(contents|config|bundle)\.' } | Sort-Object | ForEach-Object { Write-Host "  $_" }
 }
@@ -127,20 +131,20 @@ switch ($Tool) {
         Write-Host '[GCC capability probes]'
         Show-Executable 'gcc.exe' 'features.c'
         Show-Executable 'g++.exe' 'features.cpp'
-        Show-Executable 'cpp.exe' 'features.preprocessor'
-        Show-Executable 'gcov.exe' 'features.gcov'
-        Show-Executable 'lto-dump.exe' 'features.lto_dump'
-        foreach ($exe in @('as.exe','ld.exe','ar.exe','ranlib.exe','strip.exe','objdump.exe','readelf.exe')) { Show-Executable $exe 'features.binutils' }
+        Show-Executable 'cpp.exe' 'entry.cpp'
+        Show-Executable 'gcov.exe' 'entry.gcov'
+        Show-Executable 'lto-dump.exe' 'contents.lto_dump'
+        foreach ($exe in @('as.exe','ld.exe','ar.exe','ranlib.exe','strip.exe','objdump.exe','readelf.exe')) { Show-Executable $exe }
         $triple = Get-InfoValue 'config.gcc_target_triple'
         if (-not $triple) { $triple = Get-InfoValue 'platform.target_triple' }
         if ($triple) {
             Write-Host ""
             Write-Host "[target-prefixed compiler driver probes: $triple]"
-            Show-Executable "$triple-gcc.exe" 'features.target_prefixed_compiler_drivers'
+            Show-Executable "$triple-gcc.exe" 'entry.target_gcc'
             foreach ($exe in @('g++','cpp','gcov')) { Show-Executable "$triple-$exe.exe" }
             Write-Host ""
             Write-Host "[target-prefixed Binutils probes: $triple]"
-            Show-Executable "$triple-ar.exe" 'features.target_prefixed_binutils'
+            Show-Executable "$triple-ar.exe" 'entry.target_ar'
             foreach ($exe in @('as','ld','ranlib','strip','objdump','readelf')) { Show-Executable "$triple-$exe.exe" }
         }
         Show-Version 'gcc.exe'
@@ -151,7 +155,7 @@ switch ($Tool) {
         Write-Host ""
         Write-Host '[GNU ld capability probes]'
         Show-Executable 'ld.exe' 'features.link'
-        Show-Executable 'ld.bfd.exe' 'features.ld_bfd'
+        Show-Executable 'ld.bfd.exe' 'entry.ld_bfd'
         Show-Version 'ld.exe'
     }
     'gdb' {
@@ -167,9 +171,9 @@ switch ($Tool) {
         Show-Executable 'clang.exe' 'features.c'
         Show-Executable 'clang++.exe' 'features.cpp'
         Show-Executable 'ld.lld.exe' 'features.lld_integration'
-        Show-Executable 'llvm-ar.exe' 'features.llvm_ar'
-        Show-Executable 'llvm-ranlib.exe' 'features.llvm_ranlib'
-        Show-Executable 'llvm-objdump.exe' 'features.llvm_objdump'
+        Show-Executable 'llvm-ar.exe'
+        Show-Executable 'llvm-ranlib.exe'
+        Show-Executable 'llvm-objdump.exe'
         Show-Version 'clang.exe'
     }
     'lld' {
@@ -191,7 +195,7 @@ switch ($Tool) {
     }
     'clangd' {
         Show-Executable 'clangd.exe' 'features.check_compile_commands'
-        Show-Executable 'clangd-indexer.exe' 'features.indexer'
+        Show-Executable 'clangd-indexer.exe'
         Show-Version 'clangd.exe'
     }
     'clang-format' {

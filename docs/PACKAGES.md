@@ -183,6 +183,7 @@ Tool-specific metadata uses these namespaces:
 ```text
 entry.*
 features.*
+requires.*
 contents.*
 config.*
 ```
@@ -198,7 +199,7 @@ entry.gcc=bin/gcc
 entry.g++=bin/g++
 entry.clang=bin/clang
 entry.ld=bin/ld
-entry.lld=bin/ld.lld
+entry.ld_lld=bin/ld.lld
 entry.gdb=bin/gdb
 ```
 
@@ -206,7 +207,9 @@ At least one executable entry is required. Every declared `entry.*` path must sa
 
 ### Capability metadata
 
-`features.*` records capabilities exposed by the completed package. The exact keys depend on the tool.
+`features.*` records behavioral capabilities deliberately exposed by the completed package. A command or payload being present is evidence for `entry.*` or `contents.*`; it does not by itself create a `features.*` promise. Positive feature claims therefore have a corresponding product-test oracle. The exact keys depend on the tool.
+
+`requires.*` records an explicit external platform prerequisite that is necessary for a declared capability but is not package payload. It is used only when the platform itself owns that prerequisite. The current macOS examples are the Apple SDK used for native compilation and Apple's system `debugserver` used by LLDB local process control. A requirement must never be inferred silently from the build runner.
 
 Examples include:
 
@@ -217,7 +220,7 @@ features.openmp=true
 features.sanitizers=true
 features.gdbserver=true
 features.link_coff=true
-features.background_index=true
+features.format_file=true
 ```
 
 ### Content and configuration metadata

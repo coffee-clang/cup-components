@@ -11,7 +11,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
-$recordsDir = Join-Path $repoRoot '.cup-build/build-records'
+$recordsDir = if ($env:CUP_BUILD_RECORDS_DIR) { $env:CUP_BUILD_RECORDS_DIR } else { Join-Path $repoRoot '.cup-build/build-records' }
 New-Item -ItemType Directory -Force -Path $recordsDir | Out-Null
 
 $environment = @(

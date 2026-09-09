@@ -9,7 +9,7 @@ Usage:
 Prints a non-fatal capability inventory for a packaged cup component.
 
 The source of truth is info.txt: package/build scripts write package identity,
-entry points, contents.*, config.* and features.* metadata there.  This script
+entry points, requirements, contents.*, config.* and features.* metadata there.  This script
 prints that contract and performs light probes to highlight obvious mismatches.
 It does not decide acceptance by itself; tool-specific tests fail when declared
 features cannot be exercised.
@@ -62,7 +62,7 @@ mark_exe() {
         if [ "$declared" = "true" ] && ! has_exe "$exe"; then
             printf '  WARNING: declared true but executable missing'
         elif [ "$declared" != "true" ] && has_exe "$exe"; then
-            printf '  note: executable present but feature not declared true'
+            printf '  note: executable present but metadata not declared true'
         fi
     fi
     printf '\n'
@@ -118,6 +118,10 @@ show_info_contract() {
     grep -E '^features\.' "$info" | sort | sed 's/^/  /' || echo "  none"
 
     echo ""
+    echo "[external requirements declared in info.txt]"
+    grep -E '^requires\.' "$info" | sort | sed 's/^/  /' || echo "  none"
+
+    echo ""
     echo "[contents/config/bundle metadata]"
     grep -E '^(contents|config|bundle)\.' "$info" | sort | sed 's/^/  /' || echo "  none"
 }
@@ -154,34 +158,34 @@ show_gcc() {
     if [ "$tool_naming" != "target-prefixed" ]; then
         mark_exe gcc features.c
         mark_exe g++ features.cpp
-        mark_exe cpp features.preprocessor
-        mark_exe gcov features.gcov
-        mark_exe lto-dump features.lto_dump
-        mark_exe as features.binutils
-        mark_exe ld features.binutils
-        mark_exe ar features.binutils
-        mark_exe ranlib features.binutils
-        mark_exe strip features.binutils
-        mark_exe objdump features.binutils
-        mark_exe readelf features.binutils
+        mark_exe cpp entry.cpp
+        mark_exe gcov entry.gcov
+        mark_exe lto-dump contents.lto_dump
+        mark_exe as
+        mark_exe ld
+        mark_exe ar
+        mark_exe ranlib
+        mark_exe strip
+        mark_exe objdump
+        mark_exe readelf
     fi
 
     if [ -n "$target_triple" ]; then
         echo ""
         echo "[target-prefixed compiler driver probes: $target_triple]"
-        mark_exe "$target_triple-gcc" features.target_prefixed_compiler_drivers
+        mark_exe "$target_triple-gcc" entry.target_gcc
         for exe in g++ cpp gcov; do
             mark_exe "$target_triple-$exe"
         done
         if [ "$tool_naming" = "target-prefixed" ]; then
-            mark_exe "$target_triple-lto-dump" features.lto_dump
+            mark_exe "$target_triple-lto-dump" contents.lto_dump
         else
             mark_exe "$target_triple-lto-dump"
         fi
 
         echo ""
         echo "[target-prefixed Binutils probes: $target_triple]"
-        mark_exe "$target_triple-ar" features.target_prefixed_binutils
+        mark_exe "$target_triple-ar" entry.target_ar
         for exe in as ld ranlib strip objdump readelf; do
             mark_exe "$target_triple-$exe"
         done
@@ -200,12 +204,12 @@ show_ld() {
     echo ""
     echo "[GNU ld capability probes]"
     mark_exe ld features.link
-    mark_exe ld.bfd features.ld_bfd
+    mark_exe ld.bfd entry.ld_bfd
 
     if [ "$(info_value config.cross)" = "true" ]; then
         target_triple="$(info_value platform.target_triple)"
         if [ -n "$target_triple" ]; then
-            mark_exe "$target_triple-ld" features.target_prefixed
+            mark_exe "$target_triple-ld" entry.target_ld
         fi
     fi
 
@@ -233,9 +237,9 @@ show_llvm() {
             mark_exe clang features.c
             mark_exe clang++ features.cpp
             mark_exe ld.lld features.lld_integration
-            mark_exe llvm-ar features.llvm_ar
-            mark_exe llvm-ranlib features.llvm_ranlib
-            mark_exe llvm-objdump features.llvm_objdump
+            mark_exe llvm-ar
+            mark_exe llvm-ranlib
+            mark_exe llvm-objdump
             try_version clang --version
             ;;
         lld)
@@ -253,7 +257,7 @@ show_llvm() {
             ;;
         clangd)
             mark_exe clangd features.check_compile_commands
-            mark_exe clangd-indexer features.indexer
+            mark_exe clangd-indexer
             try_version clangd --version
             ;;
         clang-format)

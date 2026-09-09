@@ -1246,27 +1246,22 @@ write_gcc_info() {
         "$(info_entry_if_present entry.gcov "$PREFIX" gcov)"
         "contents.libstdcxx=$includes_libstdcxx"
         "contents.lto=$includes_lto"
+        "contents.lto_dump=$has_lto_dump"
+        "contents.lto_plugin=$has_plugin"
         "contents.openmp=$includes_openmp"
         "contents.libgomp=$includes_openmp"
         "contents.sanitizers=$includes_sanitizers"
         "contents.asan=$includes_asan"
         "contents.ubsan=$includes_ubsan"
+        "contents.target_prefixed_compiler_drivers=$has_target_prefixed_compiler_drivers"
+        "contents.target_prefixed_binutils=$has_target_prefixed_binutils"
+        "contents.target_layout_binutils=$has_target_layout_binutils"
         "features.c=$has_gcc"
         "features.cpp=$has_gpp"
-        "features.preprocessor=$has_cpp"
-        "features.gcov=$has_gcov"
         "features.lto=$includes_lto"
-        "features.lto_dump=$has_lto_dump"
         "features.openmp=$includes_openmp"
         "features.pthread=$has_pthread"
         "features.sanitizers=$includes_sanitizers"
-        "features.asan=$includes_asan"
-        "features.ubsan=$includes_ubsan"
-        "features.plugin=$has_plugin"
-        "features.binutils=$includes_binutils"
-        "features.target_prefixed_compiler_drivers=$has_target_prefixed_compiler_drivers"
-        "features.target_prefixed_binutils=$has_target_prefixed_binutils"
-        "features.target_layout_binutils=$has_target_layout_binutils"
         "features.sysroot=$has_sysroot"
     )
 
@@ -1280,10 +1275,7 @@ write_gcc_info() {
             "$(info_entry_if_present entry.target_gcov "$PREFIX" "$TARGET_TRIPLE-gcov")"
             "$(info_entry_if_present entry.target_ar "$PREFIX" "$TARGET_TRIPLE-ar")"
             "$(info_entry_if_present entry.target_ld "$PREFIX" "$TARGET_TRIPLE-ld")"
-            "features.windows_target=true"
         )
-    else
-        info+=("features.windows_target=false")
     fi
 
     if [ -n "$bundle_components" ]; then
@@ -1301,7 +1293,6 @@ write_gcc_info() {
                 "bundle.mingw-w64.version=$MINGW_VERSION"
                 "bundle.mingw-w64.url=$MINGW_SOURCE_URL"
                 "bundle.mingw-w64.sha256=$(source_archive_sha256 "$MINGW_SOURCE_URL" "mingw-w64-v$MINGW_VERSION.tar.bz2")"
-                "features.winpthreads=$has_pthread"
             )
         fi
     fi

@@ -18,9 +18,9 @@ for marker in \
     }
 done
 
-# lldb is the only unconditional public CUP root. lldb-dap/lldb-server remain
-# optional capability entries, while lldb-argdumper is a required private
-# runtime helper for the deliberately supported process-launch capability.
+# lldb and lldb-dap are deliberate public CUP commands on every supported
+# LLDB platform. lldb-server is additionally public on Linux/Windows, while
+# lldb-argdumper remains a required private runtime helper for process launch.
 grep -F 'llvm_copy_path_into_seed bin/lldb' "$SCRIPT" >/dev/null
 grep -F 'llvm_copy_path_into_seed bin/lldb-dap' "$SCRIPT" >/dev/null
 grep -F 'llvm_copy_path_into_seed bin/lldb-server' "$SCRIPT" >/dev/null
@@ -69,48 +69,54 @@ grep -F 'lldb_remote_debug_probe "$reloc_c" C' "$ROOT/scripts/test/test-llvm-too
     echo 'LLDB remote-debugging qualification is no longer bound to relocation C' >&2
     exit 1
 }
-grep -F -- '--named-pipe "$fifo" 127.0.0.1:0' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
-    echo 'LLDB remote-debugging probe no longer starts lldb-server targetless' >&2
+grep -F '"$candidate/bin/lldb-server" platform --server' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
+    echo 'LLDB Linux remote qualification no longer uses packaged platform-server mode' >&2
     exit 1
 }
-if grep -F -- '--named-pipe "$fifo" 127.0.0.1:0 -- "$work/remote-test"' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null; then
-    echo 'LLDB remote-debugging probe regressed to server-side inferior launch' >&2
+grep -F 'platform select remote-linux' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
+    echo 'LLDB Linux remote qualification no longer selects remote-linux' >&2
     exit 1
-fi
+}
+grep -F 'platform connect connect://127.0.0.1:$port' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
+    echo 'LLDB Linux remote qualification no longer connects through the platform plugin' >&2
+    exit 1
+}
+grep -F "target create '\$work/remote-test'" "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
+    echo 'LLDB platform remote qualification no longer starts from the local target fixture' >&2
+    exit 1
+}
 grep -F 'settings set target.disable-aslr false' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
     echo 'LLDB remote client no longer owns the container-compatible ASLR setting' >&2
     exit 1
 }
-remote_target_line="$(grep -nF "target create '\$work/remote-test'" "$ROOT/scripts/test/test-llvm-tool.sh" | head -1 | cut -d: -f1 || true)"
-remote_connect_line="$(grep -nF 'gdb-remote 127.0.0.1:$port' "$ROOT/scripts/test/test-llvm-tool.sh" | head -1 | cut -d: -f1 || true)"
-[ -n "$remote_target_line" ] && [ -n "$remote_connect_line" ] && [ "$remote_target_line" -lt "$remote_connect_line" ] || {
-    echo 'LLDB targetless remote client must establish target identity before gdb-remote' >&2
+grep -F 'packaged LLDB platform remote-debugging client timed out at relocation $label' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
+    echo 'LLDB platform remote client timeout no longer fails closed with evidence' >&2
     exit 1
 }
-grep -F "process launch --stop-at-entry -- '\$marker'" "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
-    echo 'LLDB remote probe no longer launches the target from the connected client with marker argv' >&2
-    exit 1
-}
-if grep -F "process launch --stop-at-entry -- '\$work/remote-test' '\$marker'" "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null; then
-    echo 'LLDB remote probe regressed to passing the executable as process argv' >&2
+if grep -F 'gdb-remote 127.0.0.1:$port' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null; then
+    echo 'obsolete targetless gdb-remote orchestration remains in LLDB qualification' >&2
     exit 1
 fi
-grep -F 'while [ "$attempt" -lt 600 ] && kill -0 "$lldb_client_pid" 2>/dev/null; do' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
-    echo 'LLDB remote client no longer has a bounded completion wait' >&2
+grep -F 'lldb_dap_probe()' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
+    echo 'LLDB POSIX qualification no longer executes a real DAP protocol probe' >&2
     exit 1
 }
-grep -F 'packaged LLDB remote-debugging client timed out at relocation $label' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
-    echo 'LLDB remote client timeout no longer fails closed with evidence' >&2
+grep -F 'platform select remote-windows' "$WINDOWS_TEST" >/dev/null || {
+    echo 'LLDB Windows qualification no longer uses remote-windows platform mode' >&2
     exit 1
 }
-grep -F 'while [ "$attempt" -lt 20 ] && kill -0 "$lldb_server_pid" 2>/dev/null; do' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
-    echo 'LLDB targetless remote server cleanup is no longer bounded after a successful session' >&2
+grep -F "'thread backtrace'" "$WINDOWS_TEST" >/dev/null || {
+    echo 'LLDB Windows qualification lost canonical thread backtrace' >&2
     exit 1
 }
-if grep -F 'if ! wait "$lldb_server_pid"; then' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null; then
-    echo 'LLDB remote probe regressed to an unbounded wait for targetless server exit' >&2
+if grep -F "'-o', 'backtrace'" "$WINDOWS_TEST" >/dev/null; then
+    echo 'LLDB Windows qualification still contains invalid bare backtrace command' >&2
     exit 1
 fi
+grep -F 'function Invoke-LldbDapProbe' "$WINDOWS_TEST" >/dev/null || {
+    echo 'LLDB Windows qualification no longer executes a real DAP protocol probe' >&2
+    exit 1
+}
 grep -F "if ((Test-InfoBool 'features.process_launch') -and -not (Test-Path \"\$root\bin\lldb-argdumper.exe\")) {" "$WINDOWS_TEST" >/dev/null || {
     echo 'LLDB Windows process-launch capability gate has invalid PowerShell boolean grouping' >&2
     exit 1
@@ -136,7 +142,7 @@ grep -F 'if [[ "$(info_value platform.host)" == linux-* || "$(info_value platfor
     exit 1
 }
 if grep -F '[ -x "$PACKAGE_PREFIX/bin/lldb-dap" ] || die' "$SCRIPT" >/dev/null; then
-    echo 'LLDB package seed incorrectly requires lldb-dap for every LLVM version' >&2
+    echo 'LLDB Linux seed duplicates lldb-dap public-entry enforcement instead of leaving it to metadata validation' >&2
     exit 1
 fi
 

@@ -11,8 +11,8 @@ make_fixture() {
     local root="$1"
     local platform_triple="$2"
     local gcc_triple="${3:-}"
-    local feature="${4:-true}"
-    local binutils_feature="${5:-false}"
+    local driver_entry="${4:-true}"
+    local binutils_entry="${5:-false}"
 
     mkdir -p "$root/bin"
     {
@@ -25,12 +25,11 @@ make_fixture() {
         fi
         printf 'features.c=false\n'
         printf 'features.cpp=false\n'
-        printf 'features.preprocessor=false\n'
-        printf 'features.gcov=false\n'
-        printf 'features.lto_dump=false\n'
-        printf 'features.binutils=false\n'
-        printf 'features.target_prefixed_compiler_drivers=%s\n' "$feature"
-        printf 'features.target_prefixed_binutils=%s\n' "$binutils_feature"
+        printf 'entry.cpp=false\n'
+        printf 'entry.gcov=false\n'
+        printf 'contents.lto_dump=false\n'
+        printf 'entry.target_gcc=%s\n' "$driver_entry"
+        printf 'entry.target_ar=%s\n' "$binutils_entry"
     } > "$root/info.txt"
 }
 
@@ -46,7 +45,7 @@ EOF
 
 assert_no_declared_missing_warning() {
     local output="$1"
-    if grep -Fq 'features.target_prefixed_compiler_drivers=true  WARNING: declared true but executable missing' "$output"; then
+    if grep -Fq 'entry.target_gcc=true  WARNING: declared true but executable missing' "$output"; then
         echo "unexpected target-prefixed compiler-driver warning" >&2
         cat "$output" >&2
         return 1
@@ -55,7 +54,7 @@ assert_no_declared_missing_warning() {
 
 assert_required_driver_warning() {
     local output="$1"
-    grep -Fq 'declared:features.target_prefixed_compiler_drivers=true  WARNING: declared true but executable missing' "$output"
+    grep -Fq 'declared:entry.target_gcc=true  WARNING: declared true but executable missing' "$output"
 }
 
 # GCC-specific canonical target overrides the generic package/platform triple.
@@ -68,7 +67,7 @@ grep -Fq 'present  x86_64-pc-linux-gnu-gcc' "$tmp/canonical.out"
 grep -Fq 'missing  x86_64-pc-linux-gnu-g++' "$tmp/canonical.out"
 assert_no_declared_missing_warning "$tmp/canonical.out"
 
-# The feature means the canonical target-prefixed GCC driver itself must exist.
+# The public entry means the canonical target-prefixed GCC driver itself must exist.
 rm -f "$fixture/bin/x86_64-pc-linux-gnu-gcc"
 bash "$reporter" "$fixture" gcc > "$tmp/missing-required.out"
 assert_required_driver_warning "$tmp/missing-required.out"
@@ -98,14 +97,14 @@ make_fixture "$binutils_fixture" x86_64-linux-gnu x86_64-pc-linux-gnu false true
 make_exe "$binutils_fixture/bin/x86_64-pc-linux-gnu-ar"
 bash "$reporter" "$binutils_fixture" gcc > "$tmp/binutils-canonical.out"
 grep -Fq 'present  x86_64-pc-linux-gnu-ar' "$tmp/binutils-canonical.out"
-if grep -Fq 'features.target_prefixed_binutils=true  WARNING: declared true but executable missing' "$tmp/binutils-canonical.out"; then
+if grep -Fq 'entry.target_ar=true  WARNING: declared true but executable missing' "$tmp/binutils-canonical.out"; then
     echo "unexpected target-prefixed Binutils sibling warning" >&2
     cat "$tmp/binutils-canonical.out" >&2
     exit 1
 fi
 rm -f "$binutils_fixture/bin/x86_64-pc-linux-gnu-ar"
 bash "$reporter" "$binutils_fixture" gcc > "$tmp/binutils-missing-required.out"
-grep -Fq 'declared:features.target_prefixed_binutils=true  WARNING: declared true but executable missing' "$tmp/binutils-missing-required.out"
+grep -Fq 'declared:entry.target_ar=true  WARNING: declared true but executable missing' "$tmp/binutils-missing-required.out"
 
 # A cross package whose public tool naming is target-prefixed must not emit
 # false missing warnings for unprefixed tools that are deliberately absent.
@@ -115,10 +114,9 @@ printf 'config.tool_naming=target-prefixed\n' >> "$cross/info.txt"
 sed -i \
     -e 's/^features.c=false$/features.c=true/' \
     -e 's/^features.cpp=false$/features.cpp=true/' \
-    -e 's/^features.preprocessor=false$/features.preprocessor=true/' \
-    -e 's/^features.gcov=false$/features.gcov=true/' \
-    -e 's/^features.lto_dump=false$/features.lto_dump=true/' \
-    -e 's/^features.binutils=false$/features.binutils=true/' \
+    -e 's/^entry.cpp=false$/entry.cpp=true/' \
+    -e 's/^entry.gcov=false$/entry.gcov=true/' \
+    -e 's/^contents.lto_dump=false$/contents.lto_dump=true/' \
     "$cross/info.txt"
 for exe in gcc g++ cpp gcov lto-dump ar as ld ranlib strip objdump readelf; do
     make_exe "$cross/bin/x86_64-w64-mingw32-$exe"
@@ -135,5 +133,76 @@ if grep -Eq '^  missing  (gcc|g\+\+|cpp|gcov|lto-dump|as|ld|ar|ranlib|strip|objd
     exit 1
 fi
 grep -Fq 'present  x86_64-w64-mingw32-lto-dump' "$tmp/cross.out"
+
+
+
+# Metadata scope is repository-wide: executable/payload presence must not be
+# promoted into behavioral features unless CUP deliberately qualifies it.
+gcc_builder="$repo_root/scripts/build/build-gcc.sh"
+ld_builder="$repo_root/scripts/build/build-ld.sh"
+gdb_builder="$repo_root/scripts/build/build-gdb.sh"
+valgrind_builder="$repo_root/scripts/build/build-valgrind.sh"
+
+for old_key in \
+    features.preprocessor features.gcov features.lto_dump features.plugin \
+    features.binutils features.target_prefixed_compiler_drivers \
+    features.target_prefixed_binutils features.target_layout_binutils \
+    features.windows_target features.winpthreads; do
+    ! grep -F "$old_key=" "$gcc_builder" >/dev/null || {
+        echo "GCC still promotes inventory into feature metadata: $old_key" >&2
+        exit 1
+    }
+done
+for key in entry.cpp entry.gcov; do
+    grep -F "$key" "$gcc_builder" >/dev/null || {
+        echo "GCC metadata lost scoped public-entry ownership: $key" >&2
+        exit 1
+    }
+done
+for key in contents.lto_dump contents.lto_plugin contents.target_prefixed_compiler_drivers contents.target_prefixed_binutils contents.target_layout_binutils; do
+    grep -F "$key=" "$gcc_builder" >/dev/null || {
+        echo "GCC metadata lost scoped content ownership: $key" >&2
+        exit 1
+    }
+done
+
+for old_key in features.ld_bfd features.plugins features.target_prefixed; do
+    ! grep -F "$old_key=" "$ld_builder" >/dev/null || {
+        echo "GNU ld still promotes inventory/configuration into feature metadata: $old_key" >&2
+        exit 1
+    }
+done
+grep -F 'config.plugins=true' "$ld_builder" >/dev/null
+grep -F 'info_entry_if_present entry.ld_bfd' "$ld_builder" >/dev/null
+grep -F 'info_required_entry entry.target_ld' "$ld_builder" >/dev/null
+
+for old_key in features.debuginfod features.source_highlight; do
+    ! grep -F "$old_key=" "$gdb_builder" >/dev/null || {
+        echo "GDB still promotes optional integration inventory into feature metadata: $old_key" >&2
+        exit 1
+    }
+done
+for key in config.debuginfod config.source_highlight contents.uses_debuginfod contents.uses_source_highlight; do
+    grep -F "$key=" "$gdb_builder" >/dev/null || {
+        echo "GDB metadata lost optional integration ownership: $key" >&2
+        exit 1
+    }
+done
+
+for old_key in \
+    features.cachegrind features.callgrind features.massif features.helgrind \
+    features.drd features.dhat features.lackey features.exp_bbv \
+    features.mpiwrap features.gdbserver features.gdb_python_frontend; do
+    ! grep -F "$old_key=" "$valgrind_builder" >/dev/null || {
+        echo "Valgrind still promotes retained runtime inventory into feature metadata: $old_key" >&2
+        exit 1
+    }
+done
+grep -F 'features.memcheck=$has_memcheck' "$valgrind_builder" >/dev/null
+grep -F 'contents.tools=$tools_csv' "$valgrind_builder" >/dev/null
+grep -F 'contents.vgdb=$has_vgdb' "$valgrind_builder" >/dev/null
+grep -F 'config.gdbscripts_disabled=$VALGRIND_GDBSCRIPTS_DISABLED' "$valgrind_builder" >/dev/null
+
+printf 'PACKAGE_METADATA_SCOPE_POLICY=PASS\n'
 
 printf 'PACKAGE_CAPABILITY_REPORTER_TARGET_PREFIX_SEMANTICS=PASS\n'

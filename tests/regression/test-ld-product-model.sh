@@ -114,7 +114,7 @@ contents.gcc_lto_plugin=false
 features.link=true
 features.link_elf=true
 features.link_pe=false
-features.plugins=true
+config.plugins=true
 EOF_INFO
 
 create_packages ld 1.0 linux-x64 linux-x64 "" "$prefix"

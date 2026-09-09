@@ -205,7 +205,7 @@ require_executable() {
 
 require_executable "$root/bin/valgrind"
 "$root/bin/valgrind" --version
-if feature_enabled "features.gdbserver"; then
+if feature_enabled "contents.vgdb"; then
     require_executable "$root/bin/vgdb"
     "$root/bin/vgdb" --help >"$tmpdir/vgdb-help.txt" 2>&1
     if grep -F '/.cup-build/' "$tmpdir/vgdb-help.txt" >/dev/null; then
@@ -217,8 +217,8 @@ fi
 "$root/bin/valgrind" --tool=memcheck --help >"$tmpdir/valgrind-help.txt"
 grep -A3 "available tools are:" "$tmpdir/valgrind-help.txt"
 
-if feature_enabled "features.mpiwrap"; then
-    echo "core Valgrind package unexpectedly declares MPI wrapper support" >&2
+if [ "$(info_value contents.mpi)" != "false" ]; then
+    echo "core Valgrind package does not declare MPI payload exclusion" >&2
     exit 1
 fi
 if find "$root" -type f -name "libmpiwrap-*" -print -quit | grep -q .; then
@@ -226,8 +226,8 @@ if find "$root" -type f -name "libmpiwrap-*" -print -quit | grep -q .; then
     exit 1
 fi
 
-if feature_enabled "features.gdb_python_frontend"; then
-    echo "relocatable core Valgrind package unexpectedly enables the absolute-path GDB Python front end" >&2
+if [ "$(info_value config.gdbscripts_disabled)" != "true" ]; then
+    echo "relocatable core Valgrind package does not declare GDB Python front-end exclusion" >&2
     exit 1
 fi
 if find "$root" -type f -name 'valgrind-monitor.py' -print -quit | grep -q .; then

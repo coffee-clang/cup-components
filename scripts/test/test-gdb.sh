@@ -160,7 +160,7 @@ if ! feature_enabled "features.gdbserver" || ! feature_enabled "features.remote_
 fi
 [ -d "$root/share/gdb" ] || { echo 'missing GDB data directory' >&2; exit 1; }
 assert_no_gdb_development_payload
-if feature_enabled "features.source_highlight"; then
+if feature_enabled "contents.uses_source_highlight"; then
     [ -f "$root/share/gdb/source-highlight/lang.map" ] || { echo 'missing GDB Source Highlight runtime data' >&2; exit 1; }
 fi
 gdb_python_identity_probe "$root" A

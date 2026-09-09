@@ -217,6 +217,8 @@ The operating-system-provided runtime boundary is:
 - macOS: Apple system libraries under `/usr/lib` and `/System/Library`;
 - Windows: Windows system DLLs.
 
+Self-containment describes the package's runtime closure. It does not imply redistribution of target SDKs or platform-integrated developer services that the operating system vendor owns. Any such dependency must be declared explicitly with `requires.*` metadata and exercised by the native qualification that relies on it. In the current matrix, macOS Clang requires an active Apple macOS SDK for normal native compilation, and macOS LLDB local process control uses Apple's system `debugserver`. LLDB remote debugging on macOS is not declared because a deployable `debugserver` is not package-owned.
+
 A package is **relocatable** when it continues to work after extraction to a different directory. It must not require the temporary build or staging path.
 
 Target runtimes are separate from host runtime dependencies. For example, a Linux-hosted GCC package targeting Windows contains the MinGW-w64 target headers and runtime because they are part of the compiler toolchain it distributes.

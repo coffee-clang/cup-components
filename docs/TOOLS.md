@@ -42,7 +42,7 @@ A native Linux GCC package is required to provide:
 
 - C compilation;
 - C++ compilation;
-- preprocessing;
+- the public `cpp` preprocessor and `gcov` utility when produced by the selected GCC layout;
 - link-time optimization (LTO);
 - libstdc++;
 - OpenMP;
@@ -75,7 +75,7 @@ A Linux x64 host can therefore run the package while the compiler emits Windows 
 
 ### GCC metadata
 
-The package records which of the expected capabilities are actually present, including C, C++, preprocessing, gcov, LTO, OpenMP, pthread support, sanitizers, Binutils and target-prefixed tool layouts.
+The package separates public commands, retained payload and behavioral capabilities. `entry.*` records commands such as `cpp`, `gcov` and target-prefixed public tools; `contents.*` records retained LTO/Binutils/runtime layout; `features.*` is reserved for behavior CUP deliberately qualifies, including C/C++, LTO, OpenMP, pthread support, sanitizers and the target sysroot where applicable.
 
 ## GNU ld
 
@@ -134,7 +134,7 @@ Upstream GDB releases can expose optional integrations such as:
 - Babeltrace;
 - Intel Processor Trace on supported Linux x64 builds.
 
-The builder enables an integration only when the selected GDB source release exposes the corresponding configure control and the platform environment provides the required build input. The completed package metadata records which capabilities are present.
+The builder enables an integration only when the selected GDB source release exposes the corresponding configure control and the platform environment provides the required build input. The completed package records those optional integrations as build configuration and runtime contents. They are not promoted to separate `features.*` promises merely because the integration was compiled in.
 
 ### GNU Source Highlight data
 
@@ -209,7 +209,9 @@ On Linux, `clang++.cfg` adds only the package-relative library search path neede
 
 `ld.lld` can be kept inside the Clang package when required for the declared linker/LTO integration. That does not replace the separate standalone LLD package.
 
-Windows Clang also carries the MinGW target sysroot and its package-relative driver configuration. macOS Clang keeps the Mach-O LLD frontend needed by its declared linker/LTO capability.
+Windows Clang also carries the MinGW target sysroot and its package-relative driver configuration. macOS Clang keeps the Mach-O LLD frontend needed by its declared linker/LTO capability. Normal macOS native compilation uses the active Apple SDK; this external platform prerequisite is declared in `info.txt` rather than being mistaken for package payload.
+
+The Clang build also needs a small set of LLVM utility commands while constructing compiler runtimes. Useful utility binaries can remain in the final compiler package, but their presence is inventory/toolchain convenience rather than a separate `features.*` promise unless CUP deliberately promotes one later.
 
 ### LLD
 
@@ -219,7 +221,7 @@ The standalone LLD package is rooted in:
 ld.lld
 ```
 
-Other LLD frontends are included when the selected upstream install provides them, such as:
+Other LLD frontends can remain in the payload when the selected upstream install provides them, such as:
 
 ```text
 lld-link
@@ -227,24 +229,26 @@ wasm-ld
 ld64.lld
 ```
 
-Metadata records which target link formats are available.
+CUP deliberately qualifies the native linker format for the package host: ELF on Linux, PE/COFF on Windows and Mach-O on macOS. Extra upstream frontends are recorded as package contents and may be exposed as entries when they are the native frontend; their mere presence does not promote every cross-link format to a CUP capability.
 
 ### LLDB
 
 LLDB is a native debugger package for all five LLVM platforms in the current matrix.
 
-The required public root is:
+The required public commands on every LLDB platform are:
 
 ```text
 bin/lldb
+bin/lldb-dap
 ```
 
-The package also includes, when produced by the selected release:
+Linux and Windows additionally expose:
 
 ```text
 bin/lldb-server
-bin/lldb-dap
 ```
+
+because those packages deliberately provide package-owned platform-server remote debugging. On macOS, `lldb-server` may still be present as upstream payload, but it is recorded as contents rather than promoted to a public entry or remote-debugging capability. Local process launch and `lldb-dap` use Apple's system `debugserver`, matching upstream's supported `LLDB_USE_SYSTEM_DEBUGSERVER=ON` model; that dependency is explicit in `requires.*` metadata. CUP does not declare macOS remote debugging because a deployable `debugserver` is not contained in the package.
 
 The Linux package seed additionally keeps:
 
@@ -259,7 +263,7 @@ LLDB enables Python. The Python executable path is derived from the interpreter 
 
 If the LLDB installation does not already contain the generated Clang built-in headers it needs, the producer copies the single matching resource directory produced by that LLVM build. The path is derived from the selected build rather than assuming a fixed `lib/clang/<major>` directory.
 
-`lldb-vscode` and `lldb-argdumper` are not deliberate package commands. When LLVM installs a Python-side `lldb-argdumper` companion link, the producer removes that companion together with the excluded binary so the final LLDB graph cannot contain a dangling package link.
+`lldb-vscode` is not a deliberate package command. `lldb-argdumper` is also not a public CUP entry, but it is deliberately preserved as a private LLDB runtime helper because the supported process-launch path invokes it while evaluating process arguments. Any installed Python-side companion therefore remains consistent with the packaged helper rather than being pruned into a dangling link.
 
 ### clangd
 
@@ -269,7 +273,7 @@ The required public command is:
 clangd
 ```
 
-`clangd-indexer` is included when the selected upstream release installs it.
+`clangd-indexer` may remain as optional upstream payload when the selected release installs it. CUP records that presence as package contents; it is not a separate public entry or `features.*` promise.
 
 Clangd embeds the Clang parser but still requires its matching built-in headers. The package therefore keeps the corresponding package-relative Clang resource directory and requires a representative built-in header such as `stddef.h` to be present.
 
@@ -314,7 +318,7 @@ bin/valgrind
 
 The package keeps the runtime tool directory produced by the selected Valgrind release and wraps the public command so `VALGRIND_LIB` is derived from the relocated package root.
 
-The package can expose the core tools actually installed by the selected release, including common tools such as:
+The package can retain the core tools actually installed by the selected release, including common tools such as:
 
 ```text
 memcheck
@@ -337,4 +341,4 @@ The following are intentionally outside the package:
 - the optional GDB Python front-end;
 - the internal SDK used to develop new Valgrind tools, including internal VEX/VKI headers and core development static archives.
 
-Capabilities are derived from the files actually installed by the selected Valgrind release rather than assuming that every version contains the same exact tool set.
+`contents.tools` records which Valgrind runtimes are actually retained, while `contents.vgdb` records the optional debugger-server command. CUP deliberately exposes Memcheck as the behavioral `features.memcheck` capability and exercises it in the product test; the mere presence of the other upstream runtimes does not create separate CUP feature promises.

@@ -150,7 +150,9 @@ test_static_contract() {
     require_text "$TEST_SCRIPT" 'unexpected host ld.lld fallback'
     require_text "$TEST_SCRIPT" 'env -i'
     require_text "$TEST_SCRIPT" '-flto -fuse-ld=lld'
-    require_text "$TEST_SCRIPT" 'if info_bool features.asan; then'
+    require_text "$TEST_SCRIPT" 'clang_asan_probe()'
+    require_text "$TEST_SCRIPT" 'clang_asan_probe "$root" A'
+    require_text "$TEST_SCRIPT" 'clang_asan_probe "$candidate" "$label"'
     if grep -F 'info_bool features.asan || info_bool features.sanitizers' "$TEST_SCRIPT" >/dev/null; then
         fail 'Clang sanitizer qualification regressed to aggregate metadata instead of the selected ASan runtime'
     fi
@@ -162,12 +164,16 @@ test_static_contract() {
     require_text "$TEST_SCRIPT" 'Clang relocation B root is still available'
 
     # Preserve the deliberate public/integration model: clang and clang++ are
-    # required entries; ld.lld may remain an optional Clang integration entry.
+    # public entries; bundled ld.lld is integration payload, not a second linker product.
     require_text "$BUILD_SCRIPT" 'info_required_entry entry.clang "$PREFIX" clang'
     require_text "$BUILD_SCRIPT" 'info_required_entry entry.clang++ "$PREFIX" clang++'
-    require_text "$BUILD_SCRIPT" 'info_entry_if_present entry.lld "$PREFIX" ld.lld'
+    if grep -F 'entry.lld "$PREFIX" ld.lld' "$BUILD_SCRIPT" >/dev/null; then
+        fail 'bundled Clang ld.lld payload was promoted back to a public package entry'
+    fi
     require_text "$BUILD_SCRIPT" 'contents.includes_lld=true'
-    require_text "$BUILD_SCRIPT" 'features.cxx_runtime_default=false'
+    require_text "$BUILD_SCRIPT" 'CLANG_CXX_RUNTIME_DEFAULT=false'
+    require_text "$BUILD_SCRIPT" 'cxx_runtime_default="$CLANG_CXX_RUNTIME_DEFAULT"'
+    require_text "$BUILD_SCRIPT" 'features.cxx_runtime_default=$cxx_runtime_default'
 }
 
 test_mutations() {

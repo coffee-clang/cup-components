@@ -14,10 +14,16 @@ During a run, records are written under:
 .cup-build/build-records
 ```
 
-GitHub Actions uploads that directory with a run-specific artifact name:
+GitHub Actions uploads that directory with a run-specific artifact name. GCC, GNU ld, GDB and Valgrind use:
 
 ```text
 build-records-<run-id>-<run-attempt>
+```
+
+The LLVM matrix includes the tool, requested version and platform identity as well so records from different matrix cells remain distinguishable:
+
+```text
+build-records-<tool>-<requested-version>-<host>-<target>-<run-id>-<run-attempt>
 ```
 
 The upload step uses `always()`, so the records are saved after both successful and failed repository-controlled build phases.

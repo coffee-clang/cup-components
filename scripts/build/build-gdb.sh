@@ -467,8 +467,6 @@ write_gdb_info() {
         "features.tui=$has_tui"
         "features.gdbserver=$has_gdbserver"
         "features.remote_debugging=$has_gdbserver"
-        "features.debuginfod=$debuginfod"
-        "features.source_highlight=$source_highlight"
     )
 
     write_info_file "$PREFIX" "${info[@]}"

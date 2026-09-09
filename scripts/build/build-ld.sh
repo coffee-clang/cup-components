@@ -263,9 +263,6 @@ write_ld_info() {
         "features.link=true"
         "features.link_elf=$link_elf"
         "features.link_pe=$link_pe"
-        "features.ld_bfd=$has_ld_bfd"
-        "features.plugins=true"
-        "features.target_prefixed=$cross"
     )
 
     write_info_file "$PREFIX" "${info[@]}"

@@ -317,17 +317,6 @@ write_valgrind_info() {
         "contents.mpi=false"
         "contents.vgdb=$has_vgdb"
         "features.memcheck=$has_memcheck"
-        "features.cachegrind=$has_cachegrind"
-        "features.callgrind=$has_callgrind"
-        "features.massif=$has_massif"
-        "features.helgrind=$has_helgrind"
-        "features.drd=$has_drd"
-        "features.dhat=$has_dhat"
-        "features.lackey=$has_lackey"
-        "features.exp_bbv=$has_exp_bbv"
-        "features.mpiwrap=false"
-        "features.gdbserver=$has_vgdb"
-        "features.gdb_python_frontend=false"
     )
 
     if [ "$has_exp_bbv" = true ]; then

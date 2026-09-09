@@ -22,6 +22,7 @@ if [ "$#" -ne 1 ]; then
 fi
 
 LLVM_TOOL="$1"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source dist/release.env
 
 tmp_root="$(mktemp -d /tmp/cup-llvm-test.XXXXXX)"
@@ -184,6 +185,484 @@ DIFF_TIDY_HELPER
     printf 'CLANG_TIDY_DIFF_HELPER_%s=PASS\n' "$label"
 }
 
+sha256_file() {
+    local path="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$path" | awk '{print $1}'
+    else
+        shasum -a 256 "$path" | awk '{print $1}'
+    fi
+}
+
+clang_ubsan_probe() {
+    local candidate="$1"
+    local label="$2"
+    local poison_dir="$3"
+    local work="$tmp_root/clang-ubsan-$label"
+    local clean_home="$tmp_root/clang-ubsan-home-$label"
+    local sdk_args=()
+    local status
+
+    info_bool features.ubsan || {
+        echo "required Clang UBSan capability is not declared" >&2
+        return 1
+    }
+    rm -rf "$work"
+    mkdir -p "$work"
+    cat > "$work/ubsan.c" <<'C_UBSAN'
+#include <limits.h>
+int main(void) {
+    volatile int value = INT_MAX;
+    return value + 1;
+}
+C_UBSAN
+    if [ "$(uname -s)" = Linux ]; then
+        run_clang_driver_clean "$candidate" clang "$clean_home" "$poison_dir" \
+            -g -O0 -fsanitize=undefined -fno-sanitize-recover=undefined \
+            "$work/ubsan.c" -o "$work/ubsan-test"
+    else
+        mapfile -t sdk_args < <(macos_sdk_args)
+        env -i HOME="$clean_home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
+            "$candidate/bin/clang" "${sdk_args[@]}" -g -O0 \
+            -fsanitize=undefined -fno-sanitize-recover=undefined \
+            "$work/ubsan.c" -o "$work/ubsan-test"
+    fi
+    set +e
+    "$work/ubsan-test" > "$work/output.txt" 2>&1
+    status=$?
+    set -e
+    [ "$status" -ne 0 ] || {
+        echo "UBSan test unexpectedly succeeded at relocation $label" >&2
+        cat "$work/output.txt" >&2
+        return 1
+    }
+    assert_output_contains "$work/output.txt" 'runtime error:.*signed integer overflow|UndefinedBehaviorSanitizer'
+    printf 'CLANG_UBSAN_%s=PASS\n' "$label"
+}
+
+clang_profile_runtime_probe() {
+    local candidate="$1"
+    local label="$2"
+    local poison_dir="$3"
+    local work="$tmp_root/clang-profile-$label"
+    local clean_home="$tmp_root/clang-profile-home-$label"
+    local sdk_args=()
+
+    info_bool features.profile_runtime || {
+        echo "required Clang profile runtime capability is not declared" >&2
+        return 1
+    }
+    rm -rf "$work"
+    mkdir -p "$work"
+    cat > "$work/profile.c" <<'C_PROFILE'
+int main(void) { return 0; }
+C_PROFILE
+    if [ "$(uname -s)" = Linux ]; then
+        run_clang_driver_clean "$candidate" clang "$clean_home" "$poison_dir" \
+            -O0 -fprofile-instr-generate "$work/profile.c" -o "$work/profile-test"
+    else
+        mapfile -t sdk_args < <(macos_sdk_args)
+        env -i HOME="$clean_home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
+            "$candidate/bin/clang" "${sdk_args[@]}" -O0 -fprofile-instr-generate \
+            "$work/profile.c" -o "$work/profile-test"
+    fi
+    LLVM_PROFILE_FILE="$work/cup-profile.profraw" "$work/profile-test"
+    [ -s "$work/cup-profile.profraw" ] || {
+        echo "Clang profile runtime did not write a non-empty profraw file at relocation $label" >&2
+        return 1
+    }
+    printf 'CLANG_PROFILE_RUNTIME_%s=PASS\n' "$label"
+}
+
+clang_asan_probe() {
+    local candidate="$1"
+    local label="$2"
+    local poison_dir="$3"
+    local work="$tmp_root/clang-asan-$label"
+    local clean_home="$tmp_root/clang-asan-home-$label"
+    local sdk_args=()
+    local status
+
+    info_bool features.asan || {
+        echo "required Clang ASan capability is not declared" >&2
+        return 1
+    }
+    rm -rf "$work"
+    mkdir -p "$work"
+    cat > "$work/asan.c" <<'C_ASAN'
+#include <stdlib.h>
+int main(void) {
+    int *value = (int *)malloc(sizeof(int));
+    free(value);
+    return *value;
+}
+C_ASAN
+    if [ "$(uname -s)" = Linux ]; then
+        run_clang_driver_clean "$candidate" clang "$clean_home" "$poison_dir" \
+            -g -O0 -fsanitize=address "$work/asan.c" -o "$work/asan-test"
+    else
+        mapfile -t sdk_args < <(macos_sdk_args)
+        env -i HOME="$clean_home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
+            "$candidate/bin/clang" "${sdk_args[@]}" -g -O0 -fsanitize=address \
+            "$work/asan.c" -o "$work/asan-test"
+    fi
+    set +e
+    ASAN_OPTIONS=abort_on_error=0:detect_leaks=0 "$work/asan-test" > "$work/output.txt" 2>&1
+    status=$?
+    set -e
+    [ "$status" -ne 0 ] || {
+        echo "ASan test unexpectedly succeeded at relocation $label" >&2
+        cat "$work/output.txt" >&2
+        return 1
+    }
+    assert_output_contains "$work/output.txt" 'AddressSanitizer|heap-use-after-free'
+    printf 'CLANG_ASAN_%s=PASS\n' "$label"
+}
+
+clang_macos_package_libcxx_probe() {
+    local candidate="$1"
+    local label="$2"
+    local work="$tmp_root/clang-macos-libcxx-$label"
+    local clean_home="$tmp_root/clang-macos-libcxx-home-$label"
+    local sdk_args=()
+    local lib
+
+    info_bool features.cxx_runtime || {
+        echo "Clang macOS package does not declare its bundled C++ runtime" >&2
+        return 1
+    }
+    for lib in libc++.a libc++abi.a libunwind.a; do
+        [ -f "$candidate/lib/$lib" ] || {
+            echo "Clang macOS package-owned C++ runtime is missing $lib" >&2
+            return 1
+        }
+    done
+    [ -d "$candidate/include/c++/v1" ] || {
+        echo "Clang macOS package-owned libc++ headers are missing" >&2
+        return 1
+    }
+
+    rm -rf "$work"
+    mkdir -p "$work" "$clean_home"
+    cat > "$work/main.cpp" <<'CPP_LIBCXX'
+#include <iostream>
+#include <vector>
+int main() {
+    std::vector<int> values{20, 22};
+    std::cout << (values[0] + values[1]) << "\n";
+    return 0;
+}
+CPP_LIBCXX
+    mapfile -t sdk_args < <(macos_sdk_args)
+    env -i HOME="$clean_home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
+        "$candidate/bin/clang++" "${sdk_args[@]}" \
+        -nostdinc++ -isystem "$candidate/include/c++/v1" -nostdlib++ \
+        "$work/main.cpp" \
+        "$candidate/lib/libc++.a" "$candidate/lib/libc++abi.a" "$candidate/lib/libunwind.a" \
+        -o "$work/libcxx-test"
+    "$work/libcxx-test" | grep -Fx 42 >/dev/null
+    if otool -L "$work/libcxx-test" | grep -E '(^|[[:space:]])(/usr/lib/|@rpath/)?libc\+\+\.1\.dylib' >/dev/null; then
+        echo "Clang macOS bundled libc++ probe fell back to dynamic system libc++ at relocation $label" >&2
+        otool -L "$work/libcxx-test" >&2
+        return 1
+    fi
+    printf 'CLANG_MACOS_PACKAGE_LIBCXX_%s=PASS\n' "$label"
+}
+
+clang_tidy_replacements_probe() {
+    local candidate="$1"
+    local label="$2"
+    local project="$tmp_root/tidy-replacements-$label"
+    local source="$project/main.c"
+    local fixes="$project/fixes.yaml"
+
+    info_bool features.apply_replacements || {
+        echo "clang-tidy package does not declare apply-replacements capability" >&2
+        return 1
+    }
+    rm -rf "$project"
+    mkdir -p "$project"
+    cat > "$source" <<'C_TIDY_REPLACE'
+int cup_tidy_value(int value) {
+    if (value)
+        return 42;
+    return 0;
+}
+C_TIDY_REPLACE
+    "$candidate/bin/clang-tidy" \
+        -checks=-*,readability-braces-around-statements \
+        "--export-fixes=$fixes" "$source" -- -std=c11 >/dev/null
+    [ -s "$fixes" ] || {
+        echo "clang-tidy did not export fixes at relocation $label" >&2
+        return 1
+    }
+    grep -F 'Replacements:' "$fixes" >/dev/null || {
+        echo "clang-tidy fixes file has no replacements at relocation $label" >&2
+        cat "$fixes" >&2
+        return 1
+    }
+    "$candidate/bin/clang-apply-replacements" "$project"
+    grep -E 'if \(value\)[[:space:]]*\{' "$source" >/dev/null || {
+        echo "clang-apply-replacements did not apply the exported braces fix at relocation $label" >&2
+        cat "$source" >&2
+        return 1
+    }
+    printf 'CLANG_TIDY_APPLY_REPLACEMENTS_%s=PASS\n' "$label"
+}
+
+lld_native_probe() {
+    local candidate="$1"
+    local label="$2"
+    local host
+    local work="$tmp_root/lld-native-$label"
+
+    host="$(info_value platform.host)"
+    rm -rf "$work"
+    mkdir -p "$work"
+    cat > "$work/main.c" <<'C_LLD_NATIVE'
+#include <stdio.h>
+int main(void) {
+    puts("hello lld");
+    return 0;
+}
+C_LLD_NATIVE
+
+    require_executable "$candidate/bin/ld.lld"
+    "$candidate/bin/ld.lld" --version
+    run_optional_executable "$candidate/bin/lld-link" --version
+    run_optional_executable "$candidate/bin/wasm-ld" --version
+    run_optional_executable "$candidate/bin/ld64.lld" --version
+
+    case "$host" in
+        linux-*)
+            info_bool features.link_elf || { echo 'Linux LLD does not declare native ELF linking' >&2; return 1; }
+            [ "$(info_value features.link_coff)" = false ] || { echo 'Linux LLD over-declares COFF linking' >&2; return 1; }
+            [ "$(info_value features.link_wasm)" = false ] || { echo 'Linux LLD over-declares Wasm linking' >&2; return 1; }
+            [ "$(info_value features.link_macho)" = false ] || { echo 'Linux LLD over-declares Mach-O linking' >&2; return 1; }
+            cc -B"$candidate/bin" -fuse-ld=lld "$work/main.c" -o "$work/lld-test"
+            ;;
+        macos-*)
+            info_bool features.link_macho || { echo 'macOS LLD does not declare native Mach-O linking' >&2; return 1; }
+            [ "$(info_value features.link_elf)" = false ] || { echo 'macOS LLD over-declares ELF linking' >&2; return 1; }
+            [ "$(info_value features.link_coff)" = false ] || { echo 'macOS LLD over-declares COFF linking' >&2; return 1; }
+            [ "$(info_value features.link_wasm)" = false ] || { echo 'macOS LLD over-declares Wasm linking' >&2; return 1; }
+            require_executable "$candidate/bin/ld64.lld"
+            cc -fuse-ld="$candidate/bin/ld64.lld" "$work/main.c" -o "$work/lld-test"
+            ;;
+        *)
+            echo "unsupported POSIX LLD host for native qualification: $host" >&2
+            return 1
+            ;;
+    esac
+
+    "$work/lld-test" | grep -Fx 'hello lld' >/dev/null
+    printf 'LLD_NATIVE_%s=PASS\n' "$label"
+}
+
+framed_send() {
+    local fd="$1"
+    local body="$2"
+    LC_ALL=C printf 'Content-Length: %d\r\n\r\n%s' "${#body}" "$body" >&"$fd"
+}
+
+framed_read() {
+    local fd="$1"
+    local timeout_seconds="$2"
+    local line=""
+    local length=""
+    local body=""
+
+    while IFS= read -r -t "$timeout_seconds" -u "$fd" line; do
+        line="${line%$'\r'}"
+        [ -n "$line" ] || break
+        case "$line" in
+            Content-Length:*)
+                length="${line#Content-Length:}"
+                length="${length//[[:space:]]/}"
+                ;;
+        esac
+    done
+    [[ "$length" =~ ^[0-9]+$ ]] && [ "$length" -gt 0 ] || return 1
+    IFS= read -r -N "$length" -t "$timeout_seconds" -u "$fd" body || return 1
+    FRAMED_MESSAGE="$body"
+}
+
+framed_wait() {
+    local fd="$1"
+    local log="$2"
+    local pattern="$3"
+    local max_reads="${4:-120}"
+    local i=0
+
+    while [ "$i" -lt "$max_reads" ]; do
+        if ! framed_read "$fd" 2; then
+            i=$((i + 1))
+            continue
+        fi
+        printf '%s\n' "$FRAMED_MESSAGE" >> "$log"
+        if printf '%s\n' "$FRAMED_MESSAGE" | grep -E "$pattern" >/dev/null; then
+            return 0
+        fi
+        i=$((i + 1))
+    done
+    echo "timed out waiting for framed protocol message matching: $pattern" >&2
+    cat "$log" >&2
+    return 1
+}
+
+clangd_lsp_probe() {
+    local candidate="$1"
+    local label="$2"
+    local project="$tmp_root/clangd-lsp-$label"
+    local home="$tmp_root/clangd-lsp-home-$label"
+    local log="$project/protocol.log"
+    local err="$project/stderr.log"
+    local main_uri main_text body
+    local clangd_pid in_fd out_fd
+    local i
+
+    rm -rf "$project" "$home"
+    mkdir -p "$project" "$home"
+    cat > "$project/main.c" <<'C_CLANGD_LSP'
+int cup_lsp_value(void) { return 42; }
+int main(void) { return cup_lsp_value() == 42 ? 0 : 1; }
+C_CLANGD_LSP
+    cat > "$project/compile_commands.json" <<EOF_CLANGD_DB
+[
+  {"directory":"$project","command":"cc -std=c11 -c $project/main.c","file":"$project/main.c"}
+]
+EOF_CLANGD_DB
+    main_uri="file://$project/main.c"
+    main_text='int cup_lsp_value(void) { return 42; }\nint main(void) { return cup_lsp_value() == 42 ? 0 : 1; }\n'
+    : > "$log"
+
+    coproc CLANGD_LSP { env -i HOME="$home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
+        "$candidate/bin/clangd" 2>"$err"; }
+    clangd_pid=$CLANGD_LSP_PID
+    in_fd=${CLANGD_LSP[1]}
+    out_fd=${CLANGD_LSP[0]}
+
+    body="{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"processId\":null,\"rootUri\":\"file://$project\",\"capabilities\":{}}}"
+    framed_send "$in_fd" "$body"
+    framed_wait "$out_fd" "$log" '"id"[[:space:]]*:[[:space:]]*1' 60
+    printf '%s\n' "$FRAMED_MESSAGE" | grep -F '"capabilities"' >/dev/null || {
+        echo "clangd initialize response did not expose server capabilities at relocation $label" >&2
+        cat "$log" "$err" >&2
+        return 1
+    }
+    printf '%s\n' "$FRAMED_MESSAGE" | grep -F '"error"' >/dev/null && {
+        echo "clangd initialize returned an error at relocation $label" >&2
+        cat "$log" "$err" >&2
+        return 1
+    }
+    framed_send "$in_fd" '{"jsonrpc":"2.0","method":"initialized","params":{}}'
+    body="{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"$main_uri\",\"languageId\":\"c\",\"version\":1,\"text\":\"$main_text\"}}}"
+    framed_send "$in_fd" "$body"
+    body="{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"$main_uri\"}}}"
+    framed_send "$in_fd" "$body"
+    framed_wait "$out_fd" "$log" '"id"[[:space:]]*:[[:space:]]*2' 60
+    printf '%s\n' "$FRAMED_MESSAGE" | grep -F 'cup_lsp_value' >/dev/null || {
+        echo "clangd documentSymbol response missed cup_lsp_value at relocation $label" >&2
+        cat "$log" "$err" >&2
+        return 1
+    }
+    printf '%s\n' "$FRAMED_MESSAGE" | grep -F '"main"' >/dev/null || {
+        echo "clangd documentSymbol response missed main at relocation $label" >&2
+        cat "$log" "$err" >&2
+        return 1
+    }
+
+    framed_send "$in_fd" '{"jsonrpc":"2.0","id":3,"method":"shutdown","params":null}'
+    framed_wait "$out_fd" "$log" '"id"[[:space:]]*:[[:space:]]*3' 60
+    framed_send "$in_fd" '{"jsonrpc":"2.0","method":"exit","params":null}'
+    eval "exec ${in_fd}>&-" || true
+    for i in $(seq 1 50); do
+        kill -0 "$clangd_pid" 2>/dev/null || break
+        sleep 0.1
+    done
+    kill -0 "$clangd_pid" 2>/dev/null && kill "$clangd_pid" 2>/dev/null || true
+    wait "$clangd_pid" 2>/dev/null || true
+    printf 'CLANGD_LSP_%s=PASS\n' "$label"
+}
+
+lldb_dap_probe() {
+    local candidate="$1"
+    local label="$2"
+    local program="$3"
+    local source="$4"
+    local work="$tmp_root/lldb-dap-$label"
+    local home="$tmp_root/lldb-dap-home-$label"
+    local log="$work/protocol.log"
+    local err="$work/stderr.log"
+    local body line thread_id frame_id dap_pid in_fd out_fd i
+    local pre_run=''
+
+    info_bool features.lldb_dap || return 0
+    require_executable "$candidate/bin/lldb-dap"
+    rm -rf "$work" "$home"
+    mkdir -p "$work" "$home"
+    line="$(grep -n 'cup_lldb_test_add_unique' "$source" | head -1 | cut -d: -f1)"
+    [ -n "$line" ] || return 1
+    if [[ "$(info_value platform.host)" == linux-* ]]; then
+        pre_run=',"preRunCommands":["settings set target.disable-aslr false"]'
+    fi
+    : > "$log"
+
+    coproc LLDB_DAP { env -i HOME="$home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
+        PYTHONDONTWRITEBYTECODE=1 "$candidate/bin/lldb-dap" 2>"$err"; }
+    dap_pid=$LLDB_DAP_PID
+    in_fd=${LLDB_DAP[1]}
+    out_fd=${LLDB_DAP[0]}
+
+    framed_send "$in_fd" '{"seq":1,"type":"request","command":"initialize","arguments":{"clientID":"cup-components","adapterID":"lldb","linesStartAt1":true,"columnsStartAt1":true}}'
+    framed_wait "$out_fd" "$log" '"type"[[:space:]]*:[[:space:]]*"response".*"request_seq"[[:space:]]*:[[:space:]]*1.*"success"[[:space:]]*:[[:space:]]*true|"request_seq"[[:space:]]*:[[:space:]]*1.*"success"[[:space:]]*:[[:space:]]*true.*"type"[[:space:]]*:[[:space:]]*"response"' 60
+    body="{\"seq\":2,\"type\":\"request\",\"command\":\"launch\",\"arguments\":{\"program\":\"$program\",\"cwd\":\"$work\",\"stopOnEntry\":false$pre_run}}"
+    framed_send "$in_fd" "$body"
+    framed_wait "$out_fd" "$log" '"event"[[:space:]]*:[[:space:]]*"initialized"' 60
+    body="{\"seq\":3,\"type\":\"request\",\"command\":\"setBreakpoints\",\"arguments\":{\"source\":{\"path\":\"$source\"},\"breakpoints\":[{\"line\":$line}]}}"
+    framed_send "$in_fd" "$body"
+    framed_wait "$out_fd" "$log" '"request_seq"[[:space:]]*:[[:space:]]*3.*"success"[[:space:]]*:[[:space:]]*true|"success"[[:space:]]*:[[:space:]]*true.*"request_seq"[[:space:]]*:[[:space:]]*3' 60
+    framed_send "$in_fd" '{"seq":4,"type":"request","command":"configurationDone","arguments":{}}'
+    # configurationDone may respond before or after the pending launch response.
+    # The stopped-at-breakpoint oracle subsumes a successful configuration step,
+    # so wait only for the launch response and do not make message ordering brittle.
+    framed_wait "$out_fd" "$log" '"request_seq"[[:space:]]*:[[:space:]]*2.*"success"[[:space:]]*:[[:space:]]*true|"success"[[:space:]]*:[[:space:]]*true.*"request_seq"[[:space:]]*:[[:space:]]*2' 60
+    framed_wait "$out_fd" "$log" '"event"[[:space:]]*:[[:space:]]*"stopped".*"reason"[[:space:]]*:[[:space:]]*"breakpoint"|"reason"[[:space:]]*:[[:space:]]*"breakpoint".*"event"[[:space:]]*:[[:space:]]*"stopped"' 60
+
+    framed_send "$in_fd" '{"seq":5,"type":"request","command":"threads","arguments":{}}'
+    framed_wait "$out_fd" "$log" '"request_seq"[[:space:]]*:[[:space:]]*5.*"success"[[:space:]]*:[[:space:]]*true|"success"[[:space:]]*:[[:space:]]*true.*"request_seq"[[:space:]]*:[[:space:]]*5' 60
+    thread_id="$(printf '%s\n' "$FRAMED_MESSAGE" | grep -oE '"id"[[:space:]]*:[[:space:]]*[0-9]+' | head -1 | grep -oE '[0-9]+$')"
+    [ -n "$thread_id" ] || { echo "lldb-dap returned no thread id" >&2; return 1; }
+    body="{\"seq\":6,\"type\":\"request\",\"command\":\"stackTrace\",\"arguments\":{\"threadId\":$thread_id,\"startFrame\":0,\"levels\":1}}"
+    framed_send "$in_fd" "$body"
+    framed_wait "$out_fd" "$log" '"request_seq"[[:space:]]*:[[:space:]]*6.*"success"[[:space:]]*:[[:space:]]*true|"success"[[:space:]]*:[[:space:]]*true.*"request_seq"[[:space:]]*:[[:space:]]*6' 60
+    frame_id="$(printf '%s\n' "$FRAMED_MESSAGE" | grep -oE '"id"[[:space:]]*:[[:space:]]*[0-9]+' | head -1 | grep -oE '[0-9]+$')"
+    [ -n "$frame_id" ] || { echo "lldb-dap returned no stack frame id" >&2; return 1; }
+    body="{\"seq\":7,\"type\":\"request\",\"command\":\"evaluate\",\"arguments\":{\"expression\":\"a + b\",\"frameId\":$frame_id,\"context\":\"watch\"}}"
+    framed_send "$in_fd" "$body"
+    framed_wait "$out_fd" "$log" '"request_seq"[[:space:]]*:[[:space:]]*7.*"success"[[:space:]]*:[[:space:]]*true|"success"[[:space:]]*:[[:space:]]*true.*"request_seq"[[:space:]]*:[[:space:]]*7' 60
+    printf '%s\n' "$FRAMED_MESSAGE" | grep -E '"result"[[:space:]]*:[[:space:]]*"[^\"]*42[^\"]*"' >/dev/null || {
+        echo "lldb-dap evaluate did not return 42 at relocation $label" >&2
+        cat "$log" "$err" >&2
+        return 1
+    }
+    body="{\"seq\":8,\"type\":\"request\",\"command\":\"continue\",\"arguments\":{\"threadId\":$thread_id}}"
+    framed_send "$in_fd" "$body"
+    # A very short inferior can emit exited before the continue response.
+    # Exit code 0 is the product oracle; do not require a transport ordering.
+    framed_wait "$out_fd" "$log" '"event"[[:space:]]*:[[:space:]]*"exited".*"exitCode"[[:space:]]*:[[:space:]]*0|"exitCode"[[:space:]]*:[[:space:]]*0.*"event"[[:space:]]*:[[:space:]]*"exited"' 60
+    framed_send "$in_fd" '{"seq":9,"type":"request","command":"disconnect","arguments":{"terminateDebuggee":false}}'
+    framed_wait "$out_fd" "$log" '"request_seq"[[:space:]]*:[[:space:]]*9' 60 || true
+    eval "exec ${in_fd}>&-" || true
+    for i in $(seq 1 50); do
+        kill -0 "$dap_pid" 2>/dev/null || break
+        sleep 0.1
+    done
+    kill -0 "$dap_pid" 2>/dev/null && kill "$dap_pid" 2>/dev/null || true
+    wait "$dap_pid" 2>/dev/null || true
+    printf 'LLDB_DAP_%s=PASS\n' "$label"
+}
+
 require_package_owned_clang_resource_dir() {
     local candidate="$1"
     local resource_dir
@@ -265,6 +744,12 @@ clang_linux_relocation_probe() {
     run_clang_driver_clean "$candidate" clang "$clean_home" "$poison_dir" \
         -flto -fuse-ld=lld "$tmp_root/clang-test.c" -o "$tmp_root/clang-lto-$label"
     "$tmp_root/clang-lto-$label" | grep -F "hello clang 42"
+
+    if [ "$label" = C ]; then
+        clang_asan_probe "$candidate" "$label" "$poison_dir"
+        clang_ubsan_probe "$candidate" "$label" "$poison_dir"
+        clang_profile_runtime_probe "$candidate" "$label" "$poison_dir"
+    fi
 }
 
 
@@ -438,6 +923,13 @@ clang_macos_relocation_probe() {
         -fuse-ld="$candidate/bin/ld64.lld" \
         "$tmp_root/clang-test.c" -o "$tmp_root/clang-macos-lto-$label"
     "$tmp_root/clang-macos-lto-$label" | grep -F "hello clang 42"
+
+    if [ "$label" = C ]; then
+        clang_macos_package_libcxx_probe "$candidate" "$label"
+        clang_asan_probe "$candidate" "$label" ''
+        clang_ubsan_probe "$candidate" "$label" ''
+        clang_profile_runtime_probe "$candidate" "$label" ''
+    fi
 }
 
 run_lldb_clean() {
@@ -453,103 +945,88 @@ lldb_remote_debug_probe() {
     local candidate="$1"
     local label="$2"
     local work="$tmp_root/lldb-remote-$label"
-    local fifo="$work/port.fifo"
-    local port_file="$work/port"
-    local marker="$work/inferior.done"
+    local remote_dir="$work/remote-root"
+    local port_file="$work/platform.port"
     local server_out="$work/server.txt"
     local client_out="$work/client.txt"
     local port=""
     local attempt=0
-    local reader_status
     local client_status
-    local server_status
+    local server_status=0
 
-    mkdir -p "$work"
+    info_bool features.lldb_server || {
+        echo "LLDB platform-server capability is not declared at relocation $label" >&2
+        return 1
+    }
+    info_bool features.remote_debugging || {
+        echo "LLDB remote-debugging capability is not declared at relocation $label" >&2
+        return 1
+    }
+    require_executable "$candidate/bin/lldb-server"
+    mkdir -p "$work" "$remote_dir" "$tmp_root/lldb-server-home-$label"
     cat > "$work/remote-test.c" <<'C_REMOTE_EOF'
-#include <stdio.h>
-
 volatile int cup_lldb_remote_value = 37;
-
 __attribute__((noinline)) static void cup_lldb_remote_stop(int value) {
     __asm__ volatile("" : : "r"(value) : "memory");
 }
-
-int main(int argc, char **argv) {
+int main(void) {
     int value = cup_lldb_remote_value + 5;
     cup_lldb_remote_stop(value);
-    if (argc > 1) {
-        FILE *marker = fopen(argv[1], "w");
-        if (!marker) return 3;
-        fprintf(marker, "LLDB_REMOTE_DONE=%d\\n", value);
-        if (fclose(marker) != 0) return 4;
-    }
     return value == 42 ? 0 : 2;
 }
 C_REMOTE_EOF
     cc -g -O0 "$work/remote-test.c" -o "$work/remote-test"
 
-    rm -f "$fifo" "$port_file" "$marker"
-    mkfifo "$fifo"
-    cat "$fifo" > "$port_file" &
-    lldb_port_reader_pid=$!
-    env -i HOME="$tmp_root/lldb-server-home-$label" PATH=/usr/bin:/bin \
-        LANG=C LC_ALL=C TZ=UTC \
-        "$candidate/bin/lldb-server" gdbserver \
-        --named-pipe "$fifo" 127.0.0.1:0 \
-        > "$server_out" 2>&1 &
+    rm -f "$port_file"
+    (
+        cd "$remote_dir"
+        env -i HOME="$tmp_root/lldb-server-home-$label" PATH=/usr/bin:/bin \
+            LANG=C LC_ALL=C TZ=UTC \
+            "$candidate/bin/lldb-server" platform --server \
+            --listen 127.0.0.1:0 --socket-file "$port_file"
+    ) > "$server_out" 2>&1 &
     lldb_server_pid=$!
 
     while [ "$attempt" -lt 160 ]; do
-        if ! kill -0 "$lldb_server_pid" 2>/dev/null; then
-            break
-        fi
-        if ! kill -0 "$lldb_port_reader_pid" 2>/dev/null; then
-            break
-        fi
+        [ -s "$port_file" ] && break
+        kill -0 "$lldb_server_pid" 2>/dev/null || break
         sleep 0.05
         attempt=$((attempt + 1))
     done
-
-    if kill -0 "$lldb_port_reader_pid" 2>/dev/null; then
-        echo "packaged lldb-server did not publish its structured port at relocation $label" >&2
-        cat "$server_out" >&2
-        return 1
-    fi
-    set +e
-    wait "$lldb_port_reader_pid"
-    reader_status=$?
-    set -e
-    lldb_port_reader_pid=""
-    [ "$reader_status" -eq 0 ] && [ -s "$port_file" ] || {
-        echo "packaged lldb-server port publication failed at relocation $label" >&2
+    [ -s "$port_file" ] || {
+        echo "packaged lldb-server platform mode did not publish its port at relocation $label" >&2
         cat "$server_out" >&2
         return 1
     }
-
     port="$(LC_ALL=C tr -d '\000\r\n\t ' < "$port_file")"
     [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || {
-        echo "packaged lldb-server published an invalid port at relocation $label: $port" >&2
+        echo "packaged lldb-server platform mode published an invalid port at relocation $label: $port" >&2
+        cat "$server_out" >&2
         return 1
     }
-    rm -f "$fifo"
 
     cat > "$work/client.cmd" <<EOF_REMOTE_CMD
- target create '$work/remote-test'
- settings set target.disable-aslr false
- gdb-remote 127.0.0.1:$port
- process launch --stop-at-entry -- '$marker'
- breakpoint set -n cup_lldb_remote_stop
- continue
- expression -- (int)(cup_lldb_remote_value + 5)
- process detach
- quit
+platform select remote-linux
+platform connect connect://127.0.0.1:$port
+platform shell mkdir -p '$remote_dir'
+platform settings -w '$remote_dir'
+target create '$work/remote-test'
+settings set target.disable-aslr false
+breakpoint set -n cup_lldb_remote_stop
+run
+expression -- (int)(cup_lldb_remote_value + 5)
+continue
+platform shell rm -rf '$remote_dir/session-cleanup'
+platform disconnect
+quit
 EOF_REMOTE_CMD
+
     env -i HOME="$tmp_root/clean-home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
         PYTHONDONTWRITEBYTECODE=1 "$candidate/bin/lldb" -b -s "$work/client.cmd" \
         > "$client_out" 2>&1 &
     lldb_client_pid=$!
     attempt=0
-    while [ "$attempt" -lt 600 ] && kill -0 "$lldb_client_pid" 2>/dev/null; do
+    while [ "$attempt" -lt 750 ] && kill -0 "$lldb_client_pid" 2>/dev/null; do
         sleep 0.1
         attempt=$((attempt + 1))
     done
@@ -559,7 +1036,7 @@ EOF_REMOTE_CMD
         kill -0 "$lldb_client_pid" 2>/dev/null && kill -KILL "$lldb_client_pid" 2>/dev/null || true
         wait "$lldb_client_pid" 2>/dev/null || true
         lldb_client_pid=""
-        echo "packaged LLDB remote-debugging client timed out at relocation $label" >&2
+        echo "packaged LLDB platform remote-debugging client timed out at relocation $label" >&2
         cat "$server_out" "$client_out" >&2
         return 1
     fi
@@ -568,41 +1045,30 @@ EOF_REMOTE_CMD
     client_status=$?
     set -e
     lldb_client_pid=""
-    if [ "$client_status" -ne 0 ]; then
-        echo "packaged LLDB remote-debugging session failed at relocation $label" >&2
+    [ "$client_status" -eq 0 ] || {
+        echo "packaged LLDB platform remote-debugging session failed at relocation $label" >&2
         cat "$server_out" "$client_out" >&2
         return 1
-    fi
+    }
     grep -E '\(int\).*42|=[[:space:]]*42' "$client_out" >/dev/null || {
-        echo "packaged LLDB remote-debugging expression was not observed at relocation $label" >&2
+        echo "packaged LLDB platform remote expression was not observed at relocation $label" >&2
+        cat "$client_out" >&2
+        return 1
+    }
+    grep -Ei 'exited with status[[:space:]]*=[[:space:]]*0|exited with status[[:space:]]+0' "$client_out" >/dev/null || {
+        echo "packaged LLDB platform remote inferior did not exit naturally with status 0 at relocation $label" >&2
         cat "$client_out" >&2
         return 1
     }
 
     attempt=0
-    while [ "$attempt" -lt 200 ]; do
-        if [ -f "$marker" ] && grep -Fx 'LLDB_REMOTE_DONE=42' "$marker" >/dev/null 2>&1; then
-            break
-        fi
-        kill -0 "$lldb_server_pid" 2>/dev/null || break
-        sleep 0.05
+    while [ "$attempt" -lt 50 ] && kill -0 "$lldb_server_pid" 2>/dev/null; do
+        sleep 0.1
         attempt=$((attempt + 1))
     done
-    [ -f "$marker" ] && grep -Fx 'LLDB_REMOTE_DONE=42' "$marker" >/dev/null || {
-        echo "packaged LLDB remote inferior did not complete after detach at relocation $label" >&2
-        cat "$server_out" "$client_out" >&2
-        return 1
-    }
     if kill -0 "$lldb_server_pid" 2>/dev/null; then
-        # A targetless gdbserver may remain available after the client detaches.
-        # The completed remote session above is the product property; stop the
-        # test-owned server instead of waiting indefinitely for natural exit.
         kill "$lldb_server_pid" 2>/dev/null || true
-        attempt=0
-        while [ "$attempt" -lt 20 ] && kill -0 "$lldb_server_pid" 2>/dev/null; do
-            sleep 0.05
-            attempt=$((attempt + 1))
-        done
+        sleep 0.1
         kill -0 "$lldb_server_pid" 2>/dev/null && kill -KILL "$lldb_server_pid" 2>/dev/null || true
         wait "$lldb_server_pid" 2>/dev/null || true
     else
@@ -610,17 +1076,16 @@ EOF_REMOTE_CMD
         wait "$lldb_server_pid"
         server_status=$?
         set -e
-        if [ "$server_status" -ne 0 ]; then
+        [ "$server_status" -eq 0 ] || {
             lldb_server_pid=""
-            echo "packaged lldb-server exited unsuccessfully at relocation $label" >&2
+            echo "packaged lldb-server platform process exited unsuccessfully at relocation $label" >&2
             cat "$server_out" "$client_out" >&2
             return 1
-        fi
+        }
     fi
     lldb_server_pid=""
-    echo "LLDB remote-debugging session passed at relocation $label on port $port"
+    printf 'LLDB_PLATFORM_REMOTE_%s=PASS port=%s\n' "$label" "$port"
 }
-
 
 lldb_identity_probe() {
     local candidate="$1"
@@ -787,6 +1252,11 @@ int main(void) {
 }
 C_EOF
         mapfile -t sdk_args < <(macos_sdk_args)
+        if [ "$(uname -s)" = "Darwin" ]; then
+            [ "$(info_value requires.apple_developer_tools)" = true ] || { echo 'macOS Clang is missing its Apple developer tools prerequisite metadata' >&2; exit 1; }
+            [ "$(info_value requires.macos_sdk)" = true ] || { echo 'macOS Clang is missing its macOS SDK prerequisite metadata' >&2; exit 1; }
+            [ "${#sdk_args[@]}" -gt 0 ] || { echo 'macOS Clang requires an active Apple macOS SDK' >&2; exit 1; }
+        fi
         if [ "$(uname -s)" = "Linux" ]; then
             run_clang_driver_clean "$root" clang "$tmp_root/clang-home-A" "$clang_poison" \
                 "$tmp_root/clang-test.c" -o "$tmp_root/clang-test"
@@ -852,69 +1322,15 @@ CPP_EOF
             "$tmp_root/clang-libcxx-test" | grep -F "42"
         fi
 
-        if info_bool features.asan; then
-            cat > "$tmp_root/asan-test.c" <<'ASAN_C_EOF'
-#include <stdlib.h>
-
-int main(void) {
-    int *value = (int *)malloc(sizeof(int));
-    free(value);
-    return *value;
-}
-ASAN_C_EOF
-            if [ "$(uname -s)" = "Linux" ]; then
-                asan_compile=(run_clang_driver_clean "$root" clang "$tmp_root/clang-home-A" "$clang_poison")
-            else
-                asan_compile=("$root/bin/clang" "${sdk_args[@]}")
-            fi
-            if "${asan_compile[@]}" -g -O0 -fsanitize=address "$tmp_root/asan-test.c" -o "$tmp_root/asan-test"; then
-                set +e
-                ASAN_OPTIONS=abort_on_error=0:detect_leaks=0 \
-                    "$tmp_root/asan-test" >"$tmp_root/asan-output.txt" 2>&1
-                asan_status=$?
-                set -e
-                if [ "$asan_status" -eq 0 ]; then
-                    echo "ASan test unexpectedly succeeded" >&2
-                    cat "$tmp_root/asan-output.txt" >&2
-                    exit 1
-                fi
-                assert_output_contains "$tmp_root/asan-output.txt" 'AddressSanitizer|heap-use-after-free'
-                echo "ASan produced the expected diagnostic and non-zero exit status"
-            else
-                echo "ASan feature is declared but ASan compile/link failed" >&2
-                exit 1
-            fi
-        else
-            echo "required Clang ASan runtime is not declared; ASan test cannot run" >&2
-            exit 1
+        if [ "$(uname -s)" = "Darwin" ]; then
+            clang_macos_package_libcxx_probe "$root" A
         fi
+        clang_asan_probe "$root" A "${clang_poison:-}"
+        clang_ubsan_probe "$root" A "${clang_poison:-}"
+        clang_profile_runtime_probe "$root" A "${clang_poison:-}"
         ;;
     lld)
-        require_executable "$root/bin/ld.lld"
-
-        # lld is a generic driver and may exit with a diagnostic when invoked directly.
-        # Test the concrete frontends instead.
-        "$root/bin/ld.lld" --version
-        run_optional_executable "$root/bin/lld-link" --version
-        run_optional_executable "$root/bin/wasm-ld" --version
-        run_optional_executable "$root/bin/ld64.lld" --version
-
-        cat > "$tmp_root/lld-test.c" <<'C_EOF'
-#include <stdio.h>
-
-int main(void) {
-    printf("hello lld\n");
-    return 0;
-}
-C_EOF
-        if [ "$(uname -s)" = "Darwin" ]; then
-            require_executable "$root/bin/ld64.lld"
-            cc -fuse-ld="$root/bin/ld64.lld" "$tmp_root/lld-test.c" -o "$tmp_root/lld-test"
-            "$tmp_root/lld-test" | grep -F "hello lld"
-        else
-            cc -B"$root/bin" -fuse-ld=lld "$tmp_root/lld-test.c" -o "$tmp_root/lld-test"
-            "$tmp_root/lld-test" | grep -F "hello lld"
-        fi
+        lld_native_probe "$root" A
         ;;
     lldb)
         require_executable "$root/bin/lldb"
@@ -935,17 +1351,21 @@ C_EOF
         fi
         if info_bool features.lldb_server; then
             require_executable "$root/bin/lldb-server"
-            info_bool features.remote_debugging || {
-                echo 'LLDB lldb-server is present but remote-debugging capability is not declared' >&2
-                exit 1
-            }
-        elif info_bool features.remote_debugging; then
-            echo 'LLDB remote-debugging capability is declared without lldb-server' >&2
+        fi
+        if info_bool features.remote_debugging && ! info_bool features.lldb_server; then
+            echo 'LLDB remote-debugging capability is declared without qualified lldb-server capability' >&2
             exit 1
         fi
 
         "$root/bin/lldb" --version
         "$root/bin/lldb" -b -o "script import sys; print('python-ok', sys.version_info[0], sys.version_info[1])" -o quit
+
+        if [[ "$(info_value platform.host)" == macos-* ]]; then
+            [ "$(info_value requires.apple_developer_tools)" = true ] || { echo 'macOS LLDB is missing its Apple developer tools prerequisite metadata' >&2; exit 1; }
+            [ "$(info_value requires.system_debugserver)" = true ] || { echo 'macOS LLDB is missing its system debugserver prerequisite metadata' >&2; exit 1; }
+            command -v xcrun >/dev/null 2>&1 || { echo 'macOS LLDB requires xcrun from Apple developer tools' >&2; exit 1; }
+            xcrun --find debugserver >/dev/null 2>&1 || { echo 'macOS LLDB requires Apple system debugserver for local process control' >&2; exit 1; }
+        fi
 
         cat > "$tmp_root/lldb-test.c" <<'C_EOF'
 #include <stdio.h>
@@ -962,10 +1382,9 @@ int main(void) {
 C_EOF
         cc -g -O0 "$tmp_root/lldb-test.c" -o "$tmp_root/lldb-test"
 
-        # GitHub-hosted Docker jobs normally do not have the ptrace/personality
-        # privileges needed to launch an inferior under LLDB. Validate that LLDB
-        # can create the target and inspect symbols, then attempt a launch only
-        # when the runner allows it.
+        # Target/symbol creation is always qualified. If process launch is a
+        # declared feature, the native runner must prove it; an environment
+        # restriction is evidence-gap/failure, never a package PASS.
         "$root/bin/lldb" -b \
             -o "target create $tmp_root/lldb-test" \
             -o "breakpoint set --name cup_lldb_test_add_unique" \
@@ -974,24 +1393,27 @@ C_EOF
         grep -F "Breakpoint" "$tmp_root/lldb-output.txt"
         grep -F "cup_lldb_test_add_unique" "$tmp_root/lldb-output.txt"
 
-        if "$root/bin/lldb" -b \
-            -o "settings set target.disable-aslr false" \
-            -o "target create $tmp_root/lldb-test" \
-            -o "breakpoint set --name cup_lldb_test_add_unique" \
-            -o "run" \
-            -o "frame info" \
-            -o "frame variable a" \
-            -o "frame variable b" \
-            -o "quit" >"$tmp_root/lldb-launch-output.txt" 2>&1; then
-            grep -F "cup_lldb_test_add_unique" "$tmp_root/lldb-launch-output.txt"
-            grep -F "(int) a = 20" "$tmp_root/lldb-launch-output.txt"
-            grep -F "(int) b = 22" "$tmp_root/lldb-launch-output.txt"
-        elif grep -E "personality set failed|Operation not permitted|ptrace|not permitted" "$tmp_root/lldb-launch-output.txt" >/dev/null; then
-            echo "warning: LLDB inferior launch skipped because the runner forbids debugging privileges"
-            cat "$tmp_root/lldb-launch-output.txt"
-        else
-            cat "$tmp_root/lldb-launch-output.txt" >&2
-            exit 1
+        if info_bool features.process_launch; then
+            if "$root/bin/lldb" -b \
+                -o "settings set target.disable-aslr false" \
+                -o "target create $tmp_root/lldb-test" \
+                -o "breakpoint set --name cup_lldb_test_add_unique" \
+                -o "run" \
+                -o "frame info" \
+                -o "frame variable a" \
+                -o "frame variable b" \
+                -o "quit" >"$tmp_root/lldb-launch-output.txt" 2>&1; then
+                grep -F "cup_lldb_test_add_unique" "$tmp_root/lldb-launch-output.txt"
+                grep -F "(int) a = 20" "$tmp_root/lldb-launch-output.txt"
+                grep -F "(int) b = 22" "$tmp_root/lldb-launch-output.txt"
+            else
+                echo "LLDB process-launch capability could not be qualified on this runner; refusing a false PASS" >&2
+                cat "$tmp_root/lldb-launch-output.txt" >&2
+                exit 1
+            fi
+        fi
+        if info_bool features.lldb_dap; then
+            lldb_dap_probe "$root" A "$tmp_root/lldb-test" "$tmp_root/lldb-test.c"
         fi
         ;;
     clangd)
@@ -1077,6 +1499,7 @@ C_EOF
 EOF_JSON
         "$root/bin/clangd" --check="$project_dir/main.c" 2>&1 | tee "$tmp_root/clangd-output.txt"
         assert_output_contains "$tmp_root/clangd-output.txt" "All checks completed|Testing on source file"
+        clangd_lsp_probe "$root" A
         ;;
     clang-format)
         require_executable "$root/bin/clang-format"
@@ -1164,6 +1587,7 @@ C_EOF
         "$root/bin/clang-apply-replacements" --version
         llvm_helper_python_identity_probe "$root" A
         clang_tidy_helper_probe "$root" A
+        clang_tidy_replacements_probe "$root" A
         "$root/bin/clang-tidy" --list-checks "--checks=clang-analyzer-*" | tee "$tmp_root/tidy-checks.txt"
         grep -F "clang-analyzer-core" "$tmp_root/tidy-checks.txt"
         cat > "$tmp_root/tidy-test.c" <<'C_EOF'
@@ -1246,17 +1670,16 @@ case "$LLVM_TOOL" in
         fi
         ;;
     lld)
-        cp -RPp "$root" "$reloc_root"
-        export PATH="$reloc_root/bin:$host_path"
-        "$reloc_root/bin/ld.lld" --version
-        if [ "$(uname -s)" = "Darwin" ]; then
-            require_executable "$reloc_root/bin/ld64.lld"
-            cc -fuse-ld="$reloc_root/bin/ld64.lld" "$tmp_root/lld-test.c" -o "$tmp_root/lld-relocated-test"
-            "$tmp_root/lld-relocated-test" | grep -F "hello lld"
-        else
-            cc -B"$reloc_root/bin" -fuse-ld=lld "$tmp_root/lld-test.c" -o "$tmp_root/lld-relocated-test"
-            "$tmp_root/lld-relocated-test" | grep -F "hello lld"
-        fi
+        reloc_b="$tmp_root/relocated-lld-b"
+        reloc_c="$tmp_root/relocation lld c with spaces"
+        cp -RPp "$root" "$reloc_b"
+        mv "$root" "$tmp_root/original-lld-root-disabled"
+        [ ! -e "$root" ] || { echo 'LLD relocation A root is still available' >&2; exit 1; }
+        "$reloc_b/bin/ld.lld" --version
+        mv "$reloc_b" "$reloc_c"
+        [ ! -e "$reloc_b" ] || { echo 'LLD relocation B root is still available' >&2; exit 1; }
+        lld_native_probe "$reloc_c" C
+        printf 'LLD_RELOCATION_A_TO_B_TO_C=PASS\n'
         ;;
     lldb)
         if [[ "$(info_value platform.host)" == linux-* || "$(info_value platform.host)" == macos-* ]]; then
@@ -1283,8 +1706,11 @@ case "$LLVM_TOOL" in
                 -o 'image lookup -n cup_lldb_test_add_unique' \
                 -o quit 2>&1 | tee "$tmp_root/lldb-reloc-c-output.txt"
             grep -F 'cup_lldb_test_add_unique' "$tmp_root/lldb-reloc-c-output.txt"
-            if [[ "$(info_value platform.host)" == linux-* ]] && info_bool features.lldb_server; then
+            if [[ "$(info_value platform.host)" == linux-* ]] && info_bool features.remote_debugging; then
                 lldb_remote_debug_probe "$reloc_c" C
+            fi
+            if info_bool features.lldb_dap; then
+                lldb_dap_probe "$reloc_c" C "$tmp_root/lldb-test" "$tmp_root/lldb-test.c"
             fi
         else
             cp -RPp "$root" "$reloc_root"
@@ -1313,6 +1739,7 @@ case "$LLVM_TOOL" in
         [ ! -e "$reloc_b" ] || { echo 'clangd relocation B root is still available' >&2; exit 1; }
         "$reloc_c/bin/clangd" --check="$project_dir/main.c" 2>&1 | tee "$tmp_root/clangd-reloc-c-output.txt"
         assert_output_contains "$tmp_root/clangd-reloc-c-output.txt" "All checks completed|Testing on source file"
+        clangd_lsp_probe "$reloc_c" C
         ;;
     clang-format)
         reloc_b="$tmp_root/relocated-clang-format-b"
@@ -1343,7 +1770,7 @@ case "$LLVM_TOOL" in
         llvm_helper_python_identity_probe "$reloc_c" C
         clang_tidy_helper_probe "$reloc_c" C
         "$reloc_c/bin/clang-tidy" "--checks=clang-analyzer-*" "$tmp_root/tidy-test.c" -- -std=c11
-        "$reloc_c/bin/clang-apply-replacements" --version
+        clang_tidy_replacements_probe "$reloc_c" C
         printf 'CLANG_TIDY_RELOCATION_A_TO_B_TO_C=PASS\n'
         ;;
 esac

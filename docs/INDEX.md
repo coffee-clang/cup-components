@@ -21,13 +21,17 @@ keep the files that belong to the package
         ↓
 add required non-system host runtime dependencies
         ↓
-normalize and validate the package tree
+write tool metadata and finish the selected package payload
         ↓
-write info.txt and manifest.txt
+normalize the package tree and validate info.txt
         ↓
-create tar.xz, tar.gz and zip archives
+generate manifest.txt
         ↓
-verify the package and archive checksums
+create and semantically verify tar.xz, tar.gz and zip archives
+        ↓
+write SHA256SUMS
+        ↓
+run the tool-specific product test and verify archive checksums
         ↓
 optionally publish the finished archives
 ```

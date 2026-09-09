@@ -171,13 +171,26 @@ Invoke-Native -FilePath $pwsh -ArgumentList @(
     '-Tool', 'gdb'
 )
 
-if (-not (Test-FeatureEnabled -Root $root -Key 'features.tui') -or
-    -not (Test-FeatureEnabled -Root $root -Key 'config.tui')) {
-    throw 'required GDB TUI capability is not fully declared in info.txt'
+foreach ($requiredFeature in @(
+    'features.debug_native',
+    'features.breakpoints',
+    'features.backtrace',
+    'features.python',
+    'features.tui',
+    'features.remote_debugging'
+)) {
+    if (-not (Test-FeatureEnabled -Root $root -Key $requiredFeature)) {
+        throw "required GDB capability is not declared in info.txt: $requiredFeature"
+    }
 }
-if (-not (Test-FeatureEnabled -Root $root -Key 'features.gdbserver') -or
-    -not (Test-FeatureEnabled -Root $root -Key 'features.remote_debugging')) {
-    throw 'required GDB remote-debugging capability is not fully declared in info.txt'
+if (-not (Test-FeatureEnabled -Root $root -Key 'config.tui')) {
+    throw 'required GDB TUI configuration is not declared in info.txt'
+}
+if ((Read-InfoValue -Root $root -Key 'entry.gdb') -ne 'bin/gdb.exe') {
+    throw 'GDB public entry does not name bin/gdb.exe'
+}
+if ((Read-InfoValue -Root $root -Key 'entry.gdbserver') -ne 'bin/gdbserver.exe') {
+    throw 'GDB server public entry does not name bin/gdbserver.exe'
 }
 Assert-FileMissing (Join-Path $root 'bin\lldb._pth')
 Assert-FileMissing (Join-Path $root 'bin\lldb-dap._pth')
@@ -249,8 +262,7 @@ if (($tuiOutput | Out-String) -match 'Undefined command') {
 
 # Python is a major user-facing GDB capability when declared by the package.
 # We intentionally do not assert every configure-time library from info.txt.
-if (-not (Test-FeatureEnabled -Root $root -Key 'features.python') -or
-    -not (Test-FeatureEnabled -Root $root -Key 'config.python') -or
+if (-not (Test-FeatureEnabled -Root $root -Key 'config.python') -or
     -not (Test-FeatureEnabled -Root $root -Key 'contents.uses_python')) {
     throw 'required GDB Python capability is not fully declared in info.txt'
 }

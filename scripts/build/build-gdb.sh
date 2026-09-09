@@ -465,7 +465,6 @@ write_gdb_info() {
         "features.backtrace=$has_gdb"
         "features.python=$has_python"
         "features.tui=$has_tui"
-        "features.gdbserver=$has_gdbserver"
         "features.remote_debugging=$has_gdbserver"
     )
 

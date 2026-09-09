@@ -1,195 +1,175 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SCRIPT="$ROOT/scripts/build/build-llvm-tool.sh"
-WINDOWS_TEST="$ROOT/scripts/test/test-llvm-tool-windows.ps1"
 
-for marker in \
-    'lldb_python_package_dir="lib/python$lldb_python_version/dist-packages"' \
-    'lldb_python_package_dir="lib/python$lldb_python_version/site-packages"' \
-    'LLDB_PYTHON_RELATIVE_PATH=$lldb_python_package_dir' \
-    'LLDB_PYTHON_EXE_RELATIVE_PATH=bin/python$lldb_python_version' \
-    'LLDB_PACKAGED_PYTHON_RELATIVE="bin/python$lldb_python_version"' \
-    'materialize_lldb_clang_resources' \
-    'prepare_lldb_package_seed'; do
-    grep -F "$marker" "$SCRIPT" >/dev/null || {
-        echo "missing generic LLDB package policy: $marker" >&2
+ROOT="${CUP_LLDB_PACKAGE_POLICY_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+BUILD="$ROOT/scripts/build/build-llvm-tool.sh"
+POSIX="$ROOT/scripts/test/test-llvm-tool.sh"
+WINDOWS="$ROOT/scripts/test/test-llvm-tool-windows.ps1"
+
+need() {
+    local file="$1" marker="$2" message="$3"
+    grep -F -- "$marker" "$file" >/dev/null || {
+        echo "LLDB package policy failed: $message" >&2
         exit 1
     }
-done
-
-# lldb and lldb-dap are deliberate public CUP commands on every supported
-# LLDB platform. lldb-server is additionally public on Linux/Windows, while
-# lldb-argdumper remains a required private runtime helper for process launch.
-grep -F 'llvm_copy_path_into_seed bin/lldb' "$SCRIPT" >/dev/null
-grep -F 'llvm_copy_path_into_seed bin/lldb-dap' "$SCRIPT" >/dev/null
-grep -F 'llvm_copy_path_into_seed bin/lldb-server' "$SCRIPT" >/dev/null
-grep -F 'contents.clang_resources=$has_lldb_clang_resources' "$SCRIPT" >/dev/null || {
-    echo 'LLDB metadata no longer derives Clang resources from the exact resource root' >&2
-    exit 1
-}
-if grep -F "metadata_bool_for_dirs "\$PREFIX" 'lib/clang/*/include'" "$SCRIPT" >/dev/null; then
-    echo 'LLDB metadata regressed to basename-only pathname matching' >&2
-    exit 1
-fi
-grep -F 'lldb lldb-server lldb-dap lldb-argdumper' "$SCRIPT" >/dev/null || {
-    echo 'LLDB pruning no longer preserves the lldb-argdumper runtime helper' >&2
-    exit 1
-}
-grep -F 'LLDB process-launch runtime helper is missing: bin/lldb-argdumper' "$SCRIPT" >/dev/null || {
-    echo 'LLDB packaging no longer requires lldb-argdumper before publishing process-launch capability' >&2
-    exit 1
-}
-grep -F 'llvm_copy_path_into_seed bin/lldb-argdumper' "$SCRIPT" >/dev/null || {
-    echo 'LLDB Linux package seed no longer carries lldb-argdumper' >&2
-    exit 1
-}
-if grep -F 'rm -f "$python_dir/site-packages/lldb/lldb-argdumper"' "$SCRIPT" >/dev/null; then
-    echo 'LLDB pruning regressed to removing the lldb-argdumper Python companion' >&2
-    exit 1
-fi
-grep -F 'for python_packages_dir in site-packages dist-packages; do' "$SCRIPT" >/dev/null || {
-    echo 'LLDB Linux seed no longer rebinds Python native modules across both package directory conventions' >&2
-    exit 1
-}
-grep -F 'require_executable "$root/bin/lldb-argdumper"' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
-    echo 'LLDB POSIX qualification no longer requires the process-launch argdumper helper' >&2
-    exit 1
-}
-grep -F "LLDB process-launch capability is missing lldb-argdumper.exe" "$WINDOWS_TEST" >/dev/null || {
-    echo 'LLDB Windows qualification no longer requires the process-launch argdumper helper' >&2
-    exit 1
 }
 
-grep -F 'lldb_remote_debug_probe()' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
-    echo 'LLDB product qualification no longer contains a real remote-debugging probe' >&2
-    exit 1
-}
-grep -F 'lldb_remote_debug_probe "$reloc_c" C' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
-    echo 'LLDB remote-debugging qualification is no longer bound to relocation C' >&2
-    exit 1
-}
-grep -F '"$candidate/bin/lldb-server" platform --server' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
-    echo 'LLDB Linux remote qualification no longer uses packaged platform-server mode' >&2
-    exit 1
-}
-grep -F 'platform select remote-linux' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
-    echo 'LLDB Linux remote qualification no longer selects remote-linux' >&2
-    exit 1
-}
-grep -F 'platform connect connect://127.0.0.1:$port' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
-    echo 'LLDB Linux remote qualification no longer connects through the platform plugin' >&2
-    exit 1
-}
-grep -F "target create '\$work/remote-test'" "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
-    echo 'LLDB platform remote qualification no longer starts from the local target fixture' >&2
-    exit 1
-}
-grep -F 'settings set target.disable-aslr false' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
-    echo 'LLDB remote client no longer owns the container-compatible ASLR setting' >&2
-    exit 1
-}
-grep -F 'packaged LLDB platform remote-debugging client timed out at relocation $label' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
-    echo 'LLDB platform remote client timeout no longer fails closed with evidence' >&2
-    exit 1
-}
-if grep -F 'gdb-remote 127.0.0.1:$port' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null; then
-    echo 'obsolete targetless gdb-remote orchestration remains in LLDB qualification' >&2
-    exit 1
-fi
-grep -F 'lldb_dap_probe()' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
-    echo 'LLDB POSIX qualification no longer executes a real DAP protocol probe' >&2
-    exit 1
-}
-grep -F 'platform select remote-windows' "$WINDOWS_TEST" >/dev/null || {
-    echo 'LLDB Windows qualification no longer uses remote-windows platform mode' >&2
-    exit 1
-}
-grep -F "'thread backtrace'" "$WINDOWS_TEST" >/dev/null || {
-    echo 'LLDB Windows qualification lost canonical thread backtrace' >&2
-    exit 1
-}
-if grep -F "'-o', 'backtrace'" "$WINDOWS_TEST" >/dev/null; then
-    echo 'LLDB Windows qualification still contains invalid bare backtrace command' >&2
-    exit 1
-fi
-grep -F 'function Invoke-LldbDapProbe' "$WINDOWS_TEST" >/dev/null || {
-    echo 'LLDB Windows qualification no longer executes a real DAP protocol probe' >&2
-    exit 1
-}
-grep -F "if ((Test-InfoBool 'features.process_launch') -and -not (Test-Path \"\$root\bin\lldb-argdumper.exe\")) {" "$WINDOWS_TEST" >/dev/null || {
-    echo 'LLDB Windows process-launch capability gate has invalid PowerShell boolean grouping' >&2
-    exit 1
-}
-grep -F "if (\$path -eq '.') {" "$WINDOWS_TEST" >/dev/null || {
-    echo 'LLDB Windows Python qualification no longer permits the deliberate upstream current-directory entry' >&2
-    exit 1
-}
-grep -F 'if (-not [IO.Path]::IsPathRooted($path)) {' "$WINDOWS_TEST" >/dev/null || {
-    echo 'LLDB Windows Python qualification no longer rejects unexpected relative sys.path entries' >&2
-    exit 1
-}
-grep -F 'print("lldb-file=" + str(lldb.__file__))' "$WINDOWS_TEST" >/dev/null || {
-    echo 'LLDB Windows Python qualification no longer records the package-owned lldb module identity' >&2
-    exit 1
-}
-grep -F 'LLDB Python module escaped the package at relocation ${Label}: $lldbFile' "$WINDOWS_TEST" >/dev/null || {
-    echo 'LLDB Windows Python qualification no longer fails closed on an external lldb module' >&2
-    exit 1
-}
-grep -F 'if [[ "$(info_value platform.host)" == linux-* || "$(info_value platform.host)" == macos-* ]]; then' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
-    echo 'LLDB POSIX relocation no longer includes macOS previous-root isolation' >&2
-    exit 1
-}
-if grep -F '[ -x "$PACKAGE_PREFIX/bin/lldb-dap" ] || die' "$SCRIPT" >/dev/null; then
-    echo 'LLDB Linux seed duplicates lldb-dap public-entry enforcement instead of leaving it to metadata validation' >&2
-    exit 1
-fi
-
-# The Linux minimal seed is platform policy, not a release-specific exception.
-grep -F 'if [ "$TOOL" != lldb ] || ! is_linux_platform "$HOST_PLATFORM"; then' "$SCRIPT" >/dev/null
-
-# Windows must not embed the build-machine Python home. Its packaged runtime is
-# version-locked, so avoid the limited-API linkage path that failed natively.
-# POSIX deliberately uses a package-relative Python home.
-grep -F -- '-DLLDB_EMBED_PYTHON_HOME=OFF' "$SCRIPT" >/dev/null || {
-    echo 'LLDB Windows lost explicit build-Python-home isolation' >&2
-    exit 1
-}
-grep -F -- '-DLLDB_EMBED_PYTHON_HOME=ON' "$SCRIPT" >/dev/null || {
-    echo 'LLDB POSIX lost package-relative embedded Python policy' >&2
-    exit 1
-}
-grep -F -- '-DLLDB_PYTHON_HOME=..' "$SCRIPT" >/dev/null || {
-    echo 'LLDB POSIX lost relative Python home' >&2
-    exit 1
-}
-grep -F -- '-DLLDB_ENABLE_PYTHON_LIMITED_API=OFF' "$SCRIPT" >/dev/null || {
-    echo 'LLDB Windows no longer disables the failing limited Python API linkage path' >&2
-    exit 1
-}
-grep -F 'info_file="$tmp_root/package-info.txt"' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
-    echo 'LLDB qualification no longer snapshots package metadata before relocation' >&2
-    exit 1
-}
-grep -F 'grep -F "${key}=" "$info_file"' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
-    echo 'LLDB capability gates reverted to reading the moved package root' >&2
-    exit 1
-}
-grep -F 'candidate="$(cd "$candidate" && pwd -P)"' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null || {
-    echo 'LLDB identity probe no longer canonicalizes macOS /tmp filesystem identity' >&2
-    exit 1
-}
-if grep -F 'feature_enabled ' "$ROOT/scripts/test/test-llvm-tool.sh" >/dev/null; then
-    echo 'LLDB product test references undefined feature_enabled instead of existing info_bool' >&2
-    exit 1
-fi
-
-for marker in 'python-isolated=1' 'python-package-owned=1' 'relocation with spaces' 'original-package-root-disabled'; do
-    grep -F "$marker" "$WINDOWS_TEST" >/dev/null || {
-        echo "LLDB Windows product test lost relocation/Python isolation marker: $marker" >&2
+reject() {
+    local file="$1" marker="$2" message="$3"
+    if grep -F -- "$marker" "$file" >/dev/null; then
+        echo "LLDB package policy failed: $message" >&2
         exit 1
-    }
+    fi
+}
+
+# Build scope is explicit: CUP owns Python/local debugging, DAP and Linux/Windows
+# platform-server remote debugging, not incidental upstream tools/protocols.
+for option in \
+    '-DLLDB_INCLUDE_TESTS=OFF' \
+    '-DLLDB_ENABLE_LIBCXX_TESTS=OFF' \
+    '-DLLDB_ENABLE_PYTHON=ON' \
+    '-DLLDB_ENABLE_LUA=OFF' \
+    '-DLLDB_ENABLE_TREESITTER=OFF' \
+    '-DLLDB_ENABLE_PROTOCOL_SERVERS=OFF' \
+    '-DLLDB_ENABLE_GITHUB_BUG_REPORTER=OFF' \
+    '-DLLDB_BUILD_INTEL_MPX=OFF' \
+    '-DLLDB_TOOL_LLDB_DAP_BUILD=ON' \
+    '-DLLDB_TOOL_LLDB_INSTR_BUILD=OFF' \
+    '-DLLDB_TOOL_LLDB_MCP_BUILD=OFF' \
+    '-DLLDB_TOOL_YAML2MACHO_CORE_BUILD=OFF'; do
+    need "$BUILD" "$option" "missing explicit build-scope option: $option"
 done
+need "$BUILD" '-DLLDB_TOOL_LLDB_SERVER_BUILD=ON' 'Linux/Windows server build is not explicit'
+need "$BUILD" '-DLLDB_TOOL_LLDB_SERVER_BUILD=OFF' 'macOS server build is not explicitly disabled'
+need "$BUILD" '-DLLDB_TOOL_DARWIN_DEBUG_BUILD=OFF' 'macOS external Terminal.app helper is still built'
+need "$BUILD" '-DLLDB_ENABLE_DYNAMIC_SCRIPTINTERPRETERS=ON' 'macOS Python dynamic-interpreter policy is not explicit'
+need "$BUILD" '-DLLDB_ENABLE_DYNAMIC_SCRIPTINTERPRETERS=OFF' 'non-Darwin dynamic-interpreter policy is not explicit'
+need "$BUILD" '-DLLDB_USE_SYSTEM_DEBUGSERVER=ON' 'macOS system-debugserver build policy is missing'
+
+# Linux final package seed carries only deliberate LLDB roots/data. The optional
+# shell-expansion argdumper is deliberately excluded rather than tested into scope.
+need "$BUILD" 'llvm_copy_path_into_seed bin/lldb' 'Linux seed lost lldb'
+need "$BUILD" 'llvm_copy_path_into_seed bin/lldb-dap' 'Linux seed lost lldb-dap'
+need "$BUILD" 'llvm_copy_path_into_seed bin/lldb-server' 'Linux seed lost lldb-server'
+reject "$BUILD" 'llvm_copy_path_into_seed bin/lldb-argdumper' 'Linux seed still carries lldb-argdumper'
+need "$BUILD" 'rm -f "$python_packages_dir/lldb-argdumper"' 'Python-side argdumper companion is not pruned'
+reject "$POSIX" 'require_executable "$root/bin/lldb-argdumper"' 'POSIX process launch still requires lldb-argdumper'
+reject "$WINDOWS" 'LLDB process-launch capability is missing lldb-argdumper.exe' 'Windows process launch still requires lldb-argdumper'
+
+# Final package layout is checked after all payload mutations and after the Linux
+# seed is materialized, not on an intermediate staging tree.
+need "$BUILD" 'prepare_lldb_package_seed' 'LLDB package seed owner is missing'
+need "$BUILD" 'validate_llvm_package_layout "$PACKAGE_PREFIX"' 'final package layout is not validated'
+need "$BUILD" 'macOS LLDB package retained lldb-server outside its declared remote-debugging scope' 'macOS lldb-server exclusion is not validated'
+need "$BUILD" 'LLDB package retained non-public lldb-argdumper shell-expansion helper' 'argdumper final-package exclusion is not validated'
+
+# Metadata separates payload/public entry/behavior. There is no redundant
+# features.lldb_server alias; remote debugging is the real behavioral claim.
+need "$BUILD" 'contents.lldb_server=$has_lldb_server' 'lldb-server payload inventory is missing'
+need "$BUILD" 'info_required_entry entry.lldb_server' 'Linux/Windows lldb-server public entry is missing'
+need "$BUILD" 'features.remote_debugging=$lldb_remote_debugging' 'remote-debugging feature metadata is missing'
+reject "$BUILD" 'features.lldb_server=' 'redundant lldb-server behavioral feature remains'
+need "$BUILD" 'requires.system_debugserver=true' 'macOS system-debugserver prerequisite is missing'
+# Apple developer tools remain a Clang prerequisite, but must not be duplicated
+# inside the LLDB case. Inspect only the LLDB metadata block.
+if sed -n '/^[[:space:]]*lldb)/,/^[[:space:]]*clangd)/p' "$BUILD" | grep -F 'requires.apple_developer_tools=true' >/dev/null; then
+    echo 'LLDB package policy failed: macOS LLDB still declares broad Apple developer-tools prerequisite' >&2
+    exit 1
+fi
+
+# DAP uses its own launch field for ASLR and the framed protocol reader preserves
+# out-of-order events/responses instead of discarding them.
+need "$POSIX" '\"disableASLR\":false' 'POSIX DAP launch does not explicitly leave ASLR enabled'
+reject "$POSIX" 'preRunCommands":["settings set target.disable-aslr false"]' 'POSIX DAP still uses the wrong preRunCommands ASLR owner'
+need "$POSIX" 'FRAMED_PENDING+=("$FRAMED_MESSAGE")' 'POSIX framed waiter still drops unmatched messages'
+need "$WINDOWS" 'disableASLR=$false' 'Windows DAP launch does not explicitly leave ASLR enabled'
+need "$WINDOWS" '$script:FramedPending.Add($item)' 'Windows framed waiter still drops unmatched messages'
+
+# Required LLDB capabilities must fail closed rather than becoming optional
+# test branches when metadata accidentally changes to false.
+need "$POSIX" 'for required_feature in' 'POSIX LLDB required feature contract is not fail-closed'
+need "$POSIX" 'features.python features.target_create features.breakpoints' 'POSIX LLDB core required features are not asserted'
+need "$POSIX" 'info_bool features.remote_debugging || {' 'Linux LLDB remote capability can still be silently skipped'
+need "$POSIX" 'macOS LLDB must not declare package-owned remote debugging' 'macOS LLDB negative remote contract is not asserted'
+need "$POSIX" 'LLDB package unexpectedly contains non-public lldb-argdumper' 'POSIX published-package argdumper exclusion is not asserted'
+need "$WINDOWS" 'foreach ($requiredFeature in @(' 'Windows LLDB required feature contract is not fail-closed'
+need "$WINDOWS" "'features.remote_debugging'" 'Windows LLDB remote feature is not mandatory in product qualification'
+need "$WINDOWS" 'Windows LLDB package unexpectedly contains non-public lldb-argdumper.exe' 'Windows published-package argdumper exclusion is not asserted'
+
+# macOS system-debugserver is qualified by the real local launch, not by a
+# non-equivalent xcrun lookup. Local launch is repeated after relocation C.
+reject "$POSIX" 'xcrun --find debugserver' 'macOS test still uses xcrun lookup as debugserver oracle'
+need "$POSIX" 'lldb_local_launch_probe "$root" A' 'LLDB original-root local launch oracle is missing'
+need "$POSIX" 'lldb_local_launch_probe "$reloc_c" C' 'LLDB relocated local launch oracle is missing'
+need "$POSIX" 'PYTHONDONTWRITEBYTECODE=1 "$candidate/bin/lldb"' 'LLDB product test may write Python cache into the package copy'
+
+# Platform-mode remote debugging remains the deliberate Linux/Windows model.
+need "$POSIX" '"$candidate/bin/lldb-server" platform --server' 'Linux remote qualification lost packaged platform-server mode'
+need "$POSIX" 'platform select remote-linux' 'Linux remote qualification lost remote-linux platform'
+need "$POSIX" 'platform connect connect://127.0.0.1:$port' 'Linux remote qualification lost platform connection'
+reject "$POSIX" 'gdb-remote 127.0.0.1:$port' 'obsolete direct gdb-remote orchestration returned'
+need "$WINDOWS" 'platform select remote-windows' 'Windows remote qualification lost remote-windows platform'
+reject "$WINDOWS" "Test-InfoBool 'features.lldb_server'" 'Windows remote test still depends on removed duplicate lldb-server feature'
+
+# Python/Clang resource identity is package-relative on both test implementations.
+need "$POSIX" 'SBHostOS.GetLLDBPath(lldb.ePathTypeClangDir)' 'POSIX LLDB Clang-resource oracle is missing'
+need "$WINDOWS" 'SBHostOS.GetLLDBPath(lldb.ePathTypeClangDir)' 'Windows LLDB Clang-resource oracle is missing'
+need "$WINDOWS" 'LLDB Clang resource directory escaped the package' 'Windows Clang-resource containment is not fail-closed'
+
+# Preserve previously closed Windows command semantics and generic relocation.
+need "$WINDOWS" "'thread backtrace'" 'Windows LLDB lost canonical thread backtrace'
+reject "$WINDOWS" "'-o', 'backtrace'" 'Windows LLDB contains invalid bare backtrace command'
+need "$POSIX" 'if [[ "$(info_value platform.host)" == linux-* || "$(info_value platform.host)" == macos-* ]]; then' 'POSIX relocation no longer covers Linux and macOS'
+reject "$POSIX" 'feature_enabled ' 'LLDB product test references undefined feature_enabled helper'
+
+# Exercise the exact POSIX framing functions with a legal interleaving: a later
+# event arrives before the response currently awaited. The first wait must queue
+# the event and the second wait must recover it without reading another frame.
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+extract_function() {
+    local file="$1" function_name="$2"
+    awk -v function_name="$function_name" '
+        $0 ~ ("^" function_name "\\(\\) \\{") { in_function=1; depth=0 }
+        in_function {
+            print
+            line=$0
+            opens=gsub(/\{/, "{", line)
+            closes=gsub(/\}/, "}", line)
+            depth += opens - closes
+            if (depth == 0) exit
+        }
+    ' "$file"
+}
+functions="$TMP/framed-functions.sh"
+extract_function "$POSIX" framed_read > "$functions"
+extract_function "$POSIX" framed_wait >> "$functions"
+# shellcheck source=/dev/null
+source "$functions"
+FRAMED_PENDING=()
+FRAMED_MESSAGE=""
+frame_a='{"type":"event","event":"stopped"}'
+frame_b='{"type":"response","request_seq":2,"success":true}'
+stream="$TMP/frames"
+printf 'Content-Length: %d\r\n\r\n%sContent-Length: %d\r\n\r\n%s' \
+    "${#frame_a}" "$frame_a" "${#frame_b}" "$frame_b" > "$stream"
+exec {frame_fd}<"$stream"
+framed_wait "$frame_fd" "$TMP/framed.log" '"request_seq"[[:space:]]*:[[:space:]]*2' 2 || {
+    echo 'LLDB package policy failed: POSIX framed waiter could not pass interleaved response' >&2
+    exit 1
+}
+[ "${#FRAMED_PENDING[@]}" -eq 1 ] || {
+    echo 'LLDB package policy failed: POSIX framed waiter did not retain unmatched event' >&2
+    exit 1
+}
+framed_wait "$frame_fd" "$TMP/framed.log" '"event"[[:space:]]*:[[:space:]]*"stopped"' 1 || {
+    echo 'LLDB package policy failed: POSIX framed waiter could not recover queued event' >&2
+    exit 1
+}
+[ "${#FRAMED_PENDING[@]}" -eq 0 ] || {
+    echo 'LLDB package policy failed: POSIX framed waiter left recovered event queued' >&2
+    exit 1
+}
+exec {frame_fd}<&-
 
 echo LLDB_PACKAGE_POLICY=PASS

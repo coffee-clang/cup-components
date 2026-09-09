@@ -2155,6 +2155,17 @@ package_verify_info_structure() {
             rm -f "$seen"
             die "info.txt contains a control character in field: $key"
         fi
+        case "$key" in
+            features.*|requires.*)
+                case "$value" in
+                    true|false) ;;
+                    *)
+                        rm -f "$seen"
+                        die "info.txt boolean field must be true or false: $key=$value"
+                        ;;
+                esac
+                ;;
+        esac
         if grep -Fx -- "$key" "$seen" >/dev/null 2>&1; then
             rm -f "$seen"
             die "info.txt contains a duplicate field: $key"

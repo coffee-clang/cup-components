@@ -161,6 +161,17 @@ Invoke-Native -FilePath $pwsh -ArgumentList @(
     '-Root', $root,
     '-Tool', 'gcc'
 )
+foreach ($requiredFeature in @(
+    'features.c',
+    'features.cpp',
+    'features.lto',
+    'features.pthread',
+    'features.sysroot'
+)) {
+    if (-not (Test-FeatureEnabled -Root $root -Key $requiredFeature)) {
+        throw "required Windows GCC capability is not declared in info.txt: $requiredFeature"
+    }
+}
 Assert-NoNativeWindowsPrefixedBinutilsDuplicates -Root $root
 
 $env:Path = "$root\bin;$env:SystemRoot\System32;$env:SystemRoot"

@@ -29,6 +29,7 @@ tmp_root="$(mktemp -d /tmp/cup-llvm-test.XXXXXX)"
 lldb_server_pid=""
 lldb_port_reader_pid=""
 lldb_client_pid=""
+FRAMED_PENDING=()
 cleanup() {
     if [ -n "${lldb_port_reader_pid:-}" ]; then
         kill "$lldb_port_reader_pid" 2>/dev/null || true
@@ -493,6 +494,20 @@ framed_wait() {
     local pattern="$3"
     local max_reads="${4:-120}"
     local i=0
+    local index
+    local message
+
+    # Protocol events and responses can be interleaved. Preserve messages that
+    # belong to a later wait instead of consuming them irreversibly.
+    for index in "${!FRAMED_PENDING[@]}"; do
+        message="${FRAMED_PENDING[$index]}"
+        if printf '%s\n' "$message" | grep -E "$pattern" >/dev/null; then
+            FRAMED_MESSAGE="$message"
+            unset 'FRAMED_PENDING[index]'
+            FRAMED_PENDING=("${FRAMED_PENDING[@]}")
+            return 0
+        fi
+    done
 
     while [ "$i" -lt "$max_reads" ]; do
         if ! framed_read "$fd" 2; then
@@ -503,6 +518,7 @@ framed_wait() {
         if printf '%s\n' "$FRAMED_MESSAGE" | grep -E "$pattern" >/dev/null; then
             return 0
         fi
+        FRAMED_PENDING+=("$FRAMED_MESSAGE")
         i=$((i + 1))
     done
     echo "timed out waiting for framed protocol message matching: $pattern" >&2
@@ -535,6 +551,7 @@ EOF_CLANGD_DB
     main_uri="file://$project/main.c"
     main_text='int cup_lsp_value(void) { return 42; }\nint main(void) { return cup_lsp_value() == 42 ? 0 : 1; }\n'
     : > "$log"
+    FRAMED_PENDING=()
 
     coproc CLANGD_LSP { env -i HOME="$home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
         "$candidate/bin/clangd" 2>"$err"; }
@@ -595,7 +612,6 @@ lldb_dap_probe() {
     local log="$work/protocol.log"
     local err="$work/stderr.log"
     local body line thread_id frame_id dap_pid in_fd out_fd i
-    local pre_run=''
 
     info_bool features.lldb_dap || return 0
     require_executable "$candidate/bin/lldb-dap"
@@ -603,10 +619,8 @@ lldb_dap_probe() {
     mkdir -p "$work" "$home"
     line="$(grep -n 'cup_lldb_test_add_unique' "$source" | head -1 | cut -d: -f1)"
     [ -n "$line" ] || return 1
-    if [[ "$(info_value platform.host)" == linux-* ]]; then
-        pre_run=',"preRunCommands":["settings set target.disable-aslr false"]'
-    fi
     : > "$log"
+    FRAMED_PENDING=()
 
     coproc LLDB_DAP { env -i HOME="$home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
         PYTHONDONTWRITEBYTECODE=1 "$candidate/bin/lldb-dap" 2>"$err"; }
@@ -616,7 +630,7 @@ lldb_dap_probe() {
 
     framed_send "$in_fd" '{"seq":1,"type":"request","command":"initialize","arguments":{"clientID":"cup-components","adapterID":"lldb","linesStartAt1":true,"columnsStartAt1":true}}'
     framed_wait "$out_fd" "$log" '"type"[[:space:]]*:[[:space:]]*"response".*"request_seq"[[:space:]]*:[[:space:]]*1.*"success"[[:space:]]*:[[:space:]]*true|"request_seq"[[:space:]]*:[[:space:]]*1.*"success"[[:space:]]*:[[:space:]]*true.*"type"[[:space:]]*:[[:space:]]*"response"' 60
-    body="{\"seq\":2,\"type\":\"request\",\"command\":\"launch\",\"arguments\":{\"program\":\"$program\",\"cwd\":\"$work\",\"stopOnEntry\":false$pre_run}}"
+    body="{\"seq\":2,\"type\":\"request\",\"command\":\"launch\",\"arguments\":{\"program\":\"$program\",\"cwd\":\"$work\",\"stopOnEntry\":false,\"disableASLR\":false}}"
     framed_send "$in_fd" "$body"
     framed_wait "$out_fd" "$log" '"event"[[:space:]]*:[[:space:]]*"initialized"' 60
     body="{\"seq\":3,\"type\":\"request\",\"command\":\"setBreakpoints\",\"arguments\":{\"source\":{\"path\":\"$source\"},\"breakpoints\":[{\"line\":$line}]}}"
@@ -941,6 +955,40 @@ run_lldb_clean() {
         PYTHONDONTWRITEBYTECODE=1 "$candidate/bin/lldb" "$@"
 }
 
+
+lldb_local_launch_probe() {
+    local candidate="$1"
+    local label="$2"
+    local program="$3"
+    local output="$tmp_root/lldb-launch-$label.txt"
+
+    info_bool features.process_launch || return 0
+    if run_lldb_clean "$candidate" -b \
+        -o 'settings set target.disable-aslr false' \
+        -o "target create $program" \
+        -o 'breakpoint set --name cup_lldb_test_add_unique' \
+        -o run \
+        -o 'frame info' \
+        -o 'frame variable a' \
+        -o 'frame variable b' \
+        -o continue \
+        -o quit >"$output" 2>&1; then
+        grep -F 'cup_lldb_test_add_unique' "$output"
+        grep -F '(int) a = 20' "$output"
+        grep -F '(int) b = 22' "$output"
+        grep -E 'exited with status( =)? 0|Process [0-9]+ exited with status = 0' "$output" >/dev/null || {
+            echo "LLDB local process did not reach a natural zero exit at relocation $label" >&2
+            cat "$output" >&2
+            return 1
+        }
+    else
+        echo "LLDB process-launch capability could not be qualified at relocation $label; refusing a false PASS" >&2
+        cat "$output" >&2
+        return 1
+    fi
+    printf 'LLDB_LOCAL_LAUNCH_%s=PASS\n' "$label"
+}
+
 lldb_remote_debug_probe() {
     local candidate="$1"
     local label="$2"
@@ -954,10 +1002,6 @@ lldb_remote_debug_probe() {
     local client_status
     local server_status=0
 
-    info_bool features.lldb_server || {
-        echo "LLDB platform-server capability is not declared at relocation $label" >&2
-        return 1
-    }
     info_bool features.remote_debugging || {
         echo "LLDB remote-debugging capability is not declared at relocation $label" >&2
         return 1
@@ -1215,6 +1259,14 @@ assert_no_llvm_development_payload
 
 case "$LLVM_TOOL" in
     clang)
+        for required_feature in \
+            features.c features.cpp features.resource_dir features.lld_integration \
+            features.lto features.sanitizers; do
+            info_bool "$required_feature" || {
+                echo "required Clang capability is not declared: $required_feature" >&2
+                exit 1
+            }
+        done
         require_executable "$root/bin/clang"
         require_executable "$root/bin/clang++"
         require_executable "$root/bin/ld.lld"
@@ -1334,6 +1386,54 @@ CPP_EOF
         ;;
     lldb)
         require_executable "$root/bin/lldb"
+        for required_feature in \
+            features.python features.target_create features.breakpoints \
+            features.symbol_lookup features.process_launch features.lldb_dap; do
+            info_bool "$required_feature" || {
+                echo "LLDB required capability is not declared: $required_feature" >&2
+                exit 1
+            }
+        done
+
+        case "$(info_value platform.host)" in
+            linux-*)
+                info_bool features.remote_debugging || {
+                    echo 'Linux LLDB must declare package-owned remote debugging' >&2
+                    exit 1
+                }
+                [ "$(info_value contents.lldb_server)" = true ] || {
+                    echo 'Linux LLDB remote-debugging package does not declare lldb-server contents' >&2
+                    exit 1
+                }
+                require_executable "$root/bin/lldb-server"
+                ;;
+            macos-*)
+                [ "$(info_value features.remote_debugging)" = false ] || {
+                    echo 'macOS LLDB must not declare package-owned remote debugging' >&2
+                    exit 1
+                }
+                [ "$(info_value contents.lldb_server)" = false ] || {
+                    echo 'macOS LLDB must not retain lldb-server contents' >&2
+                    exit 1
+                }
+                [ ! -e "$root/bin/lldb-server" ] && [ ! -L "$root/bin/lldb-server" ] || {
+                    echo 'macOS LLDB package unexpectedly contains lldb-server' >&2
+                    exit 1
+                }
+                ;;
+        esac
+
+        if [ -e "$root/bin/lldb-argdumper" ] || [ -L "$root/bin/lldb-argdumper" ]; then
+            echo 'LLDB package unexpectedly contains non-public lldb-argdumper' >&2
+            exit 1
+        fi
+        for forbidden_helper in analyze-cc analyze-c++ intercept-cc intercept-c++ ccc-analyzer c++-analyzer; do
+            if [ -e "$root/libexec/$forbidden_helper" ] || [ -L "$root/libexec/$forbidden_helper" ]; then
+                echo "LLDB package retained sibling analyzer helper: libexec/$forbidden_helper" >&2
+                exit 1
+            fi
+        done
+
         if [ "$(info_value platform.host)" != windows-x64 ]; then
             lldb_python_entry="$(info_value config.python_executable)"
             [ -n "$lldb_python_entry" ] || { echo 'LLDB packaged Python executable is not declared' >&2; exit 1; }
@@ -1343,28 +1443,14 @@ CPP_EOF
             [ "$(info_value contents.clang_resources)" = true ] || { echo 'LLDB package-owned Clang resources not declared' >&2; exit 1; }
             lldb_identity_probe "$root" A
         fi
-        if info_bool features.process_launch; then
-            require_executable "$root/bin/lldb-argdumper"
-        fi
         if info_bool features.lldb_dap; then
             require_executable "$root/bin/lldb-dap"
         fi
-        if info_bool features.lldb_server; then
-            require_executable "$root/bin/lldb-server"
-        fi
-        if info_bool features.remote_debugging && ! info_bool features.lldb_server; then
-            echo 'LLDB remote-debugging capability is declared without qualified lldb-server capability' >&2
-            exit 1
-        fi
-
         "$root/bin/lldb" --version
         "$root/bin/lldb" -b -o "script import sys; print('python-ok', sys.version_info[0], sys.version_info[1])" -o quit
 
         if [[ "$(info_value platform.host)" == macos-* ]]; then
-            [ "$(info_value requires.apple_developer_tools)" = true ] || { echo 'macOS LLDB is missing its Apple developer tools prerequisite metadata' >&2; exit 1; }
             [ "$(info_value requires.system_debugserver)" = true ] || { echo 'macOS LLDB is missing its system debugserver prerequisite metadata' >&2; exit 1; }
-            command -v xcrun >/dev/null 2>&1 || { echo 'macOS LLDB requires xcrun from Apple developer tools' >&2; exit 1; }
-            xcrun --find debugserver >/dev/null 2>&1 || { echo 'macOS LLDB requires Apple system debugserver for local process control' >&2; exit 1; }
         fi
 
         cat > "$tmp_root/lldb-test.c" <<'C_EOF'
@@ -1393,25 +1479,7 @@ C_EOF
         grep -F "Breakpoint" "$tmp_root/lldb-output.txt"
         grep -F "cup_lldb_test_add_unique" "$tmp_root/lldb-output.txt"
 
-        if info_bool features.process_launch; then
-            if "$root/bin/lldb" -b \
-                -o "settings set target.disable-aslr false" \
-                -o "target create $tmp_root/lldb-test" \
-                -o "breakpoint set --name cup_lldb_test_add_unique" \
-                -o "run" \
-                -o "frame info" \
-                -o "frame variable a" \
-                -o "frame variable b" \
-                -o "quit" >"$tmp_root/lldb-launch-output.txt" 2>&1; then
-                grep -F "cup_lldb_test_add_unique" "$tmp_root/lldb-launch-output.txt"
-                grep -F "(int) a = 20" "$tmp_root/lldb-launch-output.txt"
-                grep -F "(int) b = 22" "$tmp_root/lldb-launch-output.txt"
-            else
-                echo "LLDB process-launch capability could not be qualified on this runner; refusing a false PASS" >&2
-                cat "$tmp_root/lldb-launch-output.txt" >&2
-                exit 1
-            fi
-        fi
+        lldb_local_launch_probe "$root" A "$tmp_root/lldb-test"
         if info_bool features.lldb_dap; then
             lldb_dap_probe "$root" A "$tmp_root/lldb-test" "$tmp_root/lldb-test.c"
         fi
@@ -1420,6 +1488,7 @@ C_EOF
         require_executable "$root/bin/clangd"
         info_bool contents.clang_resources || { echo "clangd package does not declare package-owned Clang resources" >&2; exit 1; }
         info_bool features.resource_dir || { echo "clangd package does not declare resource-dir capability" >&2; exit 1; }
+        info_bool features.check_compile_commands || { echo "clangd package does not declare compile-command consumption" >&2; exit 1; }
         for forbidden in \
             include/llvm \
             include/llvm-c \
@@ -1503,6 +1572,12 @@ EOF_JSON
         ;;
     clang-format)
         require_executable "$root/bin/clang-format"
+        for required_feature in features.format_file features.style_config features.dry_run_werror; do
+            info_bool "$required_feature" || {
+                echo "required clang-format capability is not declared: $required_feature" >&2
+                exit 1
+            }
+        done
 
         "$root/bin/clang-format" --version
 
@@ -1563,6 +1638,14 @@ C_EOF
         "$root/bin/clang-format" --assume-filename=test.cpp "$tmp_root/format-test.c" >/dev/null
         ;;
     clang-tidy)
+        for required_feature in \
+            features.list_checks features.analyze_c features.clang_analyzer \
+            features.apply_replacements features.run_clang_tidy features.clang_tidy_diff; do
+            info_bool "$required_feature" || {
+                echo "required clang-tidy capability is not declared: $required_feature" >&2
+                exit 1
+            }
+        done
         require_executable "$root/bin/clang-tidy"
         require_executable "$root/bin/clang-apply-replacements"
         require_executable "$root/bin/run-clang-tidy"
@@ -1706,6 +1789,7 @@ case "$LLVM_TOOL" in
                 -o 'image lookup -n cup_lldb_test_add_unique' \
                 -o quit 2>&1 | tee "$tmp_root/lldb-reloc-c-output.txt"
             grep -F 'cup_lldb_test_add_unique' "$tmp_root/lldb-reloc-c-output.txt"
+            lldb_local_launch_probe "$reloc_c" C "$tmp_root/lldb-test"
             if [[ "$(info_value platform.host)" == linux-* ]] && info_bool features.remote_debugging; then
                 lldb_remote_debug_probe "$reloc_c" C
             fi

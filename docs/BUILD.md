@@ -29,13 +29,15 @@ close required host runtime dependencies
         ↓
 normalize the package tree
         ↓
-write and verify info.txt and manifest.txt
+write/validate info.txt and generate manifest.txt
         ↓
-create tar.xz, tar.gz and zip
+create and semantically verify tar.xz, tar.gz and zip
         ↓
-write and verify SHA256SUMS
+write SHA256SUMS
         ↓
 validate the completed tool package
+        ↓
+verify SHA256SUMS
         ↓
 optionally publish the finished archives
 ```
@@ -318,11 +320,13 @@ After the tool-specific package tree has been selected, common finalization perf
 3. host runtime closure for the selected platform;
 4. package-root normalization;
 5. `info.txt` contract validation;
-6. `manifest.txt` generation and independent regeneration check;
+6. `manifest.txt` generation, followed by independent regeneration from each extracted archive;
 7. timestamp normalization where supported by the package path;
 8. creation of `tar.xz`, `tar.gz` and `zip`;
-9. creation and verification of `SHA256SUMS`;
+9. creation of `SHA256SUMS`;
 10. creation of `release.env` for later workflow steps.
+
+The workflow then runs the tool-specific product test and verifies `SHA256SUMS` before upload or publication. Archive semantic verification itself is already part of common finalization.
 
 The common finalizer does not decide which public commands belong to GDB, Clang, Valgrind or another family. That decision remains in the corresponding tool builder.
 

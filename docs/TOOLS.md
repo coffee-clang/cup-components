@@ -248,7 +248,7 @@ Linux and Windows additionally expose:
 bin/lldb-server
 ```
 
-because those packages deliberately provide package-owned platform-server remote debugging. On macOS, `lldb-server` may still be present as upstream payload, but it is recorded as contents rather than promoted to a public entry or remote-debugging capability. Local process launch and `lldb-dap` use Apple's system `debugserver`, matching upstream's supported `LLDB_USE_SYSTEM_DEBUGSERVER=ON` model; that dependency is explicit in `requires.*` metadata. CUP does not declare macOS remote debugging because a deployable `debugserver` is not contained in the package.
+because those packages deliberately provide package-owned platform-server remote debugging. The macOS package does not retain `lldb-server`: local process launch and `lldb-dap` use Apple's system `debugserver`, matching upstream's supported `LLDB_USE_SYSTEM_DEBUGSERVER=ON` model. That concrete runtime prerequisite is explicit as `requires.system_debugserver=true`. CUP does not declare macOS remote debugging because a deployable remote `debugserver` is not part of the package contract.
 
 The Linux package seed additionally keeps:
 
@@ -263,7 +263,7 @@ LLDB enables Python. The Python executable path is derived from the interpreter 
 
 If the LLDB installation does not already contain the generated Clang built-in headers it needs, the producer copies the single matching resource directory produced by that LLVM build. The path is derived from the selected build rather than assuming a fixed `lib/clang/<major>` directory.
 
-`lldb-vscode` is not a deliberate package command. `lldb-argdumper` is also not a public CUP entry, but it is deliberately preserved as a private LLDB runtime helper because the supported process-launch path invokes it while evaluating process arguments. Any installed Python-side companion therefore remains consistent with the packaged helper rather than being pruned into a dangling link.
+`lldb-vscode` is not a deliberate package command. `lldb-argdumper` is also excluded: upstream uses it for optional shell argument expansion, while CUP's LLDB contract covers normal local/DAP/remote process control and does not promote shell expansion to a separate product capability. Any installed Python-side companion is pruned with the executable so the final package has no dangling helper reference.
 
 ### clangd
 

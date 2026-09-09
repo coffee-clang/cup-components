@@ -207,9 +207,9 @@ At least one executable entry is required. Every declared `entry.*` path must sa
 
 ### Capability metadata
 
-`features.*` records behavioral capabilities deliberately exposed by the completed package. A command or payload being present is evidence for `entry.*` or `contents.*`; it does not by itself create a `features.*` promise. Positive feature claims therefore have a corresponding product-test oracle. The exact keys depend on the tool.
+`features.*` records behavioral capabilities deliberately exposed by the completed package. A command or payload being present is evidence for `entry.*` or `contents.*`; it does not by itself create a `features.*` promise. Positive feature claims therefore have a corresponding product-test oracle. Every `features.*` value is the literal boolean `true` or `false`; the exact keys depend on the tool.
 
-`requires.*` records an explicit external platform prerequisite that is necessary for a declared capability but is not package payload. It is used only when the platform itself owns that prerequisite. The current macOS examples are the Apple SDK used for native compilation and Apple's system `debugserver` used by LLDB local process control. A requirement must never be inferred silently from the build runner.
+`requires.*` records an explicit external platform prerequisite that is necessary for a declared capability but is not package payload. It is used only when the platform itself owns that prerequisite, and its values are likewise literal `true` or `false`. The current macOS examples are the Apple SDK used for native compilation and Apple's system `debugserver` used by LLDB local process control. A requirement must never be inferred silently from the build runner.
 
 Examples include:
 
@@ -218,7 +218,7 @@ features.c=true
 features.cpp=true
 features.openmp=true
 features.sanitizers=true
-features.gdbserver=true
+features.remote_debugging=true
 features.link_coff=true
 features.format_file=true
 ```
@@ -253,7 +253,7 @@ Records are sorted by relative path. Every descendant of the package root is lis
 
 A symbolic link's final regular-file target has its own separate manifest record.
 
-The producer writes the manifest twice from the finalized tree and compares the results before archive creation. After creating each advertised archive, the finalizer verifies the stored file/directory mode classes, extracts that archive, independently regenerates the manifest from the extracted tree and compares it with the finalized package manifest. This checks both the archive metadata consumed during installation and the package object graph described by `manifest.txt`.
+The producer generates `manifest.txt` once from the finalized package tree before archive creation. After creating each advertised archive, the finalizer verifies the stored file/directory mode classes, extracts that archive, independently regenerates the manifest from the extracted tree and compares it with the finalized package manifest. This checks both the archive metadata consumed during installation and the package object graph described by `manifest.txt`.
 
 The manifest is therefore the exact reference inventory for the installed package tree and can be used to detect missing, changed or unexpected package paths. It does not make the package immutable to a process that already has permission to rewrite both the payload and its metadata.
 
@@ -280,7 +280,7 @@ Hardlink inode sharing does not have to be identical between formats.
 
 POSIX ZIP packages preserve admitted symbolic links instead of replacing them with the target bytes. Windows packages do not contain symbolic links.
 
-After all three archives are created, the finalizer writes `SHA256SUMS` with exactly one SHA-256 entry for each archive and verifies that file before the build continues.
+After all three archives are created, the finalizer writes `SHA256SUMS` with exactly one SHA-256 entry for each archive. The workflow verifies that checksum file after the tool-specific product test and before upload or publication.
 
 ## Self-contained package boundary
 

@@ -154,10 +154,16 @@ gdb_remote_debug_probe() {
 
 require_executable "$root/bin/gdb"
 require_executable "$root/bin/gdbserver"
-if ! feature_enabled "features.gdbserver" || ! feature_enabled "features.remote_debugging"; then
-    echo "required GDB remote-debugging capability is not fully declared in info.txt" >&2
-    exit 1
-fi
+for required_feature in \
+    features.debug_native features.breakpoints features.backtrace \
+    features.python features.tui features.remote_debugging; do
+    if ! feature_enabled "$required_feature"; then
+        echo "required GDB capability is not declared in info.txt: $required_feature" >&2
+        exit 1
+    fi
+done
+[ "$(info_value entry.gdb)" = bin/gdb ] || { echo 'GDB public entry does not name bin/gdb' >&2; exit 1; }
+[ "$(info_value entry.gdbserver)" = bin/gdbserver ] || { echo 'GDB server public entry does not name bin/gdbserver' >&2; exit 1; }
 [ -d "$root/share/gdb" ] || { echo 'missing GDB data directory' >&2; exit 1; }
 assert_no_gdb_development_payload
 if feature_enabled "contents.uses_source_highlight"; then
@@ -167,11 +173,18 @@ gdb_python_identity_probe "$root" A
 "$root/bin/gdb" --version
 "$root/bin/gdb" --configuration
 "$root/bin/gdbserver" --version
+"$root/bin/gdb" -q -batch -ex 'help tui' > "$tmpdir/gdb-tui-help.txt" 2>&1
+if grep -F 'Undefined command' "$tmpdir/gdb-tui-help.txt" >/dev/null ||
+   ! grep -Ei 'text user interface|^tui[[:space:]]+--' "$tmpdir/gdb-tui-help.txt" >/dev/null; then
+    echo 'packaged GDB does not provide the declared TUI command set' >&2
+    cat "$tmpdir/gdb-tui-help.txt" >&2
+    exit 1
+fi
 
 # Python support is a major GDB capability and is declared by the package metadata.
 # Other configure-time libraries are intentionally not asserted here: they are
 # packaging details, while this script is an acceptance test for the published tool.
-if ! feature_enabled "features.python" || ! feature_enabled "config.python" || ! feature_enabled "contents.uses_python"; then
+if ! feature_enabled "config.python" || ! feature_enabled "contents.uses_python"; then
     echo "required GDB Python capability is not fully declared in info.txt" >&2
     exit 1
 fi

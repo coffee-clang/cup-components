@@ -29,6 +29,14 @@ need "$BUILD" 'CLANG_CXX_RUNTIME_DEFAULT=true' 'Windows packaged libc++ default 
 reject "$BUILD" 'features.llvm_ar=' 'llvm-ar presence is still promoted to a Clang feature'
 reject "$BUILD" 'features.llvm_ranlib=' 'llvm-ranlib presence is still promoted to a Clang feature'
 reject "$BUILD" 'features.llvm_objdump=' 'llvm-objdump presence is still promoted to a Clang feature'
+for stale_target_feature in \
+    features.target_x86 features.target_aarch64 \
+    features.target_linux_x64 features.target_linux_arm64 \
+    features.target_windows_x64 features.target_macos_x64 features.target_macos_arm64; do
+    reject "$BUILD" "$stale_target_feature=" \
+        "Clang target/backend identity is still duplicated as behavioral feature metadata: $stale_target_feature"
+done
+need "$BUILD" 'config.llvm_targets=$LLVM_TARGETS' 'LLVM backend selection is no longer recorded as configuration metadata'
 reject "$POSIX" 'clang_archive_tools_probe()' 'Clang still carries the over-scoped archive-tool qualification owner'
 reject "$WINDOWS" 'function Invoke-ClangArchiveToolsProbe' 'Windows Clang still carries the over-scoped archive-tool qualification owner'
 reject "$BUILD" 'entry.lld "$PREFIX" ld.lld' 'Clang still promotes its integration linker payload to a separate public entry'
@@ -72,23 +80,28 @@ need "$WINDOWS" 'function Invoke-ClangdLspProbe' 'Windows clangd has no real LSP
 reject "$POSIX" '.cache/clangd/index' 'POSIX clangd still requires background-index cache internals'
 reject "$WINDOWS" 'background-index entries' 'Windows clangd still requires background-index cache internals'
 
-# LLDB retains deliberate process-control/DAP/remote responsibilities with an explicit macOS platform prerequisite.
+# LLDB retains deliberate process-control/DAP/remote responsibilities without
+# promoting helper presence or non-equivalent platform probes into capabilities.
 need "$POSIX" '"$candidate/bin/lldb-server" platform --server' 'Linux LLDB does not use packaged platform-server mode'
 need "$POSIX" 'platform select remote-linux' 'Linux LLDB does not select remote-linux'
 reject "$POSIX" 'gdb-remote 127.0.0.1:$port' 'obsolete direct targetless gdb-remote orchestration is still present'
 need "$POSIX" 'lldb_dap_probe()' 'POSIX LLDB DAP claim has no protocol oracle'
+need "$POSIX" '\"disableASLR\":false' 'POSIX LLDB DAP does not use the protocol-owned ASLR setting'
+need "$POSIX" 'lldb_local_launch_probe "$reloc_c" C' 'POSIX LLDB process launch is not repeated after relocation'
+reject "$POSIX" 'xcrun --find debugserver' 'macOS LLDB still uses a non-equivalent debugserver lookup proxy'
 need "$WINDOWS" 'platform select remote-windows' 'Windows LLDB does not select remote-windows'
 need "$WINDOWS" "'thread backtrace'" 'Windows LLDB does not use canonical thread backtrace'
 reject "$WINDOWS" "'-o', 'backtrace'" 'Windows LLDB still contains invalid bare backtrace'
 need "$WINDOWS" 'function Invoke-LldbDapProbe' 'Windows LLDB DAP claim has no protocol oracle'
+need "$WINDOWS" 'disableASLR=$false' 'Windows LLDB DAP does not explicitly preserve normal ASLR'
 need "$BUILD" 'requires.system_debugserver=true' 'macOS LLDB system-debugserver prerequisite is not explicit'
 need "$BUILD" 'info_required_entry entry.lldb_dap' 'deliberate LLDB DAP command is not a required public entry'
 need "$BUILD" 'info_required_entry entry.lldb_server' 'Linux/Windows deliberate LLDB server command is not a required public entry'
 need "$BUILD" 'contents.lldb_server=$has_lldb_server' 'LLDB server payload inventory is not recorded independently from capability/entry scope'
+reject "$BUILD" 'features.lldb_server=' 'LLDB still duplicates server presence as a behavioral capability'
 need "$BUILD" 'lldb_process_launch="$has_lldb"' 'macOS LLDB local process launch is still incorrectly disabled'
 need "$BUILD" 'lldb_dap_feature="$has_lldb_dap"' 'macOS LLDB DAP is still incorrectly disabled'
 need "$BUILD" 'lldb_remote_debugging="$has_lldb_server"' 'Linux/Windows LLDB remote capability owner is missing'
-need "$POSIX" 'xcrun --find debugserver' 'macOS LLDB qualification does not verify its declared system-debugserver prerequisite'
 
 # External platform requirements must be visible rather than hidden in runner behavior.
 need "$REPORT_POSIX" "grep -E '^requires\\.'" 'POSIX capability reporter does not show external requirements'

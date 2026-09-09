@@ -419,6 +419,7 @@ function Start-FramedProcess {
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $psi
     if (-not $process.Start()) { throw "Could not start framed process: $FilePath" }
+    $script:FramedPending = [Collections.Generic.List[object]]::new()
     return $process
 }
 
@@ -476,6 +477,15 @@ function Wait-FramedJson {
         [int] $TimeoutSeconds = 60
     )
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+
+    for ($i = 0; $i -lt $script:FramedPending.Count; $i++) {
+        $item = $script:FramedPending[$i]
+        if (& $Predicate $item.Message) {
+            $script:FramedPending.RemoveAt($i)
+            return $item
+        }
+    }
+
     while ([DateTime]::UtcNow -lt $deadline) {
         if ($Process.HasExited) { throw "${Description}: process exited with code $($Process.ExitCode)" }
         try { $item = Read-FramedJson -Process $Process -TimeoutMilliseconds 10000 } catch {
@@ -483,6 +493,7 @@ function Wait-FramedJson {
             continue
         }
         if (& $Predicate $item.Message) { return $item }
+        $script:FramedPending.Add($item)
     }
     throw "Timed out waiting for framed protocol message: $Description"
 }
@@ -546,7 +557,7 @@ function Invoke-LldbDapProbe {
     try {
         Send-FramedJson $process @{ seq=1; type='request'; command='initialize'; arguments=@{ clientID='cup-components'; adapterID='lldb'; linesStartAt1=$true; columnsStartAt1=$true } }
         [void](Wait-FramedJson $process 'lldb-dap initialize response' { param($m) $m.type -eq 'response' -and $m.request_seq -eq 1 -and $m.success -eq $true })
-        Send-FramedJson $process @{ seq=2; type='request'; command='launch'; arguments=@{ program=$Program; cwd=(Split-Path $Program); stopOnEntry=$false } }
+        Send-FramedJson $process @{ seq=2; type='request'; command='launch'; arguments=@{ program=$Program; cwd=(Split-Path $Program); stopOnEntry=$false; disableASLR=$false } }
         [void](Wait-FramedJson $process 'lldb-dap initialized event' { param($m) $m.type -eq 'event' -and $m.event -eq 'initialized' })
         Send-FramedJson $process @{ seq=3; type='request'; command='setBreakpoints'; arguments=@{ source=@{ path=$Source }; breakpoints=@(@{ line=$line }) } }
         [void](Wait-FramedJson $process 'lldb-dap setBreakpoints response' { param($m) $m.type -eq 'response' -and $m.request_seq -eq 3 -and $m.success -eq $true })
@@ -580,7 +591,6 @@ function Invoke-LldbDapProbe {
 function Invoke-LldbRemoteProbe {
     param([string] $PackageRoot, [string] $Label, [string] $Program)
     if (-not (Test-InfoBool 'features.remote_debugging')) { return }
-    if (-not (Test-InfoBool 'features.lldb_server')) { throw 'remote debugging is declared without lldb-server capability' }
     $serverExe = Join-Path $PackageRoot 'bin\lldb-server.exe'
     if (-not (Test-Path $serverExe)) { throw 'packaged lldb-server.exe is missing' }
     $work = Join-Path $testDir "lldb-remote-$Label"
@@ -650,7 +660,7 @@ function Assert-LldbPythonRuntime {
     $output = Invoke-NativeCapture -FilePath (Join-Path $PackageRoot 'bin\lldb.exe') -ArgumentList @(
         '-b',
         '-o',
-        'script import sys, lldb; print("python-isolated=" + str(sys.flags.isolated)); print("python-version=" + ".".join(map(str, sys.version_info[:3]))); print("lldb-file=" + str(lldb.__file__)); [print("python-path=" + p) for p in sys.path]',
+        'script import sys, lldb; print("python-isolated=" + str(sys.flags.isolated)); print("python-version=" + ".".join(map(str, sys.version_info[:3]))); print("lldb-file=" + str(lldb.__file__)); print("clang-resource=" + str(lldb.SBHostOS.GetLLDBPath(lldb.ePathTypeClangDir))); [print("python-path=" + p) for p in sys.path]',
         '-o',
         'quit'
     )
@@ -667,6 +677,19 @@ function Assert-LldbPythonRuntime {
     $lldbFileFull = [IO.Path]::GetFullPath($lldbFile)
     if (-not $lldbFileFull.StartsWith($packageFull, [StringComparison]::OrdinalIgnoreCase)) {
         throw "LLDB Python module escaped the package at relocation ${Label}: $lldbFile"
+    }
+
+    $clangLine = @($output | ForEach-Object { "$($_)" } | Where-Object { $_ -like 'clang-resource=*' } | Select-Object -Last 1)
+    if ($clangLine.Count -ne 1) {
+        throw "LLDB Clang resource probe produced no unique path at relocation $Label"
+    }
+    $clangResource = $clangLine[0] -replace '^clang-resource=', ''
+    $clangFull = [IO.Path]::GetFullPath($clangResource)
+    if (-not $clangFull.StartsWith($packageFull, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "LLDB Clang resource directory escaped the package at relocation ${Label}: $clangResource"
+    }
+    if (-not (Test-Path (Join-Path $clangFull 'include\stddef.h'))) {
+        throw "LLDB package-owned Clang resource headers are missing at relocation ${Label}: $clangResource"
     }
 
     $pythonPaths = @($output | ForEach-Object { "$($_)" } | Where-Object { $_ -like 'python-path=*' })
@@ -738,6 +761,19 @@ New-Item -ItemType Directory -Force $testDir | Out-Null
 
 switch ($Tool) {
     'clang' {
+        foreach ($requiredFeature in @(
+            'features.c',
+            'features.cpp',
+            'features.resource_dir',
+            'features.lld_integration',
+            'features.lto',
+            'features.sanitizers',
+            'features.sysroot'
+        )) {
+            if (-not (Test-InfoBool $requiredFeature)) {
+                throw "required Windows Clang capability is not declared: $requiredFeature"
+            }
+        }
         Invoke-Native -FilePath "$root\bin\clang.exe" -ArgumentList @('--version')
         Invoke-Native -FilePath "$root\bin\clang++.exe" -ArgumentList @('--version')
         Invoke-Native -FilePath "$root\bin\ld.lld.exe" -ArgumentList @('--version')
@@ -805,11 +841,36 @@ switch ($Tool) {
     }
 
     'lldb' {
-        if (-not (Test-InfoBool 'features.process_launch')) {
-            throw 'Windows LLDB package must declare its qualified process-launch capability'
+        foreach ($requiredFeature in @(
+            'features.python',
+            'features.target_create',
+            'features.breakpoints',
+            'features.symbol_lookup',
+            'features.process_launch',
+            'features.lldb_dap',
+            'features.remote_debugging'
+        )) {
+            if (-not (Test-InfoBool $requiredFeature)) {
+                throw "Windows LLDB required capability is not declared: $requiredFeature"
+            }
         }
-        if ((Test-InfoBool 'features.process_launch') -and -not (Test-Path "$root\bin\lldb-argdumper.exe")) {
-            throw 'LLDB process-launch capability is missing lldb-argdumper.exe'
+        if ((Get-InfoValue 'contents.lldb_server') -ne 'true') {
+            throw 'Windows LLDB remote-debugging package does not declare lldb-server contents'
+        }
+        foreach ($requiredEntry in @('lldb.exe', 'lldb-dap.exe', 'lldb-server.exe')) {
+            if (-not (Test-Path (Join-Path "$root\bin" $requiredEntry))) {
+                throw "Windows LLDB required public command is missing: $requiredEntry"
+            }
+        }
+        if (Test-Path "$root\bin\lldb-argdumper.exe") {
+            throw 'Windows LLDB package unexpectedly contains non-public lldb-argdumper.exe'
+        }
+        foreach ($forbiddenHelper in @('analyze-cc', 'analyze-c++', 'intercept-cc', 'intercept-c++', 'ccc-analyzer', 'c++-analyzer')) {
+            foreach ($suffix in @('', '.exe', '.bat', '.cmd')) {
+                if (Test-Path (Join-Path "$root\libexec" ($forbiddenHelper + $suffix))) {
+                    throw "Windows LLDB package retained sibling analyzer helper: $forbiddenHelper$suffix"
+                }
+            }
         }
         Show-PEImports "$root\bin\lldb.exe"
         if (Test-Path "$root\bin\lldb-dap.exe") { Show-PEImports "$root\bin\lldb-dap.exe" }
@@ -865,6 +926,14 @@ int main(void) {
     }
 
     'clangd' {
+        foreach ($requiredFeature in @('features.resource_dir', 'features.check_compile_commands')) {
+            if (-not (Test-InfoBool $requiredFeature)) {
+                throw "required clangd capability is not declared: $requiredFeature"
+            }
+        }
+        if ((Get-InfoValue 'contents.clang_resources') -ne 'true') {
+            throw 'clangd package does not declare package-owned Clang resources'
+        }
         Invoke-Native -FilePath "$root\bin\clangd.exe" -ArgumentList @('--version')
 
         $projectDir = Join-Path $testDir 'clangd-project'
@@ -889,6 +958,11 @@ int main(void) {
     }
 
     'clang-format' {
+        foreach ($requiredFeature in @('features.format_file', 'features.style_config', 'features.dry_run_werror')) {
+            if (-not (Test-InfoBool $requiredFeature)) {
+                throw "required clang-format capability is not declared: $requiredFeature"
+            }
+        }
         Invoke-Native -FilePath "$root\bin\clang-format.exe" -ArgumentList @('--version')
         if (Test-InfoBool 'features.git_clang_format') { throw 'clang-format unexpectedly declares git-clang-format' }
         foreach ($gitHelper in @('git-clang-format', 'git-clang-format.exe', 'git-clang-format.cmd', 'git-clang-format.bat')) {
@@ -952,6 +1026,18 @@ return 0;
     }
 
     'clang-tidy' {
+        foreach ($requiredFeature in @(
+            'features.list_checks',
+            'features.analyze_c',
+            'features.clang_analyzer',
+            'features.apply_replacements',
+            'features.run_clang_tidy',
+            'features.clang_tidy_diff'
+        )) {
+            if (-not (Test-InfoBool $requiredFeature)) {
+                throw "required clang-tidy capability is not declared: $requiredFeature"
+            }
+        }
         foreach ($required in @(
             "$root\bin\clang-tidy.exe",
             "$root\bin\clang-apply-replacements.exe",

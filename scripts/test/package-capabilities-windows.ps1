@@ -45,13 +45,27 @@ function Show-Executable {
         [Parameter(Mandatory = $true)][string] $Name,
         [string] $DeclaredKey = ''
     )
-    $present = Test-PackageExe $Name
+    $resolved = Resolve-PackageExe $Name
+    $present = [bool]$resolved
     if ($present) { $line = ("  present  {0,-30}" -f $Name) } else { $line = ("  missing  {0,-30}" -f $Name) }
     if ($DeclaredKey) {
         $declared = Get-InfoValue $DeclaredKey
         $line += " declared:$DeclaredKey=$declared"
-        if ($declared -eq 'true' -and -not $present) { $line += '  WARNING: declared true but executable missing' }
-        elseif ($declared -ne 'true' -and $present) { $line += '  note: executable present but metadata not declared true' }
+        if ($DeclaredKey.StartsWith('entry.')) {
+            $actual = ''
+            if ($present) {
+                $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
+                $resolvedFull = [IO.Path]::GetFullPath($resolved)
+                $actual = $resolvedFull.Substring($rootFull.Length).TrimStart('\', '/').Replace('\', '/')
+            }
+            if ($declared -and -not $present) { $line += '  WARNING: entry declared but executable missing' }
+            elseif ($present -and -not $declared) { $line += '  note: executable present but entry metadata is absent' }
+            elseif ($present -and $declared -cne $actual) { $line += "  WARNING: entry path mismatch (actual:$actual)" }
+        } elseif ($declared -eq 'true' -and -not $present) {
+            $line += '  WARNING: declared true but executable missing'
+        } elseif ($declared -ne 'true' -and $present) {
+            $line += '  note: executable present but metadata not declared true'
+        }
     }
     Write-Host $line
 }
@@ -162,7 +176,7 @@ switch ($Tool) {
         Write-Host ""
         Write-Host '[GDB capability probes]'
         Show-Executable 'gdb.exe' 'features.debug_native'
-        Show-Executable 'gdbserver.exe' 'features.gdbserver'
+        Show-Executable 'gdbserver.exe' 'entry.gdbserver'
         Show-Version 'gdb.exe'
     }
     'clang' {
@@ -189,7 +203,7 @@ switch ($Tool) {
         Write-Host ""
         Write-Host '[LLVM-family capability probes]'
         Show-Executable 'lldb.exe' 'features.target_create'
-        Show-Executable 'lldb-server.exe' 'features.lldb_server'
+        Show-Executable 'lldb-server.exe' 'entry.lldb_server'
         Show-Executable 'lldb-dap.exe' 'features.lldb_dap'
         Show-Version 'lldb.exe'
     }

@@ -85,6 +85,20 @@ if grep -F 'gdb_config_bool HAVE_ZLIB_H' "$SCRIPT" >/dev/null; then
     exit 1
 fi
 
+
+if grep -F 'features.gdbserver=' "$SCRIPT" >/dev/null; then
+    echo 'GDB still duplicates gdbserver command presence as a behavioral feature' >&2
+    exit 1
+fi
+grep -F 'info_required_entry entry.gdbserver' "$SCRIPT" >/dev/null || {
+    echo 'GDB builder lost the public gdbserver entry' >&2
+    exit 1
+}
+grep -F 'features.remote_debugging=$has_gdbserver' "$SCRIPT" >/dev/null || {
+    echo 'GDB builder lost remote-debugging behavioral metadata' >&2
+    exit 1
+}
+
 grep -F 'features.remote_debugging' "$PRODUCT_TEST" >/dev/null || {
     echo 'GDB POSIX product test no longer requires declared remote debugging' >&2
     exit 1

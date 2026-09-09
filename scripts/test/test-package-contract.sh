@@ -464,6 +464,8 @@ assert_package_rejected duplicate-field 'printf "package.tool=gdb\\n" >> "$candi
 assert_package_rejected missing-final-newline 'printf %s "$(cat "$candidate/info.txt")" > "$candidate/info.txt"'
 assert_package_rejected packaged-python-version-missing 'printf "contents.python_runtime=packaged\n" >> "$candidate/info.txt"'
 assert_package_rejected packaged-python-version-invalid 'printf "contents.python_runtime=packaged\ncontents.python_runtime.version=not-a-version\n" >> "$candidate/info.txt"'
+assert_package_rejected invalid-feature-boolean 'printf "features.invalid=yes\n" >> "$candidate/info.txt"'
+assert_package_rejected invalid-requirement-boolean 'printf "requires.invalid=1\n" >> "$candidate/info.txt"'
 
 # A case-fold collision can only exist in a staging tree when the host
 # filesystem can represent names that differ by case. Probe that capability

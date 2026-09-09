@@ -271,6 +271,17 @@ log_optional_feature() {
 
 bash scripts/test/package-capabilities.sh "$root" gcc
 
+for required_feature in features.c features.cpp features.lto features.pthread; do
+    if ! feature_enabled "$required_feature"; then
+        echo "required GCC capability is not declared in info.txt: $required_feature" >&2
+        exit 1
+    fi
+done
+if [ "$TARGET_PLATFORM" = windows-x64 ] && ! feature_enabled features.sysroot; then
+    echo "Windows-target GCC sysroot capability is not declared in info.txt" >&2
+    exit 1
+fi
+
 if [ "$HOST_PLATFORM" = "$TARGET_PLATFORM" ] && [ "${HOST_PLATFORM#linux-}" != "$HOST_PLATFORM" ]; then
     export PATH="$root/bin:$PATH"
 

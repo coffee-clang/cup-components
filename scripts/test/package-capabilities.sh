@@ -37,21 +37,36 @@ info_value() {
     fi
 }
 
-has_exe() {
+resolve_exe_relative() {
     local exe="$1"
-    [ -x "$root/bin/$exe" ] || [ -x "$root/bin/$exe.exe" ]
+
+    if [ -x "$root/bin/$exe" ]; then
+        printf 'bin/%s\n' "$exe"
+        return 0
+    fi
+    if [ -x "$root/bin/$exe.exe" ]; then
+        printf 'bin/%s.exe\n' "$exe"
+        return 0
+    fi
+    return 1
+}
+
+has_exe() {
+    resolve_exe_relative "$1" >/dev/null 2>&1
 }
 
 mark_exe() {
     local exe="$1"
     local declared_key="${2:-}"
     local declared=""
+    local actual=""
 
+    actual="$(resolve_exe_relative "$exe" 2>/dev/null || true)"
     if [ -n "$declared_key" ]; then
         declared="$(info_value "$declared_key")"
     fi
 
-    if has_exe "$exe"; then
+    if [ -n "$actual" ]; then
         printf '  present  %-28s' "$exe"
     else
         printf '  missing  %-28s' "$exe"
@@ -59,11 +74,24 @@ mark_exe() {
 
     if [ -n "$declared_key" ]; then
         printf ' declared:%s=%s' "$declared_key" "${declared:-unset}"
-        if [ "$declared" = "true" ] && ! has_exe "$exe"; then
-            printf '  WARNING: declared true but executable missing'
-        elif [ "$declared" != "true" ] && has_exe "$exe"; then
-            printf '  note: executable present but metadata not declared true'
-        fi
+        case "$declared_key" in
+            entry.*)
+                if [ -n "$declared" ] && [ -z "$actual" ]; then
+                    printf '  WARNING: entry declared but executable missing'
+                elif [ -n "$actual" ] && [ -z "$declared" ]; then
+                    printf '  note: executable present but entry metadata is absent'
+                elif [ -n "$actual" ] && [ "$declared" != "$actual" ]; then
+                    printf '  WARNING: entry path mismatch (actual:%s)' "$actual"
+                fi
+                ;;
+            *)
+                if [ "$declared" = true ] && [ -z "$actual" ]; then
+                    printf '  WARNING: declared true but executable missing'
+                elif [ "$declared" != true ] && [ -n "$actual" ]; then
+                    printf '  note: executable present but metadata not declared true'
+                fi
+                ;;
+        esac
     fi
     printf '\n'
 }
@@ -220,7 +248,7 @@ show_gdb() {
     echo ""
     echo "[GDB capability probes]"
     mark_exe gdb features.debug_native
-    mark_exe gdbserver features.gdbserver
+    mark_exe gdbserver entry.gdbserver
     try_version gdb --version
     if has_exe gdb; then
         echo ""
@@ -251,7 +279,7 @@ show_llvm() {
             ;;
         lldb)
             mark_exe lldb features.target_create
-            mark_exe lldb-server features.lldb_server
+            mark_exe lldb-server entry.lldb_server
             mark_exe lldb-dap features.lldb_dap
             try_version lldb --version
             ;;

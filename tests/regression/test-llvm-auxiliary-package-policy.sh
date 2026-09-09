@@ -274,4 +274,94 @@ for dll in libLTO.dll libRemarks.dll libclang.dll libclang-cpp.dll libClangdXPCL
 done
 [ -f "$prefix/bin/liblldb.dll" ] || fail 'unrelated runtime DLL was pruned'
 
+
+
+make_lldb_resource_tree() {
+    local prefix="$1"
+    mkdir -p "$prefix/lib/clang/23/include"
+    printf 'stddef\n' > "$prefix/lib/clang/23/include/stddef.h"
+}
+
+make_lldb_argdumper_companion() {
+    local prefix="$1"
+    local package_dir="$2"
+    mkdir -p "$prefix/$package_dir/lldb"
+    printf 'helper\n' > "$prefix/$package_dir/lldb/lldb-argdumper"
+}
+
+# LLDB packages exercise the same final pruning/validation policy on all native
+# platform families. Linux/Windows retain the deliberate remote server; macOS
+# does not. The shell-expansion argdumper and monorepo analyzer payload are
+# never deliberate LLDB roots.
+prefix="$TMP/lldb-linux"
+mkdir -p "$prefix/bin" "$prefix/lib"
+for exe in lldb lldb-dap lldb-server lldb-argdumper; do make_exe "$prefix/bin/$exe"; done
+make_lldb_resource_tree "$prefix"
+make_lldb_argdumper_companion "$prefix" 'lib/python3.12/dist-packages'
+make_payload_noise "$prefix"
+PREFIX="$prefix" TOOL=lldb HOST_PLATFORM=linux-x64
+prune_llvm_package_bins
+prune_llvm_auxiliary_share_payload
+prune_llvm_development_payload
+validate_llvm_package_layout "$prefix"
+for exe in lldb lldb-dap lldb-server; do
+    [ -x "$prefix/bin/$exe" ] || fail "Linux LLDB deliberate root was removed: $exe"
+done
+[ ! -e "$prefix/bin/lldb-argdumper" ] || fail 'Linux LLDB retained lldb-argdumper'
+[ ! -e "$prefix/lib/python3.12/dist-packages/lldb/lldb-argdumper" ] ||
+    fail 'Linux LLDB retained Python-side lldb-argdumper companion'
+assert_noise_removed "$prefix"
+
+prefix="$TMP/lldb-macos"
+mkdir -p "$prefix/bin" "$prefix/lib"
+for exe in lldb lldb-dap lldb-server lldb-argdumper; do make_exe "$prefix/bin/$exe"; done
+make_lldb_resource_tree "$prefix"
+make_lldb_argdumper_companion "$prefix" 'lib/python3.12/site-packages'
+make_payload_noise "$prefix"
+PREFIX="$prefix" TOOL=lldb HOST_PLATFORM=macos-x64
+prune_llvm_package_bins
+prune_llvm_auxiliary_share_payload
+prune_llvm_development_payload
+validate_llvm_package_layout "$prefix"
+for exe in lldb lldb-dap; do
+    [ -x "$prefix/bin/$exe" ] || fail "macOS LLDB deliberate root was removed: $exe"
+done
+[ ! -e "$prefix/bin/lldb-server" ] || fail 'macOS LLDB retained out-of-scope lldb-server'
+[ ! -e "$prefix/bin/lldb-argdumper" ] || fail 'macOS LLDB retained lldb-argdumper'
+[ ! -e "$prefix/lib/python3.12/site-packages/lldb/lldb-argdumper" ] ||
+    fail 'macOS LLDB retained Python-side lldb-argdumper companion'
+assert_noise_removed "$prefix"
+
+prefix="$TMP/lldb-windows"
+mkdir -p "$prefix/bin" "$prefix/lib"
+for exe in lldb.exe lldb-dap.exe lldb-server.exe lldb-argdumper.exe; do make_exe "$prefix/bin/$exe"; done
+make_lldb_resource_tree "$prefix"
+make_lldb_argdumper_companion "$prefix" 'lib/python3.12/site-packages'
+make_payload_noise "$prefix"
+make_windows_analyzer_noise "$prefix"
+PREFIX="$prefix" TOOL=lldb HOST_PLATFORM=windows-x64
+prune_llvm_package_bins
+prune_llvm_auxiliary_share_payload
+prune_llvm_development_payload
+validate_llvm_package_layout "$prefix"
+for exe in lldb.exe lldb-dap.exe lldb-server.exe; do
+    [ -x "$prefix/bin/$exe" ] || fail "Windows LLDB deliberate root was removed: $exe"
+done
+[ ! -e "$prefix/bin/lldb-argdumper.exe" ] || fail 'Windows LLDB retained lldb-argdumper.exe'
+[ ! -e "$prefix/lib/python3.12/site-packages/lldb/lldb-argdumper" ] ||
+    fail 'Windows LLDB retained Python-side lldb-argdumper companion'
+[ ! -e "$prefix/libexec" ] || fail 'Windows LLDB retained analyzer helper payload'
+
+# Final validation must independently catch a forbidden helper reintroduced after
+# pruning; otherwise a later package mutation could invalidate the earlier gate.
+make_exe "$prefix/libexec/analyze-cc.exe"
+if (validate_llvm_package_layout "$prefix") >/dev/null 2>&1; then
+    fail 'LLDB final package validator accepted analyzer payload reintroduced after pruning'
+fi
+rm -f "$prefix/libexec/analyze-cc.exe"
+rmdir "$prefix/libexec" 2>/dev/null || true
+validate_llvm_package_layout "$prefix"
+
+echo 'LLDB_FINAL_PACKAGE_SCOPE_POLICY=PASS'
+
 echo 'LLVM_AUXILIARY_PACKAGE_POLICY=PASS'

@@ -111,7 +111,7 @@ LLD performs a real native-format link for the package host: ELF on Linux, PE/CO
 
 LLDB checks include:
 
-- required `lldb` and `lldb-dap` public commands, plus `lldb-server` on Linux/Windows and the private `lldb-argdumper` process-launch helper;
+- required `lldb` and `lldb-dap` public commands, plus `lldb-server` on Linux/Windows; `lldb-argdumper` and unrelated LLDB development/protocol utilities must be absent;
 - package-owned Python interpreter/module identity and runtime-version provenance;
 - isolated package-owned Python search paths on Windows;
 - Clang resource-directory ownership;
@@ -119,8 +119,8 @@ LLDB checks include:
 - process launch whenever `features.process_launch=true`; an environment restriction is an evidence failure rather than a package PASS;
 - a real `lldb-dap` protocol session when DAP is declared;
 - on Linux and Windows, a real packaged `lldb-server platform` session when remote debugging is declared, with native remote launch, breakpoint/expression and bounded cleanup;
-- on macOS, the declared Apple system `debugserver` prerequisite is exercised by local process launch/DAP, while remote debugging remains undeclared;
-- POSIX relocation with previous roots unavailable; the final path contains real spaces.
+- on macOS, the declared system `debugserver` prerequisite is exercised by real local process launch/DAP rather than by a separate filesystem lookup proxy, while remote debugging remains undeclared;
+- POSIX relocation with previous roots unavailable; the final path contains real spaces and repeats the local process-launch oracle after relocation.
 
 clangd checks the language-server entry, matching Clang resource headers, compile-command consumption and a real bounded LSP initialize/document-symbol/shutdown session. `clangd-indexer` remains optional payload when upstream installs it; background indexing is not a separate CUP capability claim.
 
@@ -149,7 +149,7 @@ scripts/test/package-capabilities.sh
 scripts/test/package-capabilities-windows.ps1
 ```
 
-They are shared by tool-specific checks so package metadata and physical package capabilities are interpreted consistently.
+They are shared by tool-specific checks so package metadata and physical package capabilities are interpreted consistently. `entry.*` is interpreted as an exact package-relative command path, while boolean `features.*`/boolean content probes are compared with executable presence; the reporters remain diagnostic and the tool-specific acceptance tests own pass/fail behavior.
 
 ## Archive checksum check
 

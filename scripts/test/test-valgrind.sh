@@ -203,6 +203,11 @@ require_executable() {
     fi
 }
 
+if ! feature_enabled "features.memcheck"; then
+    echo "required Valgrind Memcheck capability is not declared in info.txt" >&2
+    exit 1
+fi
+
 require_executable "$root/bin/valgrind"
 "$root/bin/valgrind" --version
 if feature_enabled "contents.vgdb"; then

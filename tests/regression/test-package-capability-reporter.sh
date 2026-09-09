@@ -11,8 +11,8 @@ make_fixture() {
     local root="$1"
     local platform_triple="$2"
     local gcc_triple="${3:-}"
-    local driver_entry="${4:-true}"
-    local binutils_entry="${5:-false}"
+    local driver_entry="${4:-}"
+    local binutils_entry="${5:-}"
 
     mkdir -p "$root/bin"
     {
@@ -25,116 +25,111 @@ make_fixture() {
         fi
         printf 'features.c=false\n'
         printf 'features.cpp=false\n'
-        printf 'entry.cpp=false\n'
-        printf 'entry.gcov=false\n'
         printf 'contents.lto_dump=false\n'
-        printf 'entry.target_gcc=%s\n' "$driver_entry"
-        printf 'entry.target_ar=%s\n' "$binutils_entry"
+        [ -z "$driver_entry" ] || printf 'entry.target_gcc=%s\n' "$driver_entry"
+        [ -z "$binutils_entry" ] || printf 'entry.target_ar=%s\n' "$binutils_entry"
     } > "$root/info.txt"
 }
 
 make_exe() {
     local path="$1"
     mkdir -p "$(dirname "$path")"
-    cat > "$path" <<'EOF'
+    cat > "$path" <<'SCRIPT'
 #!/usr/bin/env sh
 exit 0
-EOF
+SCRIPT
     chmod 0755 "$path"
 }
 
-assert_no_declared_missing_warning() {
+assert_no_warning() {
     local output="$1"
-    if grep -Fq 'entry.target_gcc=true  WARNING: declared true but executable missing' "$output"; then
-        echo "unexpected target-prefixed compiler-driver warning" >&2
+    if grep -Fq 'WARNING:' "$output"; then
+        echo "unexpected capability-reporter warning" >&2
         cat "$output" >&2
         return 1
     fi
 }
 
-assert_required_driver_warning() {
-    local output="$1"
-    grep -Fq 'declared:entry.target_gcc=true  WARNING: declared true but executable missing' "$output"
-}
-
-# GCC-specific canonical target overrides the generic package/platform triple.
+# GCC-specific canonical target overrides the generic package/platform triple,
+# and entry.* is an exact package-relative path rather than a boolean flag.
 fixture="$tmp/gcc-canonical"
-make_fixture "$fixture" x86_64-linux-gnu x86_64-pc-linux-gnu true
+make_fixture "$fixture" x86_64-linux-gnu x86_64-pc-linux-gnu \
+    bin/x86_64-pc-linux-gnu-gcc
 make_exe "$fixture/bin/x86_64-pc-linux-gnu-gcc"
 bash "$reporter" "$fixture" gcc > "$tmp/canonical.out"
 grep -Fq '[target-prefixed compiler driver probes: x86_64-pc-linux-gnu]' "$tmp/canonical.out"
 grep -Fq 'present  x86_64-pc-linux-gnu-gcc' "$tmp/canonical.out"
-grep -Fq 'missing  x86_64-pc-linux-gnu-g++' "$tmp/canonical.out"
-assert_no_declared_missing_warning "$tmp/canonical.out"
+grep -Fq 'declared:entry.target_gcc=bin/x86_64-pc-linux-gnu-gcc' "$tmp/canonical.out"
+assert_no_warning "$tmp/canonical.out"
 
-# The public entry means the canonical target-prefixed GCC driver itself must exist.
+# A declared public entry whose executable is absent must be reported.
 rm -f "$fixture/bin/x86_64-pc-linux-gnu-gcc"
 bash "$reporter" "$fixture" gcc > "$tmp/missing-required.out"
-assert_required_driver_warning "$tmp/missing-required.out"
+grep -Fq 'declared:entry.target_gcc=bin/x86_64-pc-linux-gnu-gcc  WARNING: entry declared but executable missing' \
+    "$tmp/missing-required.out"
+
+# A path-valued entry must not be treated as truthy metadata: if the named
+# executable exists but info.txt points the entry at another package path, the
+# reporter must expose the semantic mismatch.
+wrong_entry="$tmp/wrong-entry"
+make_fixture "$wrong_entry" x86_64-linux-gnu x86_64-pc-linux-gnu bin/not-the-driver
+make_exe "$wrong_entry/bin/x86_64-pc-linux-gnu-gcc"
+bash "$reporter" "$wrong_entry" gcc > "$tmp/wrong-entry.out"
+grep -Fq 'WARNING: entry path mismatch (actual:bin/x86_64-pc-linux-gnu-gcc)' "$tmp/wrong-entry.out"
 
 # Without producer-specific GCC metadata, preserve the generic target-triple fallback.
 fallback="$tmp/fallback"
-make_fixture "$fallback" aarch64-linux-gnu "" true
+make_fixture "$fallback" aarch64-linux-gnu "" bin/aarch64-linux-gnu-gcc
 make_exe "$fallback/bin/aarch64-linux-gnu-gcc"
 bash "$reporter" "$fallback" gcc > "$tmp/fallback.out"
 grep -Fq '[target-prefixed compiler driver probes: aarch64-linux-gnu]' "$tmp/fallback.out"
 grep -Fq 'present  aarch64-linux-gnu-gcc' "$tmp/fallback.out"
-assert_no_declared_missing_warning "$tmp/fallback.out"
+assert_no_warning "$tmp/fallback.out"
 
 # A deliberately wrong GCC canonical triple must not be rescued by a generic-triple executable.
 mutated="$tmp/mutated"
-make_fixture "$mutated" x86_64-linux-gnu wrong-vendor-linux-gnu true
+make_fixture "$mutated" x86_64-linux-gnu wrong-vendor-linux-gnu bin/wrong-vendor-linux-gnu-gcc
 make_exe "$mutated/bin/x86_64-linux-gnu-gcc"
 bash "$reporter" "$mutated" gcc > "$tmp/mutated.out"
 grep -Fq '[target-prefixed compiler driver probes: wrong-vendor-linux-gnu]' "$tmp/mutated.out"
-assert_required_driver_warning "$tmp/mutated.out"
+grep -Fq 'declared:entry.target_gcc=bin/wrong-vendor-linux-gnu-gcc  WARNING: entry declared but executable missing' \
+    "$tmp/mutated.out"
 
-# Same metadata contract applies to the target-prefixed Binutils family:
-# the producer boolean is anchored by canonical target-prefixed ar, while
-# sibling tools remain inventory.
+# The same path-valued metadata contract applies to target-prefixed Binutils.
 binutils_fixture="$tmp/binutils-canonical"
-make_fixture "$binutils_fixture" x86_64-linux-gnu x86_64-pc-linux-gnu false true
+make_fixture "$binutils_fixture" x86_64-linux-gnu x86_64-pc-linux-gnu "" \
+    bin/x86_64-pc-linux-gnu-ar
 make_exe "$binutils_fixture/bin/x86_64-pc-linux-gnu-ar"
 bash "$reporter" "$binutils_fixture" gcc > "$tmp/binutils-canonical.out"
 grep -Fq 'present  x86_64-pc-linux-gnu-ar' "$tmp/binutils-canonical.out"
-if grep -Fq 'entry.target_ar=true  WARNING: declared true but executable missing' "$tmp/binutils-canonical.out"; then
-    echo "unexpected target-prefixed Binutils sibling warning" >&2
-    cat "$tmp/binutils-canonical.out" >&2
-    exit 1
-fi
+assert_no_warning "$tmp/binutils-canonical.out"
 rm -f "$binutils_fixture/bin/x86_64-pc-linux-gnu-ar"
 bash "$reporter" "$binutils_fixture" gcc > "$tmp/binutils-missing-required.out"
-grep -Fq 'declared:entry.target_ar=true  WARNING: declared true but executable missing' "$tmp/binutils-missing-required.out"
+grep -Fq 'declared:entry.target_ar=bin/x86_64-pc-linux-gnu-ar  WARNING: entry declared but executable missing' \
+    "$tmp/binutils-missing-required.out"
 
-# A cross package whose public tool naming is target-prefixed must not emit
-# false missing warnings for unprefixed tools that are deliberately absent.
+# A cross package whose public tool naming is target-prefixed must not probe
+# deliberately absent unprefixed tools.
 cross="$tmp/cross-target-prefixed"
-make_fixture "$cross" x86_64-w64-mingw32 x86_64-w64-mingw32 true true
+make_fixture "$cross" x86_64-w64-mingw32 x86_64-w64-mingw32 \
+    bin/x86_64-w64-mingw32-gcc bin/x86_64-w64-mingw32-ar
 printf 'config.tool_naming=target-prefixed\n' >> "$cross/info.txt"
 sed -i \
     -e 's/^features.c=false$/features.c=true/' \
     -e 's/^features.cpp=false$/features.cpp=true/' \
-    -e 's/^entry.cpp=false$/entry.cpp=true/' \
-    -e 's/^entry.gcov=false$/entry.gcov=true/' \
     -e 's/^contents.lto_dump=false$/contents.lto_dump=true/' \
     "$cross/info.txt"
 for exe in gcc g++ cpp gcov lto-dump ar as ld ranlib strip objdump readelf; do
     make_exe "$cross/bin/x86_64-w64-mingw32-$exe"
 done
 bash "$reporter" "$cross" gcc > "$tmp/cross.out"
-if grep -Fq 'WARNING:' "$tmp/cross.out"; then
-    echo 'target-prefixed GCC package produced a false missing-tool warning' >&2
-    cat "$tmp/cross.out" >&2
-    exit 1
-fi
+assert_no_warning "$tmp/cross.out"
 if grep -Eq '^  missing  (gcc|g\+\+|cpp|gcov|lto-dump|as|ld|ar|ranlib|strip|objdump|readelf)[[:space:]]' "$tmp/cross.out"; then
     echo 'target-prefixed GCC package was probed for deliberately absent unprefixed tools' >&2
     cat "$tmp/cross.out" >&2
     exit 1
 fi
 grep -Fq 'present  x86_64-w64-mingw32-lto-dump' "$tmp/cross.out"
-
-
 
 # Metadata scope is repository-wide: executable/payload presence must not be
 # promoted into behavioral features unless CUP deliberately qualifies it.
@@ -176,9 +171,9 @@ grep -F 'config.plugins=true' "$ld_builder" >/dev/null
 grep -F 'info_entry_if_present entry.ld_bfd' "$ld_builder" >/dev/null
 grep -F 'info_required_entry entry.target_ld' "$ld_builder" >/dev/null
 
-for old_key in features.debuginfod features.source_highlight; do
+for old_key in features.debuginfod features.source_highlight features.gdbserver; do
     ! grep -F "$old_key=" "$gdb_builder" >/dev/null || {
-        echo "GDB still promotes optional integration inventory into feature metadata: $old_key" >&2
+        echo "GDB still promotes inventory/integration state into feature metadata: $old_key" >&2
         exit 1
     }
 done
@@ -188,6 +183,14 @@ for key in config.debuginfod config.source_highlight contents.uses_debuginfod co
         exit 1
     }
 done
+grep -F 'info_required_entry entry.gdbserver' "$gdb_builder" >/dev/null || {
+    echo 'GDB metadata lost gdbserver public-entry ownership' >&2
+    exit 1
+}
+grep -F 'features.remote_debugging=$has_gdbserver' "$gdb_builder" >/dev/null || {
+    echo 'GDB metadata lost remote-debugging behavioral ownership' >&2
+    exit 1
+}
 
 for old_key in \
     features.cachegrind features.callgrind features.massif features.helgrind \
@@ -204,5 +207,4 @@ grep -F 'contents.vgdb=$has_vgdb' "$valgrind_builder" >/dev/null
 grep -F 'config.gdbscripts_disabled=$VALGRIND_GDBSCRIPTS_DISABLED' "$valgrind_builder" >/dev/null
 
 printf 'PACKAGE_METADATA_SCOPE_POLICY=PASS\n'
-
 printf 'PACKAGE_CAPABILITY_REPORTER_TARGET_PREFIX_SEMANTICS=PASS\n'

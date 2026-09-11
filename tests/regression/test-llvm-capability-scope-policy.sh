@@ -24,7 +24,8 @@ reject() {
 }
 
 # Clang owns its deliberately built runtime capabilities, not arbitrary llvm-* feature promises.
-need "$BUILD" 'features.cxx_runtime_default=$cxx_runtime_default' 'C++ default metadata is not owned by explicit build state'
+need "$BUILD" 'config.cxx_runtime_default=$cxx_runtime_default' 'C++ default policy is not recorded as configuration metadata'
+reject "$BUILD" 'features.cxx_runtime_default=' 'C++ runtime default is still misclassified as a behavioral feature'
 need "$BUILD" 'CLANG_CXX_RUNTIME_DEFAULT=true' 'Windows packaged libc++ default is not owned by the driver-config writer'
 reject "$BUILD" 'features.llvm_ar=' 'llvm-ar presence is still promoted to a Clang feature'
 reject "$BUILD" 'features.llvm_ranlib=' 'llvm-ranlib presence is still promoted to a Clang feature'
@@ -48,6 +49,13 @@ need "$POSIX" 'clang_profile_runtime_probe "$root" A' 'profile runtime is not ex
 need "$POSIX" 'clang_ubsan_probe "$candidate" "$label"' 'UBSan is not exercised after relocation'
 need "$POSIX" 'clang_profile_runtime_probe "$candidate" "$label"' 'profile runtime is not exercised after relocation'
 need "$BUILD" 'requires.macos_sdk=true' 'macOS Clang SDK prerequisite is not explicit'
+reject "$BUILD" 'features.sanitizers=' 'Clang still carries a redundant aggregate sanitizer feature'
+need "$BUILD" '-DLLVM_ENABLE_LIBPFM=OFF' 'optional libpfm autodetection is not explicitly disabled'
+need "$BUILD" '-DLIBCXX_HERMETIC_STATIC_LIBRARY=ON' 'macOS static libc++ is not hermetic'
+need "$BUILD" '-DLIBCXXABI_HERMETIC_STATIC_LIBRARY=ON' 'macOS static libc++abi is not hermetic'
+need "$BUILD" '-DLIBUNWIND_HIDE_SYMBOLS=ON' 'macOS static libunwind does not hide symbols'
+need "$BUILD" '-DLIBCXX_INCLUDE_BENCHMARKS=OFF' 'libc++ benchmarks are still built without a CUP consumer'
+need "$BUILD" '-DLIBCXX_INSTALL_MODULES=OFF' 'unowned libc++ module payload is still installed'
 
 # Standalone LLD promises only the native link format; extra upstream frontends are inventory.
 need "$BUILD" 'lld_link_elf="$has_lld"' 'Linux native ELF capability ownership is missing'
@@ -77,6 +85,14 @@ need "$POSIX" 'textDocument/documentSymbol' 'POSIX clangd LSP oracle does not is
 need "$POSIX" 'clangd_lsp_probe "$root" A' 'clangd LSP oracle is not run at original root'
 need "$POSIX" 'clangd_lsp_probe "$reloc_c" C' 'clangd LSP oracle is not repeated after relocation'
 need "$WINDOWS" 'function Invoke-ClangdLspProbe' 'Windows clangd has no real LSP oracle'
+need "$BUILD" 'features.lsp=$has_clangd' 'clangd LSP behavior is not represented as a feature'
+need "$POSIX" 'info_bool features.lsp' 'POSIX clangd can silently skip the declared LSP capability'
+need "$WINDOWS" "'features.lsp'" 'Windows clangd can silently skip the declared LSP capability'
+need "$WINDOWS" 'ConvertTo-Json -InputObject $db -Depth 10' 'Windows clangd compile_commands array can collapse to an object'
+need "$WINDOWS" 'Failed to load compilation database|Failed to find compilation database|command clangd fallback' 'Windows clangd LSP does not reject compilation-database fallback'
+need "$BUILD" '-DCLANGD_BUILD_DEXP=OFF' 'clangd index-development utility is still built'
+need "$BUILD" '-DCLANGD_BUILD_XPC=OFF' 'clangd XPC transport is still built on Darwin'
+need "$BUILD" '-DCLANGD_TIDY_CHECKS=OFF' 'clangd still embeds clang-tidy checks outside the current CUP clangd contract'
 reject "$POSIX" '.cache/clangd/index' 'POSIX clangd still requires background-index cache internals'
 reject "$WINDOWS" 'background-index entries' 'Windows clangd still requires background-index cache internals'
 
@@ -98,6 +114,9 @@ need "$BUILD" 'requires.system_debugserver=true' 'macOS LLDB system-debugserver 
 need "$BUILD" 'info_required_entry entry.lldb_dap' 'deliberate LLDB DAP command is not a required public entry'
 need "$BUILD" 'info_required_entry entry.lldb_server' 'Linux/Windows deliberate LLDB server command is not a required public entry'
 need "$BUILD" 'contents.lldb_server=$has_lldb_server' 'LLDB server payload inventory is not recorded independently from capability/entry scope'
+need "$BUILD" 'contents.lldb_argdumper=$has_lldb_argdumper' 'LLDB private argdumper inventory is not recorded'
+need "$BUILD" 'prune_bin_except lldb lldb-dap lldb-argdumper' 'macOS LLDB does not retain the private argdumper required by normal run'
+need "$POSIX" 'require_executable "$root/bin/lldb-argdumper"' 'macOS LLDB product test does not require its private argdumper'
 reject "$BUILD" 'features.lldb_server=' 'LLDB still duplicates server presence as a behavioral capability'
 need "$BUILD" 'lldb_process_launch="$has_lldb"' 'macOS LLDB local process launch is still incorrectly disabled'
 need "$BUILD" 'lldb_dap_feature="$has_lldb_dap"' 'macOS LLDB DAP is still incorrectly disabled'

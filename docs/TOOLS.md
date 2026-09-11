@@ -203,7 +203,7 @@ libunwind + libc++abi + libc++
 compiler-rt sanitizers/profile runtime
 ```
 
-Bundled libc++ is an available package capability. It is not forced as the default C++ standard library on every host.
+Bundled libc++ is an available package capability. It is not forced as the default C++ standard library on every host. On macOS the static libc++/ABI/unwind build uses hidden/hermetic symbols so a package-owned static runtime can coexist with the Apple C++ runtime already present in system processes.
 
 On Linux, `clang++.cfg` adds only the package-relative library search path needed to use the bundled runtime explicitly. It does not add `-stdlib=libc++` globally.
 
@@ -212,6 +212,8 @@ On Linux, `clang++.cfg` adds only the package-relative library search path neede
 Windows Clang also carries the MinGW target sysroot and its package-relative driver configuration. macOS Clang keeps the Mach-O LLD frontend needed by its declared linker/LTO capability. Normal macOS native compilation uses the active Apple SDK; this external platform prerequisite is declared in `info.txt` rather than being mistaken for package payload.
 
 The Clang build also needs a small set of LLVM utility commands while constructing compiler runtimes. Useful utility binaries can remain in the final compiler package, but their presence is inventory/toolchain convenience rather than a separate `features.*` promise unless CUP deliberately promotes one later.
+
+The standalone Clang package does not enable the Clang static analyzer as an additional product surface; analyzer checks are owned by the `clang-tidy` package. Optional libpfm discovery is disabled for all LLVM-family builds so runner-installed performance-counter libraries cannot change package build identity.
 
 ### LLD
 
@@ -263,7 +265,7 @@ LLDB enables Python. The Python executable path is derived from the interpreter 
 
 If the LLDB installation does not already contain the generated Clang built-in headers it needs, the producer copies the single matching resource directory produced by that LLVM build. The path is derived from the selected build rather than assuming a fixed `lib/clang/<major>` directory.
 
-`lldb-vscode` is not a deliberate package command. `lldb-argdumper` is also excluded: upstream uses it for optional shell argument expansion, while CUP's LLDB contract covers normal local/DAP/remote process control and does not promote shell expansion to a separate product capability. Any installed Python-side companion is pruned with the executable so the final package has no dangling helper reference.
+`lldb-vscode` is not a deliberate package command. On macOS, `lldb-argdumper` is retained as a private runtime helper because native evidence shows that the normal LLDB `run` path uses it for argument expansion. It is not a public `entry.*` command. Linux and Windows do not retain it because their qualified normal launch paths do not require it. The installed Python-side companion is pruned on every platform because the packaged runtime does not consume that alias.
 
 ### clangd
 
@@ -273,7 +275,7 @@ The required public command is:
 clangd
 ```
 
-`clangd-indexer` may remain as optional upstream payload when the selected release installs it. CUP records that presence as package contents; it is not a separate public entry or `features.*` promise.
+`clangd-indexer` may remain as optional upstream payload when the selected release installs it. CUP records that presence as package contents; it is not a separate public entry or `features.*` promise. The package deliberately exposes and qualifies clangd's LSP behavior; development-only `dexp`, the Darwin XPC transport and embedded clang-tidy checks are not part of this package contract.
 
 Clangd embeds the Clang parser but still requires its matching built-in headers. The package therefore keeps the corresponding package-relative Clang resource directory and requires a representative built-in header such as `stddef.h` to be present.
 
@@ -289,7 +291,7 @@ The required public command is:
 clang-format
 ```
 
-The CUP package deliberately exposes `clang-format` itself. `git-clang-format` is not packaged: the upstream integration helper requires a separate Git runtime, while CUP's formatter package is self-contained and does not make Git a formatter dependency. This also avoids carrying Python solely for that optional integration helper.
+The CUP package deliberately exposes `clang-format` itself. `git-clang-format` is not packaged: the upstream integration helper requires a separate Git runtime, while CUP's formatter package is self-contained and does not make Git a formatter dependency. This also avoids carrying Python solely for that optional integration helper. Compiler builtin resource headers are removed as well because formatting does not consume the Clang resource directory.
 
 ### clang-tidy
 

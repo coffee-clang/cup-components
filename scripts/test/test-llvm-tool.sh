@@ -332,7 +332,7 @@ clang_macos_package_libcxx_probe() {
         echo "Clang macOS package does not declare its bundled C++ runtime" >&2
         return 1
     }
-    for lib in libc++.a libc++abi.a libunwind.a; do
+    for lib in libc++.a libunwind.a; do
         [ -f "$candidate/lib/$lib" ] || {
             echo "Clang macOS package-owned C++ runtime is missing $lib" >&2
             return 1
@@ -355,13 +355,26 @@ int main() {
 }
 CPP_LIBCXX
     mapfile -t sdk_args < <(macos_sdk_args)
-    env -i HOME="$clean_home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
+    if ! env -i HOME="$clean_home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
         "$candidate/bin/clang++" "${sdk_args[@]}" \
         -nostdinc++ -isystem "$candidate/include/c++/v1" -nostdlib++ \
         "$work/main.cpp" \
-        "$candidate/lib/libc++.a" "$candidate/lib/libc++abi.a" "$candidate/lib/libunwind.a" \
-        -o "$work/libcxx-test"
-    "$work/libcxx-test" | grep -Fx 42 >/dev/null
+        "$candidate/lib/libc++.a" "$candidate/lib/libunwind.a" \
+        -o "$work/libcxx-test" >"$work/link.log" 2>&1; then
+        echo "Clang macOS package-owned libc++ link failed at relocation $label" >&2
+        cat "$work/link.log" >&2
+        return 1
+    fi
+    if ! "$work/libcxx-test" >"$work/output.txt" 2>&1; then
+        echo "Clang macOS package-owned libc++ executable failed at relocation $label" >&2
+        cat "$work/output.txt" >&2
+        return 1
+    fi
+    if ! grep -Fx 42 "$work/output.txt" >/dev/null; then
+        echo "Clang macOS package-owned libc++ produced unexpected output at relocation $label" >&2
+        cat "$work/output.txt" >&2
+        return 1
+    fi
     if otool -L "$work/libcxx-test" | grep -E '(^|[[:space:]])(/usr/lib/|@rpath/)?libc\+\+\.1\.dylib' >/dev/null; then
         echo "Clang macOS bundled libc++ probe fell back to dynamic system libc++ at relocation $label" >&2
         otool -L "$work/libcxx-test" >&2
@@ -599,6 +612,16 @@ EOF_CLANGD_DB
     done
     kill -0 "$clangd_pid" 2>/dev/null && kill "$clangd_pid" 2>/dev/null || true
     wait "$clangd_pid" 2>/dev/null || true
+    if grep -E 'Failed to load compilation database|Failed to find compilation database|command clangd fallback' "$err" >/dev/null; then
+        echo "clangd LSP did not consume its compilation database at relocation $label" >&2
+        cat "$err" >&2
+        return 1
+    fi
+    grep -F 'Loaded compilation database from' "$err" >/dev/null || {
+        echo "clangd LSP did not report loading its compilation database at relocation $label" >&2
+        cat "$err" >&2
+        return 1
+    }
     printf 'CLANGD_LSP_%s=PASS\n' "$label"
 }
 
@@ -1261,7 +1284,7 @@ case "$LLVM_TOOL" in
     clang)
         for required_feature in \
             features.c features.cpp features.resource_dir features.lld_integration \
-            features.lto features.sanitizers; do
+            features.lto features.asan features.ubsan features.profile_runtime features.cxx_runtime; do
             info_bool "$required_feature" || {
                 echo "required Clang capability is not declared: $required_feature" >&2
                 exit 1
@@ -1416,16 +1439,27 @@ CPP_EOF
                     echo 'macOS LLDB must not retain lldb-server contents' >&2
                     exit 1
                 }
+                [ "$(info_value contents.lldb_argdumper)" = true ] || {
+                    echo 'macOS LLDB does not declare its private lldb-argdumper runtime helper' >&2
+                    exit 1
+                }
                 [ ! -e "$root/bin/lldb-server" ] && [ ! -L "$root/bin/lldb-server" ] || {
                     echo 'macOS LLDB package unexpectedly contains lldb-server' >&2
                     exit 1
                 }
+                require_executable "$root/bin/lldb-argdumper"
                 ;;
         esac
 
-        if [ -e "$root/bin/lldb-argdumper" ] || [ -L "$root/bin/lldb-argdumper" ]; then
-            echo 'LLDB package unexpectedly contains non-public lldb-argdumper' >&2
-            exit 1
+        if [[ "$(info_value platform.host)" != macos-* ]]; then
+            [ "$(info_value contents.lldb_argdumper)" = false ] || {
+                echo 'Linux LLDB unexpectedly declares lldb-argdumper contents' >&2
+                exit 1
+            }
+            [ ! -e "$root/bin/lldb-argdumper" ] && [ ! -L "$root/bin/lldb-argdumper" ] || {
+                echo 'Linux LLDB package unexpectedly contains lldb-argdumper' >&2
+                exit 1
+            }
         fi
         for forbidden_helper in analyze-cc analyze-c++ intercept-cc intercept-c++ ccc-analyzer c++-analyzer; do
             if [ -e "$root/libexec/$forbidden_helper" ] || [ -L "$root/libexec/$forbidden_helper" ]; then
@@ -1489,6 +1523,7 @@ C_EOF
         info_bool contents.clang_resources || { echo "clangd package does not declare package-owned Clang resources" >&2; exit 1; }
         info_bool features.resource_dir || { echo "clangd package does not declare resource-dir capability" >&2; exit 1; }
         info_bool features.check_compile_commands || { echo "clangd package does not declare compile-command consumption" >&2; exit 1; }
+        info_bool features.lsp || { echo "clangd package does not declare its LSP capability" >&2; exit 1; }
         for forbidden in \
             include/llvm \
             include/llvm-c \
@@ -1585,6 +1620,10 @@ EOF_JSON
             echo 'clang-format package retained git-clang-format despite the standalone formatter contract' >&2
             exit 1
         fi
+        [ ! -e "$root/lib/clang" ] && [ ! -L "$root/lib/clang" ] || {
+            echo 'clang-format package retained unused Clang resource headers' >&2
+            exit 1
+        }
         [ "$(info_value contents.python_runtime)" != packaged ] || {
             echo 'clang-format package retained Python solely for a removed Git helper' >&2
             exit 1

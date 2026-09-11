@@ -2,6 +2,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+BUILD_SCRIPT="${CUP_CLANG_BUILD_SCRIPT:-$REPO_ROOT/scripts/build/build-llvm-tool.sh}"
 TEST_SCRIPT="${CUP_CLANG_TEST_SCRIPT:-$REPO_ROOT/scripts/test/test-llvm-tool.sh}"
 
 TEST_TMP="$(mktemp -d)"
@@ -302,6 +303,15 @@ test_static_relocation_contract() {
     require_text "$TEST_SCRIPT" 'clang_macos_relocation_probe "$reloc_c" C'
     require_text "$TEST_SCRIPT" 'CLANG_MACOS_RELOCATION_A_TO_B_TO_C=PASS'
     require_text "$TEST_SCRIPT" 'CLANG_MACOS_REAL_SPACES=PASS'
+    require_text "$BUILD_SCRIPT" '-DLIBCXX_HERMETIC_STATIC_LIBRARY=ON'
+    require_text "$BUILD_SCRIPT" '-DLIBCXXABI_HERMETIC_STATIC_LIBRARY=ON'
+    require_text "$BUILD_SCRIPT" '-DLIBUNWIND_HIDE_SYMBOLS=ON'
+    require_text "$BUILD_SCRIPT" '-DLIBCXX_INCLUDE_BENCHMARKS=OFF'
+    require_text "$BUILD_SCRIPT" '-DLIBCXX_INSTALL_MODULES=OFF'
+    require_text "$TEST_SCRIPT" '"$candidate/lib/libc++.a" "$candidate/lib/libunwind.a"'
+    if grep -F '"$candidate/lib/libc++.a" "$candidate/lib/libc++abi.a" "$candidate/lib/libunwind.a"' "$TEST_SCRIPT" >/dev/null; then
+        fail 'macOS libc++ probe redundantly links libc++abi although libc++.a owns the static ABI'
+    fi
     require_text "$TEST_SCRIPT" 'MACOS_DEPENDENCY_FLOOR_NOT_ABOVE_15_0=PASS'
     require_text "$TEST_SCRIPT" 'MACOS_CODESIGN_VERIFY=PASS'
 }

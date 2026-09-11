@@ -173,7 +173,10 @@ test_static_contract() {
     require_text "$BUILD_SCRIPT" 'contents.includes_lld=true'
     require_text "$BUILD_SCRIPT" 'CLANG_CXX_RUNTIME_DEFAULT=false'
     require_text "$BUILD_SCRIPT" 'cxx_runtime_default="$CLANG_CXX_RUNTIME_DEFAULT"'
-    require_text "$BUILD_SCRIPT" 'features.cxx_runtime_default=$cxx_runtime_default'
+    require_text "$BUILD_SCRIPT" 'config.cxx_runtime_default=$cxx_runtime_default'
+    if grep -F 'features.sanitizers=' "$BUILD_SCRIPT" >/dev/null; then
+        fail 'redundant aggregate sanitizer feature returned'
+    fi
 }
 
 test_mutations() {

@@ -111,7 +111,7 @@ LLD performs a real native-format link for the package host: ELF on Linux, PE/CO
 
 LLDB checks include:
 
-- required `lldb` and `lldb-dap` public commands, plus `lldb-server` on Linux/Windows; `lldb-argdumper` and unrelated LLDB development/protocol utilities must be absent;
+- required `lldb` and `lldb-dap` public commands, plus `lldb-server` on Linux/Windows; macOS additionally requires the private `lldb-argdumper` helper used by the normal `run` path, while Linux/Windows reject it as unused package payload;
 - package-owned Python interpreter/module identity and runtime-version provenance;
 - isolated package-owned Python search paths on Windows;
 - Clang resource-directory ownership;
@@ -122,9 +122,9 @@ LLDB checks include:
 - on macOS, the declared system `debugserver` prerequisite is exercised by real local process launch/DAP rather than by a separate filesystem lookup proxy, while remote debugging remains undeclared;
 - POSIX relocation with previous roots unavailable; the final path contains real spaces and repeats the local process-launch oracle after relocation.
 
-clangd checks the language-server entry, matching Clang resource headers, compile-command consumption and a real bounded LSP initialize/document-symbol/shutdown session. `clangd-indexer` remains optional payload when upstream installs it; background indexing is not a separate CUP capability claim.
+clangd checks the language-server entry, matching Clang resource headers, compile-command consumption and a real bounded LSP initialize/document-symbol/shutdown session. The LSP test requires a valid compilation database to be loaded and rejects fallback parsing. `clangd-indexer` remains optional payload when upstream installs it; background indexing is not a separate CUP capability claim.
 
-clang-format checks formatting behavior, style-file discovery, dry-run failure semantics and relocation; `git-clang-format` is deliberately absent from the standalone self-contained package.
+clang-format checks formatting behavior, style-file discovery, dry-run failure semantics and relocation; `git-clang-format`, Python solely used by that helper and compiler builtin resource headers are deliberately absent from the standalone self-contained package.
 
 clang-tidy checks the main analyzer command plus real `run-clang-tidy` and `clang-tidy-diff` operations, package-owned Python identity and relocation with previous roots unavailable.
 

@@ -276,6 +276,18 @@ done
 
 
 
+# clang-format does not consume Clang compiler resource headers. Prove the
+# common install-tree side effect is removed without affecting its executable.
+prefix="$TMP/clang-format-resource-noise"
+mkdir -p "$prefix/bin" "$prefix/lib/clang/23/include"
+make_exe "$prefix/bin/clang-format"
+printf 'stddef\n' > "$prefix/lib/clang/23/include/stddef.h"
+PREFIX="$prefix" TOOL=clang-format HOST_PLATFORM=linux-x64
+prune_llvm_development_payload
+validate_llvm_package_layout "$prefix"
+[ -x "$prefix/bin/clang-format" ] || fail 'clang-format executable was pruned'
+[ ! -e "$prefix/lib/clang" ] || fail 'clang-format retained unused Clang resource headers'
+
 make_lldb_resource_tree() {
     local prefix="$1"
     mkdir -p "$prefix/lib/clang/23/include"
@@ -291,8 +303,7 @@ make_lldb_argdumper_companion() {
 
 # LLDB packages exercise the same final pruning/validation policy on all native
 # platform families. Linux/Windows retain the deliberate remote server; macOS
-# does not. The shell-expansion argdumper and monorepo analyzer payload are
-# never deliberate LLDB roots.
+# instead keeps the private argdumper required by its normal `run` path.
 prefix="$TMP/lldb-linux"
 mkdir -p "$prefix/bin" "$prefix/lib"
 for exe in lldb lldb-dap lldb-server lldb-argdumper; do make_exe "$prefix/bin/$exe"; done
@@ -327,7 +338,7 @@ for exe in lldb lldb-dap; do
     [ -x "$prefix/bin/$exe" ] || fail "macOS LLDB deliberate root was removed: $exe"
 done
 [ ! -e "$prefix/bin/lldb-server" ] || fail 'macOS LLDB retained out-of-scope lldb-server'
-[ ! -e "$prefix/bin/lldb-argdumper" ] || fail 'macOS LLDB retained lldb-argdumper'
+[ -x "$prefix/bin/lldb-argdumper" ] || fail 'macOS LLDB lost required private lldb-argdumper'
 [ ! -e "$prefix/lib/python3.12/site-packages/lldb/lldb-argdumper" ] ||
     fail 'macOS LLDB retained Python-side lldb-argdumper companion'
 assert_noise_removed "$prefix"

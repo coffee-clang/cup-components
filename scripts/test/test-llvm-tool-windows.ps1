@@ -523,7 +523,7 @@ int main(void) { return cup_lsp_value() == 42 ? 0 : 1; }
     $db = @(
         @{ directory = $project; arguments = @('clang', '-std=c11', '-c', $main); file = $main }
     )
-    $db | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $project 'compile_commands.json')
+    ConvertTo-Json -InputObject $db -Depth 10 | Set-Content (Join-Path $project 'compile_commands.json')
     $mainUri = ([Uri]$main).AbsoluteUri
     $rootUri = ([Uri]$project).AbsoluteUri
     $process = Start-FramedProcess -FilePath "$PackageRoot\bin\clangd.exe"
@@ -544,6 +544,14 @@ int main(void) { return cup_lsp_value() == 42 ? 0 : 1; }
         [void](Wait-FramedJson $process 'clangd shutdown response' { param($m) $m.id -eq 3 })
         Send-FramedJson $process @{ jsonrpc='2.0'; method='exit'; params=$null }
         $process.StandardInput.Close()
+        if (-not $process.WaitForExit(5000)) { throw "clangd LSP did not exit at relocation $Label" }
+        $stderrText = $process.StandardError.ReadToEnd()
+        if ($stderrText -match 'Failed to load compilation database|Failed to find compilation database|command clangd fallback') {
+            throw "clangd LSP did not consume its compilation database at relocation $Label`n$stderrText"
+        }
+        if ($stderrText -notmatch 'Loaded compilation database from') {
+            throw "clangd LSP did not report loading its compilation database at relocation $Label`n$stderrText"
+        }
         Write-Host "CLANGD_LSP_$Label=PASS"
     } finally { Stop-TestProcess $process }
 }
@@ -767,7 +775,10 @@ switch ($Tool) {
             'features.resource_dir',
             'features.lld_integration',
             'features.lto',
-            'features.sanitizers',
+            'features.asan',
+            'features.ubsan',
+            'features.profile_runtime',
+            'features.cxx_runtime',
             'features.sysroot'
         )) {
             if (-not (Test-InfoBool $requiredFeature)) {
@@ -828,8 +839,8 @@ switch ($Tool) {
             throw 'required Clang LTO/LLD integration is not declared; LTO test cannot run'
         }
 
-        if (-not (Test-InfoBool 'features.cxx_runtime_default')) {
-            throw 'Windows Clang package does not declare its configured bundled libc++ default'
+        if ((Get-InfoValue 'config.cxx_runtime_default') -ne 'true') {
+            throw 'Windows Clang package does not record its configured bundled libc++ default'
         }
         Invoke-ClangAsanProbe -PackageRoot $root -Label 'A'
         Invoke-ClangUbsanProbe -PackageRoot $root -Label 'A'
@@ -861,6 +872,9 @@ switch ($Tool) {
             if (-not (Test-Path (Join-Path "$root\bin" $requiredEntry))) {
                 throw "Windows LLDB required public command is missing: $requiredEntry"
             }
+        }
+        if ((Get-InfoValue 'contents.lldb_argdumper') -ne 'false') {
+            throw 'Windows LLDB unexpectedly declares lldb-argdumper contents'
         }
         if (Test-Path "$root\bin\lldb-argdumper.exe") {
             throw 'Windows LLDB package unexpectedly contains non-public lldb-argdumper.exe'
@@ -926,7 +940,7 @@ int main(void) {
     }
 
     'clangd' {
-        foreach ($requiredFeature in @('features.resource_dir', 'features.check_compile_commands')) {
+        foreach ($requiredFeature in @('features.resource_dir', 'features.check_compile_commands', 'features.lsp')) {
             if (-not (Test-InfoBool $requiredFeature)) {
                 throw "required clangd capability is not declared: $requiredFeature"
             }
@@ -972,6 +986,9 @@ int main(void) {
         }
         if ((Get-InfoValue 'contents.python_runtime') -eq 'packaged') {
             throw 'clang-format retained Python solely for a removed Git helper'
+        }
+        if (Test-Path (Join-Path $root 'lib\clang')) {
+            throw 'clang-format retained unused Clang resource headers'
         }
         foreach ($forbidden in @('include', 'share', 'libexec')) {
             if (Test-Path (Join-Path $root $forbidden)) { throw "clang-format retained non-runtime payload: $forbidden" }

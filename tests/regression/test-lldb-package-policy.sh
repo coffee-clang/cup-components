@@ -45,15 +45,17 @@ need "$BUILD" '-DLLDB_TOOL_DARWIN_DEBUG_BUILD=OFF' 'macOS external Terminal.app 
 need "$BUILD" '-DLLDB_ENABLE_DYNAMIC_SCRIPTINTERPRETERS=ON' 'macOS Python dynamic-interpreter policy is not explicit'
 need "$BUILD" '-DLLDB_ENABLE_DYNAMIC_SCRIPTINTERPRETERS=OFF' 'non-Darwin dynamic-interpreter policy is not explicit'
 need "$BUILD" '-DLLDB_USE_SYSTEM_DEBUGSERVER=ON' 'macOS system-debugserver build policy is missing'
+need "$BUILD" '-DCLANG_ENABLE_STATIC_ANALYZER=OFF' 'LLDB still builds the unrelated Clang static analyzer'
 
-# Linux final package seed carries only deliberate LLDB roots/data. The optional
-# shell-expansion argdumper is deliberately excluded rather than tested into scope.
+# Linux final package seed carries only deliberate LLDB roots/data. Darwin keeps
+# lldb-argdumper as a private runtime helper because the native normal `run` path
+# requires it; Linux/Windows do not promote or retain it.
 need "$BUILD" 'llvm_copy_path_into_seed bin/lldb' 'Linux seed lost lldb'
 need "$BUILD" 'llvm_copy_path_into_seed bin/lldb-dap' 'Linux seed lost lldb-dap'
 need "$BUILD" 'llvm_copy_path_into_seed bin/lldb-server' 'Linux seed lost lldb-server'
 reject "$BUILD" 'llvm_copy_path_into_seed bin/lldb-argdumper' 'Linux seed still carries lldb-argdumper'
 need "$BUILD" 'rm -f "$python_packages_dir/lldb-argdumper"' 'Python-side argdumper companion is not pruned'
-reject "$POSIX" 'require_executable "$root/bin/lldb-argdumper"' 'POSIX process launch still requires lldb-argdumper'
+need "$POSIX" 'require_executable "$root/bin/lldb-argdumper"' 'macOS process launch prerequisite does not require private lldb-argdumper'
 reject "$WINDOWS" 'LLDB process-launch capability is missing lldb-argdumper.exe' 'Windows process launch still requires lldb-argdumper'
 
 # Final package layout is checked after all payload mutations and after the Linux
@@ -61,7 +63,8 @@ reject "$WINDOWS" 'LLDB process-launch capability is missing lldb-argdumper.exe'
 need "$BUILD" 'prepare_lldb_package_seed' 'LLDB package seed owner is missing'
 need "$BUILD" 'validate_llvm_package_layout "$PACKAGE_PREFIX"' 'final package layout is not validated'
 need "$BUILD" 'macOS LLDB package retained lldb-server outside its declared remote-debugging scope' 'macOS lldb-server exclusion is not validated'
-need "$BUILD" 'LLDB package retained non-public lldb-argdumper shell-expansion helper' 'argdumper final-package exclusion is not validated'
+need "$BUILD" 'macOS LLDB package is missing its private lldb-argdumper runtime helper' 'macOS argdumper requirement is not validated'
+need "$BUILD" 'Linux/Windows LLDB package retained unused lldb-argdumper helper' 'non-Darwin argdumper exclusion is not validated'
 
 # Metadata separates payload/public entry/behavior. There is no redundant
 # features.lldb_server alias; remote debugging is the real behavioral claim.
@@ -91,7 +94,8 @@ need "$POSIX" 'for required_feature in' 'POSIX LLDB required feature contract is
 need "$POSIX" 'features.python features.target_create features.breakpoints' 'POSIX LLDB core required features are not asserted'
 need "$POSIX" 'info_bool features.remote_debugging || {' 'Linux LLDB remote capability can still be silently skipped'
 need "$POSIX" 'macOS LLDB must not declare package-owned remote debugging' 'macOS LLDB negative remote contract is not asserted'
-need "$POSIX" 'LLDB package unexpectedly contains non-public lldb-argdumper' 'POSIX published-package argdumper exclusion is not asserted'
+need "$POSIX" 'macOS LLDB does not declare its private lldb-argdumper runtime helper' 'macOS argdumper contents are not fail-closed'
+need "$POSIX" 'Linux LLDB package unexpectedly contains lldb-argdumper' 'Linux argdumper exclusion is not asserted'
 need "$WINDOWS" 'foreach ($requiredFeature in @(' 'Windows LLDB required feature contract is not fail-closed'
 need "$WINDOWS" "'features.remote_debugging'" 'Windows LLDB remote feature is not mandatory in product qualification'
 need "$WINDOWS" 'Windows LLDB package unexpectedly contains non-public lldb-argdumper.exe' 'Windows published-package argdumper exclusion is not asserted'

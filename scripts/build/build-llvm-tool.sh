@@ -123,7 +123,8 @@ llvm_common_cmake_args() {
         -DLLVM_BUILD_DOCS=OFF \
         -DLLVM_BUILD_UTILS=OFF \
         -DLLVM_ENABLE_BINDINGS=OFF \
-        -DLLVM_ENABLE_ASSERTIONS=OFF
+        -DLLVM_ENABLE_ASSERTIONS=OFF \
+        -DLLVM_ENABLE_LIBPFM=OFF
 
     # Only the Clang package deliberately owns LLVM command-line tools such as
     # llvm-ar/llvm-nm/llvm-objdump. The other standalone packages use LLVM
@@ -566,8 +567,14 @@ llvm_runtime_files_present() {
 }
 
 llvm_cxx_runtime_files_present() {
-    metadata_bool_for_files "$PREFIX" \
-        'libc++*' 'libcxx*' 'libc++abi*' 'libcxxabi*' 'libunwind*'
+    [ -d "$PREFIX/include/c++/v1" ] || { printf '%s\n' false; return 0; }
+    [ -f "$PREFIX/lib/libc++.a" ] || { printf '%s\n' false; return 0; }
+    [ -f "$PREFIX/lib/libunwind.a" ] || { printf '%s\n' false; return 0; }
+    if is_windows_platform "$HOST_PLATFORM" && [ ! -f "$PREFIX/bin/libc++.dll" ]; then
+        printf '%s\n' false
+        return 0
+    fi
+    printf '%s\n' true
 }
 
 PREFIX="$CUP_STAGE_DIR/$(package_base_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
@@ -741,14 +748,15 @@ prune_llvm_package_bins() {
             ;;
         lldb)
             if is_macos_platform "$HOST_PLATFORM"; then
-                prune_bin_except lldb lldb-dap
+                # Darwin's normal LLDB `run` path uses lldb-argdumper for
+                # argument expansion. Keep it as a private runtime helper; it is
+                # not a separate public CUP command.
+                prune_bin_except lldb lldb-dap lldb-argdumper
             else
                 prune_bin_except lldb lldb-server lldb-dap
             fi
-            # Shell-argument expansion is not a separate CUP capability. Upstream
-            # may install a Python-side lldb-argdumper companion, so remove it
-            # together with the non-public executable instead of leaving a
-            # dangling package reference.
+            # The Python-side companion is not used by the packaged runtime.
+            # Remove it rather than exposing a second helper path.
             local python_packages_dir
             for python_packages_dir in \
                 "$PREFIX"/lib/python*/site-packages/lldb \
@@ -1031,6 +1039,12 @@ prune_llvm_development_payload() {
         "$PREFIX/lib/cmake" \
         "$PREFIX/lib64/cmake"
 
+    if [ "$TOOL" = clang-format ]; then
+        # clang-format does not consume compiler builtin headers. They are an
+        # install-tree side effect of building the Clang project.
+        rm -rf "$PREFIX/lib/clang"
+    fi
+
     case "$TOOL" in
         lldb|clangd|clang-format|clang-tidy)
             # The monorepo install also contributes clang-tidy development
@@ -1164,11 +1178,13 @@ validate_llvm_package_layout() {
                 if prefix_executable_exists "$package_root" lldb-server; then
                     die "macOS LLDB package retained lldb-server outside its declared remote-debugging scope"
                 fi
+                prefix_executable_exists "$package_root" lldb-argdumper ||
+                    die "macOS LLDB package is missing its private lldb-argdumper runtime helper"
             else
                 prefix_executable_exists "$package_root" lldb-server || die "LLDB package is missing bin/lldb-server"
-            fi
-            if prefix_executable_exists "$package_root" lldb-argdumper; then
-                die "LLDB package retained non-public lldb-argdumper shell-expansion helper"
+                if prefix_executable_exists "$package_root" lldb-argdumper; then
+                    die "Linux/Windows LLDB package retained unused lldb-argdumper helper"
+                fi
             fi
             for forbidden in analyze-cc analyze-c++ intercept-cc intercept-c++ ccc-analyzer c++-analyzer; do
                 while IFS= read -r candidate; do
@@ -1218,6 +1234,8 @@ validate_llvm_package_layout() {
             prefix_executable_exists "$package_root" clang-format || die "clang-format package is missing bin/clang-format"
             [ ! -e "$package_root/bin/git-clang-format" ] && [ ! -L "$package_root/bin/git-clang-format" ] ||
                 die "clang-format package retained git-clang-format with an external Git runtime dependency"
+            [ ! -e "$package_root/lib/clang" ] && [ ! -L "$package_root/lib/clang" ] ||
+                die "clang-format package retained unused Clang resource headers"
             for forbidden in include share libexec; do
                 [ ! -e "$package_root/$forbidden" ] && [ ! -L "$package_root/$forbidden" ] ||
                     die "clang-format package retained unexpected top-level payload: $forbidden"
@@ -1617,6 +1635,8 @@ build_clang_cxx_runtimes() {
         -DLIBCXX_ENABLE_SHARED=OFF
         -DLIBCXX_ENABLE_STATIC=ON
         -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON
+        -DLIBCXX_INCLUDE_BENCHMARKS=OFF
+        -DLIBCXX_INSTALL_MODULES=OFF
         -DLIBCXX_USE_COMPILER_RT=ON
         "-DCMAKE_C_COMPILER=$runtime_cc"
         "-DCMAKE_CXX_COMPILER=$runtime_cxx"
@@ -1625,6 +1645,14 @@ build_clang_cxx_runtimes() {
     while IFS= read -r arg; do
         [ -n "$arg" ] && cmake_cxx_args+=("$arg")
     done < <(llvm_windows_cxx_runtime_cmake_args)
+
+    if is_macos_platform "$HOST_PLATFORM"; then
+        cmake_cxx_args+=(
+            -DLIBCXX_HERMETIC_STATIC_LIBRARY=ON
+            -DLIBCXXABI_HERMETIC_STATIC_LIBRARY=ON
+            -DLIBUNWIND_HIDE_SYMBOLS=ON
+        )
+    fi
 
     if is_windows_platform "$HOST_PLATFORM"; then
         cmake_cxx_args+=(
@@ -1650,7 +1678,7 @@ build_clang_cxx_runtimes() {
 
     log "selected LLVM C++ runtimes CMake cache entries:"
     if [ -f "$cxx_build_dir/CMakeCache.txt" ]; then
-        llvm_dump_cmake_cache_entries "$cxx_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|LLVM_DEFAULT_TARGET_TRIPLE|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_C_COMPILER_TARGET|CMAKE_CXX_COMPILER_TARGET|CMAKE_SYSTEM_NAME|CMAKE_SYSTEM_PROCESSOR|CMAKE_SYSROOT|CMAKE_PREFIX_PATH|CMAKE_FIND_ROOT_PATH|CMAKE_TRY_COMPILE_TARGET_TYPE|CMAKE_C_FLAGS|CMAKE_CXX_FLAGS|CMAKE_EXE_LINKER_FLAGS|CMAKE_SHARED_LINKER_FLAGS|CMAKE_LINKER|MINGW|LLVM_ENABLE_LLD|LIBUNWIND_ENABLE_SHARED|LIBUNWIND_ENABLE_STATIC|LIBUNWIND_USE_COMPILER_RT|LIBUNWIND_HAS_C_LIB|LIBUNWIND_HAS_DL_LIB|LIBUNWIND_HAS_PTHREAD_LIB|LIBCXXABI_ENABLE_SHARED|LIBCXXABI_ENABLE_STATIC|LIBCXXABI_USE_LLVM_UNWINDER|LIBCXXABI_USE_COMPILER_RT|LIBCXX_ENABLE_SHARED|LIBCXX_ENABLE_STATIC|LIBCXX_ENABLE_STATIC_ABI_LIBRARY|LIBCXX_USE_COMPILER_RT):'
+        llvm_dump_cmake_cache_entries "$cxx_build_dir/CMakeCache.txt" '^(LLVM_ENABLE_RUNTIMES|LLVM_DEFAULT_TARGET_TRIPLE|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_C_COMPILER_TARGET|CMAKE_CXX_COMPILER_TARGET|CMAKE_SYSTEM_NAME|CMAKE_SYSTEM_PROCESSOR|CMAKE_SYSROOT|CMAKE_PREFIX_PATH|CMAKE_FIND_ROOT_PATH|CMAKE_TRY_COMPILE_TARGET_TYPE|CMAKE_C_FLAGS|CMAKE_CXX_FLAGS|CMAKE_EXE_LINKER_FLAGS|CMAKE_SHARED_LINKER_FLAGS|CMAKE_LINKER|MINGW|LLVM_ENABLE_LLD|LIBUNWIND_ENABLE_SHARED|LIBUNWIND_ENABLE_STATIC|LIBUNWIND_USE_COMPILER_RT|LIBUNWIND_HIDE_SYMBOLS|LIBUNWIND_HAS_C_LIB|LIBUNWIND_HAS_DL_LIB|LIBUNWIND_HAS_PTHREAD_LIB|LIBCXXABI_ENABLE_SHARED|LIBCXXABI_ENABLE_STATIC|LIBCXXABI_USE_LLVM_UNWINDER|LIBCXXABI_USE_COMPILER_RT|LIBCXXABI_HERMETIC_STATIC_LIBRARY|LIBCXX_ENABLE_SHARED|LIBCXX_ENABLE_STATIC|LIBCXX_ENABLE_STATIC_ABI_LIBRARY|LIBCXX_HERMETIC_STATIC_LIBRARY|LIBCXX_INCLUDE_BENCHMARKS|LIBCXX_INSTALL_MODULES|LIBCXX_USE_COMPILER_RT):'
     fi
 
     if ! cmake --build "$cxx_build_dir" --parallel "$CUP_JOBS"; then
@@ -1951,6 +1979,26 @@ build_llvm_tool() {
         fi
     fi
 
+    # Make optional Clang/clangd surfaces explicit so package identity does
+    # not change when a runner gains an unrelated development dependency.
+    case "$TOOL" in
+        clang|clang-format|clangd|lldb)
+            cmake_extra_args+=(-DCLANG_ENABLE_STATIC_ANALYZER=OFF)
+            ;;
+        clang-tidy)
+            cmake_extra_args+=(-DCLANG_ENABLE_STATIC_ANALYZER=ON)
+            ;;
+    esac
+    case "$TOOL" in
+        clangd|clang-tidy)
+            cmake_extra_args+=(
+                -DCLANGD_BUILD_DEXP=OFF
+                -DCLANGD_BUILD_XPC=OFF
+                -DCLANGD_TIDY_CHECKS=OFF
+            )
+            ;;
+    esac
+
     log "building LLVM tool $TOOL $VERSION with projects: $LLVM_PROJECTS"
 
     rm -rf "$build_dir"
@@ -1991,7 +2039,7 @@ build_llvm_tool() {
 
     log "selected LLVM CMake cache entries:"
     if [ -f "$build_dir/CMakeCache.txt" ]; then
-        llvm_dump_cmake_cache_entries "$build_dir/CMakeCache.txt" '^(LLVM_ENABLE_PROJECTS|LLVM_ENABLE_RUNTIMES|LLVM_TARGETS_TO_BUILD|LLVM_ENABLE_ZLIB|LLVM_ENABLE_ZSTD|LLVM_ENABLE_LIBXML2|LLVM_ENABLE_CURL|LLVM_ENABLE_HTTPLIB|LLVM_ENABLE_LIBPFM|LLVM_ENABLE_Z3|LLVM_INCLUDE_TESTS|LLVM_INCLUDE_BENCHMARKS|LLVM_INCLUDE_DOCS|LLVM_ENABLE_BINDINGS|LLVM_ENABLE_ASSERTIONS|LLVM_HOST_TRIPLE|CLANG_BUILD_TOOLS|LLDB_ENABLE_PYTHON|LLDB_ENABLE_SWIG|LLDB_EMBED_PYTHON_HOME|LLDB_ENABLE_PYTHON_LIMITED_API|LLDB_ENABLE_LIBXML2|LLDB_ENABLE_LZMA|LLDB_ENABLE_LIBEDIT|LLDB_ENABLE_CURSES|LLDB_ENABLE_LUA|LLDB_ENABLE_TREESITTER|LLDB_ENABLE_PROTOCOL_SERVERS|LLDB_ENABLE_GITHUB_BUG_REPORTER|LLDB_ENABLE_LIBCXX_TESTS|LLDB_ENABLE_DYNAMIC_SCRIPTINTERPRETERS|LLDB_BUILD_INTEL_MPX|LLDB_TOOL_LLDB_DAP_BUILD|LLDB_TOOL_LLDB_INSTR_BUILD|LLDB_TOOL_LLDB_MCP_BUILD|LLDB_TOOL_LLDB_SERVER_BUILD|LLDB_TOOL_DARWIN_DEBUG_BUILD|LLDB_TOOL_YAML2MACHO_CORE_BUILD|LLDB_USE_SYSTEM_DEBUGSERVER|LLDB_ENABLE_FBSDVMCORE|Python3_EXECUTABLE|Python3_LIBRARY|Python3_INCLUDE_DIR|CURSES_|PANEL_|TINFO_|CMAKE_PREFIX_PATH|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_OSX_SYSROOT):'
+        llvm_dump_cmake_cache_entries "$build_dir/CMakeCache.txt" '^(LLVM_ENABLE_PROJECTS|LLVM_ENABLE_RUNTIMES|LLVM_TARGETS_TO_BUILD|LLVM_ENABLE_ZLIB|LLVM_ENABLE_ZSTD|LLVM_ENABLE_LIBXML2|LLVM_ENABLE_CURL|LLVM_ENABLE_HTTPLIB|LLVM_ENABLE_LIBPFM|LLVM_ENABLE_Z3|LLVM_INCLUDE_TESTS|LLVM_INCLUDE_BENCHMARKS|LLVM_INCLUDE_DOCS|LLVM_ENABLE_BINDINGS|LLVM_ENABLE_ASSERTIONS|LLVM_HOST_TRIPLE|CLANG_BUILD_TOOLS|CLANG_ENABLE_STATIC_ANALYZER|CLANGD_BUILD_DEXP|CLANGD_BUILD_XPC|CLANGD_TIDY_CHECKS|LLDB_ENABLE_PYTHON|LLDB_ENABLE_SWIG|LLDB_EMBED_PYTHON_HOME|LLDB_ENABLE_PYTHON_LIMITED_API|LLDB_ENABLE_LIBXML2|LLDB_ENABLE_LZMA|LLDB_ENABLE_LIBEDIT|LLDB_ENABLE_CURSES|LLDB_ENABLE_LUA|LLDB_ENABLE_TREESITTER|LLDB_ENABLE_PROTOCOL_SERVERS|LLDB_ENABLE_GITHUB_BUG_REPORTER|LLDB_ENABLE_LIBCXX_TESTS|LLDB_ENABLE_DYNAMIC_SCRIPTINTERPRETERS|LLDB_BUILD_INTEL_MPX|LLDB_TOOL_LLDB_DAP_BUILD|LLDB_TOOL_LLDB_INSTR_BUILD|LLDB_TOOL_LLDB_MCP_BUILD|LLDB_TOOL_LLDB_SERVER_BUILD|LLDB_TOOL_DARWIN_DEBUG_BUILD|LLDB_TOOL_YAML2MACHO_CORE_BUILD|LLDB_USE_SYSTEM_DEBUGSERVER|LLDB_ENABLE_FBSDVMCORE|Python3_EXECUTABLE|Python3_LIBRARY|Python3_INCLUDE_DIR|CURSES_|PANEL_|TINFO_|CMAKE_PREFIX_PATH|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_OSX_SYSROOT):'
     fi
 
     if ! cmake --build "$build_dir" --parallel "$CUP_JOBS"; then
@@ -2116,10 +2164,10 @@ write_llvm_info() {
     local has_compiler_rt
     local has_asan
     local has_ubsan
-    local has_sanitizers
     local has_profile_runtime
     local has_cxx_runtime
     local cxx_runtime_default
+    local has_lldb_argdumper
     local has_llvm_runtimes
     local has_mingw_sysroot
     local has_driver_config
@@ -2154,6 +2202,7 @@ write_llvm_info() {
     has_lldb="$(metadata_bool_for_executable "$PREFIX" lldb)"
     has_lldb_server="$(metadata_bool_for_executable "$PREFIX" lldb-server)"
     has_lldb_dap="$(metadata_bool_for_executable "$PREFIX" lldb-dap)"
+    has_lldb_argdumper="$(metadata_bool_for_executable "$PREFIX" lldb-argdumper)"
     has_clangd="$(metadata_bool_for_executable "$PREFIX" clangd)"
     has_clangd_indexer="$(metadata_bool_for_executable "$PREFIX" clangd-indexer)"
     has_clang_format="$(metadata_bool_for_executable "$PREFIX" clang-format)"
@@ -2176,11 +2225,6 @@ write_llvm_info() {
     has_compiler_rt="$(metadata_bool_for_files "$PREFIX" 'clang_rt.*' 'libclang_rt.*')"
     has_asan="$(metadata_bool_for_files "$PREFIX" 'clang_rt.asan*' 'libclang_rt.asan*')"
     has_ubsan="$(metadata_bool_for_files "$PREFIX" 'clang_rt.ubsan*' 'libclang_rt.ubsan*')"
-    if [ "$has_asan" = true ] || [ "$has_ubsan" = true ]; then
-        has_sanitizers=true
-    else
-        has_sanitizers=false
-    fi
     has_profile_runtime="$(metadata_bool_for_files "$PREFIX" 'clang_rt.profile*' 'libclang_rt.profile*')"
     has_cxx_runtime="$(llvm_cxx_runtime_files_present)"
     cxx_runtime_default="$CLANG_CXX_RUNTIME_DEFAULT"
@@ -2244,15 +2288,14 @@ write_llvm_info() {
                 "features.cpp=$has_clangpp"
                 "features.resource_dir=$has_resource_dir"
                 "features.lld_integration=$has_native_lld"
-                "features.lto=$has_native_lld"
+                "features.lto=true"
                 "contents.compiler_rt=$has_compiler_rt"
                 "contents.llvm_runtimes=$has_llvm_runtimes"
-                "features.sanitizers=$has_sanitizers"
                 "features.asan=$has_asan"
                 "features.ubsan=$has_ubsan"
                 "features.profile_runtime=$has_profile_runtime"
                 "features.cxx_runtime=$has_cxx_runtime"
-                "features.cxx_runtime_default=$cxx_runtime_default"
+                "config.cxx_runtime_default=$cxx_runtime_default"
                 "contents.mingw_sysroot=$has_mingw_sysroot"
                 "features.sysroot=$has_mingw_sysroot"
                 "config.driver_config=$has_driver_config"
@@ -2300,6 +2343,7 @@ write_llvm_info() {
                 "contents.python_runtime=packaged"
                 "contents.python_runtime.version=$PACKAGED_PYTHON_RUNTIME_VERSION"
                 "contents.clang_resources=$has_lldb_clang_resources"
+                "contents.lldb_argdumper=$has_lldb_argdumper"
             )
             if [ -n "$LLDB_PACKAGED_PYTHON_RELATIVE" ]; then
                 info+=("config.python_executable=$LLDB_PACKAGED_PYTHON_RELATIVE")
@@ -2334,6 +2378,7 @@ write_llvm_info() {
                 "contents.clang_resources=$has_resource_dir"
                 "features.resource_dir=$has_resource_dir"
                 "features.check_compile_commands=$has_clangd"
+                "features.lsp=$has_clangd"
             )
             ;;
         clang-format)

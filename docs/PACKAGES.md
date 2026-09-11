@@ -217,7 +217,7 @@ Examples include:
 features.c=true
 features.cpp=true
 features.openmp=true
-features.sanitizers=true
+features.asan=true
 features.remote_debugging=true
 features.link_coff=true
 features.format_file=true

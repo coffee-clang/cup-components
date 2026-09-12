@@ -85,6 +85,7 @@ fi
 need "$POSIX" '\"disableASLR\":false' 'POSIX DAP launch does not explicitly leave ASLR enabled'
 reject "$POSIX" 'preRunCommands":["settings set target.disable-aslr false"]' 'POSIX DAP still uses the wrong preRunCommands ASLR owner'
 need "$POSIX" 'FRAMED_PENDING+=("$FRAMED_MESSAGE")' 'POSIX framed waiter still drops unmatched messages'
+need "$POSIX" '3) return 2 ;;' 'POSIX framed waiter does not surface EOF/closed transport separately from timeout'
 need "$WINDOWS" 'disableASLR=$false' 'Windows DAP launch does not explicitly leave ASLR enabled'
 need "$WINDOWS" '$script:FramedPending.Add($item)' 'Windows framed waiter still drops unmatched messages'
 
@@ -175,5 +176,26 @@ framed_wait "$frame_fd" "$TMP/framed.log" '"event"[[:space:]]*:[[:space:]]*"stop
     exit 1
 }
 exec {frame_fd}<&-
+
+# EOF on a still-valid descriptor and an already-invalid descriptor must both
+# be reported as transport closure, never spun until the protocol deadline.
+eof_stream="$TMP/eof-stream"
+: > "$eof_stream"
+exec {eof_fd}<"$eof_stream"
+set +e
+framed_wait "$eof_fd" "$TMP/framed.log" 'never-match-eof' 2 >/dev/null 2>&1
+eof_status=$?
+framed_wait 200 "$TMP/framed.log" 'never-match-invalid-fd' 2 >/dev/null 2>&1
+invalid_status=$?
+set -e
+exec {eof_fd}<&-
+[ "$eof_status" -eq 2 ] || {
+    echo "LLDB package policy failed: POSIX framed waiter did not report EOF distinctly (status=$eof_status)" >&2
+    exit 1
+}
+[ "$invalid_status" -eq 2 ] || {
+    echo "LLDB package policy failed: POSIX framed waiter did not report invalid FD distinctly (status=$invalid_status)" >&2
+    exit 1
+}
 
 echo LLDB_PACKAGE_POLICY=PASS

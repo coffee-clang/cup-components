@@ -335,6 +335,22 @@ grep -Fx 'phase.smoke=0' "$records_root/.cup-build/build-records/phases.txt" >/d
 grep -Fx 'phase.expected-failure=7' "$records_root/.cup-build/build-records/phases.txt" >/dev/null || { echo 'failed phase status missing from build records' >&2; exit 1; }
 grep -Fx 'workflow.status=failure' "$records_root/.cup-build/build-records/run.txt" >/dev/null || { echo 'workflow result missing from build records' >&2; exit 1; }
 grep -F 'records-smoke' "$records_root/.cup-build/build-records/smoke.log" >/dev/null || { echo 'phase output missing from build records' >&2; exit 1; }
+grep -Fx 'repository.tree=unknown' "$records_root/.cup-build/build-records/run.txt" >/dev/null || { echo 'non-git build-record fixture did not record an explicit unknown repository tree' >&2; exit 1; }
+
+records_git="$TMP/build-records-git-fixture"
+mkdir -p "$records_git"
+git -C "$records_git" init -q
+git -C "$records_git" config user.email cup-components@example.invalid
+git -C "$records_git" config user.name cup-components
+printf 'tree fixture\n' > "$records_git/fixture.txt"
+git -C "$records_git" add fixture.txt
+git -C "$records_git" commit -q -m fixture
+records_commit="$(git -C "$records_git" rev-parse HEAD)"
+records_tree="$(git -C "$records_git" rev-parse HEAD^{tree})"
+CUP_ROOT="$records_git" CUP_COMPONENTS_ROOT="$records_git" GITHUB_SHA="$records_commit" \
+    bash "$ROOT/scripts/workflow/build-records.sh" init tool 1.0 linux-x64 linux-x64
+grep -Fx "repository.commit=$records_commit" "$records_git/.cup-build/build-records/run.txt" >/dev/null || { echo 'repository commit missing from git-backed build records' >&2; exit 1; }
+grep -Fx "repository.tree=$records_tree" "$records_git/.cup-build/build-records/run.txt" >/dev/null || { echo 'repository tree missing from git-backed build records' >&2; exit 1; }
 [ -f "$records_root/.cup-build/build-records/package/tool-1.0-linux-x64-linux-x64/info.txt" ] || { echo 'package info missing from build records' >&2; exit 1; }
 [ -f "$records_root/.cup-build/build-records/package/tool-1.0-linux-x64-linux-x64/manifest.txt" ] || { echo 'package manifest missing from build records' >&2; exit 1; }
 

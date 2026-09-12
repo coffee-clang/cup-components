@@ -40,6 +40,7 @@ host platform
 target platform
 requested source SHA-256, when supplied
 repository commit
+repository logical Git tree
 GitHub workflow
 GitHub run id
 GitHub run attempt
@@ -50,6 +51,8 @@ finish time
 ```
 
 For GCC, `run.txt` additionally records the requested Binutils version, requested MinGW-w64 version, requested GCC package revision and the optional SHA-256 values supplied for those bundled source archives. These values are captured before the build starts, so the intended composition remains visible even if source acquisition or configuration fails early.
+
+The commit and logical tree are both recorded. The commit identifies the repository state in Git, while the tree lets an offline native record be compared directly with a statically sealed candidate authority even when the commit object is not available locally.
 
 This makes the record self-describing when it is downloaded separately from the workflow page.
 

@@ -103,11 +103,12 @@ Clang checks include:
 - C and C++ compilation/linking;
 - packaged libc++ as an explicit capability;
 - LTO through packaged LLD where declared;
+- compiler-rt builtins resolving to a package-owned archive at the original and relocated roots;
 - sanitizer/runtime capabilities where declared;
 - Linux and macOS relocation behavior;
 - Windows sysroot/driver behavior on the Windows path.
 
-LLD performs a real native-format link through the only public frontend retained for the package host: ELF through `ld.lld` on Linux, PE/COFF through `lld-link.exe` on Windows and Mach-O through `ld64.lld` on macOS. Windows qualification also checks an AMD64 output and exercises embedded manifest handling. Non-native upstream frontends are absent from the final package.
+LLD performs a real native-format link through the only public frontend retained for the package host: ELF through `ld.lld` on Linux, PE/COFF through `lld-link.exe` on Windows and Mach-O through `ld64.lld` on macOS. Windows qualification reads the PE header and requires `IMAGE_FILE_MACHINE_AMD64`, then exercises embedded manifest handling. Non-native upstream frontends are absent from the final package.
 
 LLDB checks include:
 
@@ -117,7 +118,7 @@ LLDB checks include:
 - Clang resource-directory ownership;
 - target creation, breakpoint and symbol lookup behavior;
 - process launch whenever `features.process_launch=true`; an environment restriction is an evidence failure rather than a package PASS;
-- a real `lldb-dap` protocol session when DAP is declared;
+- a real `lldb-dap` protocol session when DAP is declared; protocol waits are deadline-bounded and treat EOF/closed transport as termination instead of spinning until the deadline;
 - on Linux and Windows, a real packaged `lldb-server platform` session when remote debugging is declared, with native remote launch, breakpoint/expression and bounded cleanup;
 - on macOS, the declared system `debugserver` prerequisite is exercised by real local process launch/DAP rather than by a separate filesystem lookup proxy, while remote debugging remains undeclared;
 - POSIX relocation with previous roots unavailable; the final path contains real spaces and repeats the local process-launch oracle after relocation.

@@ -195,6 +195,36 @@ sha256_file() {
     fi
 }
 
+clang_builtins_probe() {
+    local candidate="$1"
+    local label="$2"
+    local builtins
+    local candidate_real
+    local builtins_real
+
+    [ "$(info_value contents.compiler_rt)" = true ] || {
+        echo "Clang compiler-rt contents are not declared at relocation $label" >&2
+        return 1
+    }
+
+    builtins="$("$candidate/bin/clang" --rtlib=compiler-rt -print-libgcc-file-name)"
+    [ -f "$builtins" ] || {
+        echo "Clang did not resolve compiler-rt builtins at relocation $label: $builtins" >&2
+        return 1
+    }
+    candidate_real="$(cd "$candidate" && pwd -P)"
+    builtins_real="$(cd "$(dirname "$builtins")" && pwd -P)/$(basename "$builtins")"
+    case "$builtins_real" in
+        "$candidate_real"/*) ;;
+        *)
+            echo "Clang compiler-rt builtins escaped the package at relocation $label: $builtins_real" >&2
+            return 1
+            ;;
+    esac
+    printf 'CLANG_BUILTINS_%s=PASS
+' "$label"
+}
+
 clang_ubsan_probe() {
     local candidate="$1"
     local label="$2"
@@ -462,20 +492,33 @@ framed_read() {
     local line=""
     local length=""
     local body=""
+    local status
 
-    while IFS= read -r -t "$timeout_seconds" -u "$fd" line; do
-        line="${line%$'\r'}"
-        [ -n "$line" ] || break
-        case "$line" in
-            Content-Length:*)
-                length="${line#Content-Length:}"
-                length="${length//[[:space:]]/}"
-                ;;
-        esac
+    [ -e "/dev/fd/$fd" ] || return 3
+    while true; do
+        if IFS= read -r -t "$timeout_seconds" -u "$fd" line 2>/dev/null; then
+            line="${line%$'\r'}"
+            [ -n "$line" ] || break
+            case "$line" in
+                Content-Length:*)
+                    length="${line#Content-Length:}"
+                    length="${length//[[:space:]]/}"
+                    ;;
+            esac
+        else
+            status=$?
+            [ "$status" -gt 128 ] && return 2
+            return 3
+        fi
     done
     [[ "$length" =~ ^[0-9]+$ ]] && [ "$length" -gt 0 ] || return 1
-    IFS= read -r -N "$length" -t "$timeout_seconds" -u "$fd" body || return 1
-    FRAMED_MESSAGE="$body"
+    if IFS= read -r -N "$length" -t "$timeout_seconds" -u "$fd" body 2>/dev/null; then
+        FRAMED_MESSAGE="$body"
+        return 0
+    fi
+    status=$?
+    [ "$status" -gt 128 ] && return 2
+    return 3
 }
 
 framed_wait() {
@@ -488,6 +531,7 @@ framed_wait() {
     local read_timeout
     local index
     local message
+    local framed_status
 
     # Protocol events and responses can be interleaved. Preserve messages that
     # belong to a later wait instead of consuming them irreversibly.
@@ -507,8 +551,15 @@ framed_wait() {
         [ "$remaining" -ge "$read_timeout" ] || read_timeout="$remaining"
         [ "$read_timeout" -gt 0 ] || break
 
-        if ! framed_read "$fd" "$read_timeout"; then
-            continue
+        if framed_read "$fd" "$read_timeout"; then
+            :
+        else
+            framed_status=$?
+            case "$framed_status" in
+                2) continue ;;
+                3) return 2 ;;
+                *) return 1 ;;
+            esac
         fi
         printf '%s\n' "$FRAMED_MESSAGE" >> "$log"
         if printf '%s\n' "$FRAMED_MESSAGE" | grep -E "$pattern" >/dev/null; then
@@ -616,7 +667,7 @@ lldb_dap_probe() {
     local home="$tmp_root/lldb-dap-home-$label"
     local log="$work/protocol.log"
     local err="$work/stderr.log"
-    local body line thread_id frame_id dap_pid in_fd out_fd i
+    local body line thread_id frame_id dap_pid in_fd out_fd i framed_status
 
     info_bool features.lldb_dap || return 0
     require_executable "$candidate/bin/lldb-dap"
@@ -671,7 +722,16 @@ lldb_dap_probe() {
     # Exit code 0 is the product oracle; do not require a transport ordering.
     framed_wait "$out_fd" "$log" '"event"[[:space:]]*:[[:space:]]*"exited".*"exitCode"[[:space:]]*:[[:space:]]*0|"exitCode"[[:space:]]*:[[:space:]]*0.*"event"[[:space:]]*:[[:space:]]*"exited"' 60
     framed_send "$in_fd" '{"seq":9,"type":"request","command":"disconnect","arguments":{"terminateDebuggee":false}}'
-    framed_wait "$out_fd" "$log" '"request_seq"[[:space:]]*:[[:space:]]*9' 60 || true
+    if framed_wait "$out_fd" "$log" '"request_seq"[[:space:]]*:[[:space:]]*9' 60; then
+        :
+    else
+        framed_status=$?
+        if [ "$framed_status" -ne 2 ]; then
+            echo "lldb-dap disconnect response failed at relocation $label" >&2
+            cat "$log" "$err" >&2
+            return 1
+        fi
+    fi
     eval "exec ${in_fd}>&-" || true
     for i in $(seq 1 50); do
         kill -0 "$dap_pid" 2>/dev/null || break
@@ -781,6 +841,7 @@ clang_linux_relocation_probe() {
     "$tmp_root/clang-lto-$label" | grep -F "hello clang 42"
 
     if [ "$label" = C ]; then
+        clang_builtins_probe "$candidate" "$label"
         clang_asan_probe "$candidate" "$label" "$poison_dir"
         clang_ubsan_probe "$candidate" "$label" "$poison_dir"
         clang_profile_runtime_probe "$candidate" "$label" "$poison_dir"
@@ -955,6 +1016,7 @@ clang_macos_relocation_probe() {
 
     if [ "$label" = C ]; then
         clang_macos_package_libcxx_probe "$candidate" "$label"
+        clang_builtins_probe "$candidate" "$label"
         clang_asan_probe "$candidate" "$label" ''
         clang_ubsan_probe "$candidate" "$label" ''
         clang_profile_runtime_probe "$candidate" "$label" ''
@@ -1436,6 +1498,7 @@ CPP_EOF
         if [ "$(uname -s)" = "Darwin" ]; then
             clang_macos_package_libcxx_probe "$root" A
         fi
+        clang_builtins_probe "$root" A
         clang_asan_probe "$root" A "${clang_poison:-}"
         clang_ubsan_probe "$root" A "${clang_poison:-}"
         clang_profile_runtime_probe "$root" A "${clang_poison:-}"
@@ -1833,7 +1896,11 @@ case "$LLVM_TOOL" in
         cp -RPp "$root" "$reloc_b"
         mv "$root" "$tmp_root/original-lld-root-disabled"
         [ ! -e "$root" ] || { echo 'LLD relocation A root is still available' >&2; exit 1; }
-        "$reloc_b/bin/ld.lld" --version
+        case "$(info_value platform.host)" in
+            linux-*) "$reloc_b/bin/ld.lld" --version ;;
+            macos-*) "$reloc_b/bin/ld64.lld" --version ;;
+            *) echo "unsupported POSIX LLD relocation host: $(info_value platform.host)" >&2; exit 1 ;;
+        esac
         mv "$reloc_b" "$reloc_c"
         [ ! -e "$reloc_b" ] || { echo 'LLD relocation B root is still available' >&2; exit 1; }
         lld_native_probe "$reloc_c" C

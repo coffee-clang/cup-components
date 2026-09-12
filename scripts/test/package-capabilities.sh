@@ -264,10 +264,10 @@ show_llvm() {
         clang)
             mark_exe clang features.c
             mark_exe clang++ features.cpp
-            mark_exe ld.lld features.lld_integration
-            mark_exe llvm-ar
-            mark_exe llvm-ranlib
-            mark_exe llvm-objdump
+            case "$(info_value platform.host)" in
+                macos-*) mark_exe ld64.lld features.lld_integration ;;
+                *) mark_exe ld.lld features.lld_integration ;;
+            esac
             try_version clang --version
             ;;
         lld)

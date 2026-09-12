@@ -76,11 +76,15 @@ init_records() {
     local host_platform="$3"
     local target_platform="$4"
     local commit="${GITHUB_SHA:-}"
+    local tree=""
 
     rm -rf "$RECORDS_DIR"
     mkdir -p "$RECORDS_DIR"
     if [ -z "$commit" ] && command -v git >/dev/null 2>&1; then
         commit="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
+    fi
+    if [ -n "$commit" ] && command -v git >/dev/null 2>&1; then
+        tree="$(git -C "$ROOT" rev-parse "$commit^{tree}" 2>/dev/null || true)"
     fi
 
     {
@@ -98,6 +102,7 @@ init_records() {
             printf 'gcc.revision.requested=%s\n' "${CUP_GCC_REVISION:-stable}"
         fi
         printf 'repository.commit=%s\n' "${commit:-unknown}"
+        printf 'repository.tree=%s\n' "${tree:-unknown}"
         printf 'github.workflow=%s\n' "${GITHUB_WORKFLOW:-local}"
         printf 'github.run_id=%s\n' "${GITHUB_RUN_ID:-local}"
         printf 'github.run_attempt=%s\n' "${GITHUB_RUN_ATTEMPT:-1}"

@@ -49,6 +49,17 @@ need "$POSIX" 'clang_ubsan_probe "$root" A' 'UBSan is not exercised at original 
 need "$POSIX" 'clang_profile_runtime_probe "$root" A' 'profile runtime is not exercised at original root'
 need "$POSIX" 'clang_ubsan_probe "$candidate" "$label"' 'UBSan is not exercised after relocation'
 need "$POSIX" 'clang_profile_runtime_probe "$candidate" "$label"' 'profile runtime is not exercised after relocation'
+need "$POSIX" 'clang_builtins_probe()' 'POSIX Clang has no package-owned compiler-rt builtins oracle'
+need "$POSIX" 'clang_builtins_probe "$root" A' 'POSIX compiler-rt builtins are not exercised at original root'
+need "$POSIX" 'clang_builtins_probe "$candidate" "$label"' 'POSIX compiler-rt builtins are not exercised after relocation'
+need "$WINDOWS" 'function Invoke-ClangBuiltinsProbe' 'Windows Clang has no package-owned compiler-rt builtins oracle'
+need "$WINDOWS" '$PackageRoot\bin\clang.exe' 'Windows compiler-rt builtins oracle does not invoke package-owned clang.exe'
+need "$WINDOWS" "Invoke-ClangBuiltinsProbe -PackageRoot \$root -Label 'A'" 'Windows compiler-rt builtins are not exercised at original root'
+need "$WINDOWS" "Invoke-ClangBuiltinsProbe -PackageRoot \$relocatedRoot -Label 'C-spaces'" 'Windows compiler-rt builtins are not exercised after relocation'
+if LC_ALL=C grep -q $'\b' "$WINDOWS"; then
+    echo 'LLVM capability-scope policy: Windows product test contains an embedded backspace control character' >&2
+    failures=$((failures + 1))
+fi
 need "$BUILD" 'requires.macos_sdk=true' 'macOS Clang SDK prerequisite is not explicit'
 reject "$BUILD" 'features.sanitizers=' 'Clang still carries a redundant aggregate sanitizer feature'
 need "$BUILD" '-DLLVM_ENABLE_LIBPFM=OFF' 'optional libpfm autodetection is not explicitly disabled'
@@ -64,7 +75,12 @@ need "$BUILD" '-DLIBCXXABI_INSTALL_LIBRARY=OFF' 'standalone libc++abi archive is
 need "$BUILD" '-DCOMPILER_RT_BUILD_PROFILE_ROCM=OFF' 'ROCm profile runtime is not explicitly disabled'
 need "$BUILD" '-DCOMPILER_RT_DEFAULT_TARGET_ONLY:BOOL=ON' 'compiler-rt target-only policy is not typed and explicit'
 need "$BUILD" '-DCMAKE_OSX_ARCHITECTURES="$(macos_native_arch)"' 'macOS runtime sub-build is not constrained to the package architecture'
+need "$BUILD" '"-DDARWIN_osx_ARCHS:STRING=$native_arch"' 'compiler-rt Darwin sanitizer architecture list is not constrained to the package architecture'
+need "$BUILD" '"-DDARWIN_osx_BUILTIN_ARCHS:STRING=$native_arch"' 'compiler-rt Darwin builtins architecture list is not constrained to the package architecture'
 need "$BUILD" 'prune_unowned_clang_runtime_payload()' 'Clang runtime payload outside CUP scope has no producer-side prune owner'
+need "$BUILD" 'find "$PREFIX" -type f -name '"'"'*clang_rt*'"'"' \' 'compiler-rt producer prune is not scoped to compiler-rt filenames'
+need "$BUILD" 'find "$package_root" -type f -name '"'"'*clang_rt*'"'"' -name "$forbidden"' 'final compiler-rt policy is not scoped to compiler-rt filenames'
+reject "$BUILD" 'find "$package_root" -type f -name "$forbidden"' 'final runtime policy can still reject unrelated sysroot files by generic names such as *stats*'
 for forbidden_runtime in profile_rocm ubsan_minimal ubsan_loop_detect c++experimental; do
     need "$BUILD" "*$forbidden_runtime*" "final Clang policy does not reject $forbidden_runtime payload"
 done
@@ -81,7 +97,9 @@ reject "$BUILD" 'append_lld_frontend_info' 'forbidden LLD frontend inventory can
 need "$POSIX" 'lld_native_probe()' 'POSIX LLD has no native-format behavioral owner'
 need "$WINDOWS" 'function Invoke-LldNativeProbe' 'Windows LLD has no native COFF behavioral owner'
 need "$WINDOWS" "'/manifest:embed'" 'Windows LLD does not exercise COFF manifest handling'
-need "$WINDOWS" "'architecture:\s*i386:x86-64'" 'Windows LLD does not verify AMD64 output architecture'
+need "$WINDOWS" 'function Assert-PEMachineAMD64' 'Windows LLD has no PE Machine oracle'
+need "$WINDOWS" 'if ($machine -ne 0x8664)' 'Windows LLD does not verify IMAGE_FILE_MACHINE_AMD64'
+need "$WINDOWS" 'Assert-PEMachineAMD64 -Path $exe' 'Windows LLD native probe does not apply the PE Machine oracle'
 reject "$POSIX" 'lld_cross_format_probe()' 'cross-format LLD qualification is still present'
 reject "$WINDOWS" 'Invoke-LldCrossFormatProbe' 'Windows cross-format LLD qualification is still present'
 [ ! -e "$ROOT/tests/fixtures/lld" ] || { echo 'LLVM capability-scope policy: LLD cross-format fixture directory still exists' >&2; failures=$((failures + 1)); }

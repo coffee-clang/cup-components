@@ -152,17 +152,12 @@ function Show-PEImports {
     param([Parameter(Mandatory = $true)][string] $FilePath)
 
     Write-Host "==> PE imports for $FilePath"
-    $objdump = Get-Command llvm-objdump.exe -ErrorAction SilentlyContinue
-    if (-not $objdump) {
-        $objdump = Get-Command objdump.exe -ErrorAction SilentlyContinue
-    }
-
-    if (-not $objdump) {
-        Write-Host 'warning: objdump not available for PE import diagnostics'
+    if (-not $runnerObjdump) {
+        Write-Host 'warning: runner objdump not available for PE import diagnostics'
         return
     }
 
-    & $objdump.Source -p $FilePath 2>&1 | Select-String -Pattern 'DLL Name|Delay|delay' | ForEach-Object {
+    & $runnerObjdump.Source -p $FilePath 2>&1 | Select-String -Pattern 'DLL Name|Delay|delay' | ForEach-Object {
         Write-Host $_.Line
     }
 }
@@ -295,6 +290,47 @@ function Assert-FileMagic {
     }
 }
 
+function Assert-PEMachineAMD64 {
+    param([Parameter(Mandatory = $true)][string] $Path)
+
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 64) { throw "PE file is too short: $Path" }
+    $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+    if ($peOffset -lt 0 -or ($peOffset + 6) -gt $bytes.Length) {
+        throw "Invalid PE header offset in $Path"
+    }
+    if ($bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset + 1] -ne 0x45 -or
+        $bytes[$peOffset + 2] -ne 0 -or $bytes[$peOffset + 3] -ne 0) {
+        throw "Missing PE signature in $Path"
+    }
+    $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+    if ($machine -ne 0x8664) {
+        throw ('LLD produced a non-AMD64 PE/COFF executable: {0} (Machine=0x{1:x4})' -f $Path, $machine)
+    }
+}
+
+function Invoke-ClangBuiltinsProbe {
+    param(
+        [Parameter(Mandatory = $true)][string] $PackageRoot,
+        [Parameter(Mandatory = $true)][string] $Label
+    )
+
+    if ((Get-InfoValue 'contents.compiler_rt') -ne 'true') {
+        throw "Clang compiler-rt contents are not declared at relocation $Label"
+    }
+    $output = Invoke-NativeCapture -FilePath "$PackageRoot\bin\clang.exe" -ArgumentList @(
+        '--rtlib=compiler-rt', '-print-libgcc-file-name'
+    )
+    $builtins = ($output | Select-Object -Last 1).ToString().Trim()
+    Assert-FileExists $builtins
+    $packageFull = [IO.Path]::GetFullPath($PackageRoot).TrimEnd('\') + '\'
+    $builtinsFull = [IO.Path]::GetFullPath($builtins)
+    if (-not $builtinsFull.StartsWith($packageFull, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Clang compiler-rt builtins escaped the package at relocation ${Label}: $builtinsFull"
+    }
+    Write-Host "CLANG_BUILTINS_$Label=PASS"
+}
+
 function Invoke-LldNativeProbe {
     param(
         [Parameter(Mandatory = $true)][string] $PackageRoot,
@@ -331,11 +367,7 @@ function Invoke-LldNativeProbe {
     )
     Assert-FileExists $exe
     Assert-FileMagic -Path $exe -Hex '4d5a'
-    if (-not $runnerObjdump) { throw 'objdump is required to verify the LLD PE/COFF architecture' }
-    $header = (& $runnerObjdump.Source -f $exe 2>&1) -join "`n"
-    if ($header -notmatch 'architecture:\s*i386:x86-64') {
-        throw "LLD produced a non-AMD64 PE/COFF executable at relocation $Label`n$header"
-    }
+    Assert-PEMachineAMD64 -Path $exe
     Write-Host "LLD_NATIVE_$Label=PASS"
 }
 
@@ -895,6 +927,7 @@ int main() {
         if ((Get-InfoValue 'config.cxx_runtime_default') -ne 'true') {
             throw 'Windows Clang package does not record its configured bundled libc++ default'
         }
+        Invoke-ClangBuiltinsProbe -PackageRoot $root -Label 'A'
         Invoke-ClangAsanProbe -PackageRoot $root -Label 'A'
         Invoke-ClangUbsanProbe -PackageRoot $root -Label 'A'
         Invoke-ClangProfileProbe -PackageRoot $root -Label 'A'
@@ -1210,6 +1243,7 @@ switch ($Tool) {
             '-flto', '-fuse-ld=lld', $cSource, '-o', $relocatedLto
         )
         Invoke-Native -FilePath $relocatedLto
+        Invoke-ClangBuiltinsProbe -PackageRoot $relocatedRoot -Label 'C-spaces'
         Invoke-ClangAsanProbe -PackageRoot $relocatedRoot -Label 'C-spaces'
         Invoke-ClangUbsanProbe -PackageRoot $relocatedRoot -Label 'C-spaces'
         Invoke-ClangProfileProbe -PackageRoot $relocatedRoot -Label 'C-spaces'

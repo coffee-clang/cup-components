@@ -131,6 +131,32 @@ if grep -Eq '^  missing  (gcc|g\+\+|cpp|gcov|lto-dump|as|ld|ar|ranlib|strip|objd
 fi
 grep -Fq 'present  x86_64-w64-mingw32-lto-dump' "$tmp/cross.out"
 
+# Clang reporter follows the platform-native LLD frontend. A macOS package
+# must report ld64.lld for features.lld_integration and must not diagnose the
+# deliberately absent Linux frontend ld.lld.
+clang_macos="$tmp/clang-macos"
+mkdir -p "$clang_macos/bin"
+cat > "$clang_macos/info.txt" <<'EOF_CLANG_MACOS_INFO'
+package.component=compiler
+package.tool=clang
+package.version=1.0
+platform.host=macos-x64
+features.c=true
+features.cpp=true
+features.lld_integration=true
+EOF_CLANG_MACOS_INFO
+for exe in clang clang++ ld64.lld; do
+    make_exe "$clang_macos/bin/$exe"
+done
+bash "$reporter" "$clang_macos" clang > "$tmp/clang-macos.out"
+grep -Eq '^  present  ld64\.lld[[:space:]]+declared:features\.lld_integration=true' "$tmp/clang-macos.out"
+! grep -Eq '^  (missing|present)[[:space:]]+ld\.lld[[:space:]]' "$tmp/clang-macos.out" || {
+    echo 'macOS Clang reporter still probes the non-native ld.lld frontend' >&2
+    cat "$tmp/clang-macos.out" >&2
+    exit 1
+}
+assert_no_warning "$tmp/clang-macos.out"
+
 # Metadata scope is repository-wide: executable/payload presence must not be
 # promoted into behavioral features unless CUP deliberately qualifies it.
 gcc_builder="$repo_root/scripts/build/build-gcc.sh"

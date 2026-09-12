@@ -203,6 +203,8 @@ libunwind + libc++abi + libc++
 compiler-rt sanitizers/profile runtime
 ```
 
+On macOS, the compiler-rt Darwin architecture lists are constrained to the package architecture for both builtins and sanitizer/profile runtime construction. Final LLVM package validation checks native object architecture, including load-bearing static archives, rather than validating only executable/shared-library slices.
+
 Bundled libc++ is an available package capability. It is not forced as the default C++ standard library on every host. On macOS the static libc++/ABI/unwind build uses hidden/hermetic symbols so a package-owned static runtime can coexist with the Apple C++ runtime already present in system processes.
 
 On Linux, `clang++.cfg` adds only the package-relative library search path needed to use the bundled runtime explicitly. It does not add `-stdlib=libc++` globally.

@@ -222,9 +222,7 @@ C_UBSAN
             -g -O0 -fsanitize=undefined -fno-sanitize-recover=undefined \
             "$work/ubsan.c" -o "$work/ubsan-test"
     else
-        mapfile -t sdk_args < <(macos_sdk_args)
-        env -i HOME="$clean_home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
-            "$candidate/bin/clang" "${sdk_args[@]}" -g -O0 \
+        run_macos_clang_clean "$candidate" clang "$clean_home" -g -O0 \
             -fsanitize=undefined -fno-sanitize-recover=undefined \
             "$work/ubsan.c" -o "$work/ubsan-test"
     fi
@@ -247,8 +245,6 @@ clang_profile_runtime_probe() {
     local poison_dir="$3"
     local work="$tmp_root/clang-profile-$label"
     local clean_home="$tmp_root/clang-profile-home-$label"
-    local sdk_args=()
-
     info_bool features.profile_runtime || {
         echo "required Clang profile runtime capability is not declared" >&2
         return 1
@@ -262,9 +258,7 @@ C_PROFILE
         run_clang_driver_clean "$candidate" clang "$clean_home" "$poison_dir" \
             -O0 -fprofile-instr-generate "$work/profile.c" -o "$work/profile-test"
     else
-        mapfile -t sdk_args < <(macos_sdk_args)
-        env -i HOME="$clean_home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
-            "$candidate/bin/clang" "${sdk_args[@]}" -O0 -fprofile-instr-generate \
+        run_macos_clang_clean "$candidate" clang "$clean_home" -O0 -fprofile-instr-generate \
             "$work/profile.c" -o "$work/profile-test"
     fi
     LLVM_PROFILE_FILE="$work/cup-profile.profraw" "$work/profile-test"
@@ -281,7 +275,6 @@ clang_asan_probe() {
     local poison_dir="$3"
     local work="$tmp_root/clang-asan-$label"
     local clean_home="$tmp_root/clang-asan-home-$label"
-    local sdk_args=()
     local status
 
     info_bool features.asan || {
@@ -302,9 +295,7 @@ C_ASAN
         run_clang_driver_clean "$candidate" clang "$clean_home" "$poison_dir" \
             -g -O0 -fsanitize=address "$work/asan.c" -o "$work/asan-test"
     else
-        mapfile -t sdk_args < <(macos_sdk_args)
-        env -i HOME="$clean_home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
-            "$candidate/bin/clang" "${sdk_args[@]}" -g -O0 -fsanitize=address \
+        run_macos_clang_clean "$candidate" clang "$clean_home" -g -O0 -fsanitize=address \
             "$work/asan.c" -o "$work/asan-test"
     fi
     set +e
@@ -325,7 +316,6 @@ clang_macos_package_libcxx_probe() {
     local label="$2"
     local work="$tmp_root/clang-macos-libcxx-$label"
     local clean_home="$tmp_root/clang-macos-libcxx-home-$label"
-    local sdk_args=()
     local lib
 
     info_bool features.cxx_runtime || {
@@ -345,18 +335,8 @@ clang_macos_package_libcxx_probe() {
 
     rm -rf "$work"
     mkdir -p "$work" "$clean_home"
-    cat > "$work/main.cpp" <<'CPP_LIBCXX'
-#include <iostream>
-#include <vector>
-int main() {
-    std::vector<int> values{20, 22};
-    std::cout << (values[0] + values[1]) << "\n";
-    return 0;
-}
-CPP_LIBCXX
-    mapfile -t sdk_args < <(macos_sdk_args)
-    if ! env -i HOME="$clean_home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
-        "$candidate/bin/clang++" "${sdk_args[@]}" \
+    cp "$tmp_root/clang-cpp-test.cpp" "$work/main.cpp"
+    if ! run_macos_clang_clean "$candidate" clang++ "$clean_home" \
         -nostdinc++ -isystem "$candidate/include/c++/v1" -nostdlib++ \
         "$work/main.cpp" \
         "$candidate/lib/libc++.a" "$candidate/lib/libunwind.a" \
@@ -441,14 +421,10 @@ int main(void) {
 }
 C_LLD_NATIVE
 
-    require_executable "$candidate/bin/ld.lld"
-    "$candidate/bin/ld.lld" --version
-    run_optional_executable "$candidate/bin/lld-link" --version
-    run_optional_executable "$candidate/bin/wasm-ld" --version
-    run_optional_executable "$candidate/bin/ld64.lld" --version
-
     case "$host" in
         linux-*)
+            require_executable "$candidate/bin/ld.lld"
+            "$candidate/bin/ld.lld" --version
             info_bool features.link_elf || { echo 'Linux LLD does not declare native ELF linking' >&2; return 1; }
             [ "$(info_value features.link_coff)" = false ] || { echo 'Linux LLD over-declares COFF linking' >&2; return 1; }
             [ "$(info_value features.link_wasm)" = false ] || { echo 'Linux LLD over-declares Wasm linking' >&2; return 1; }
@@ -456,11 +432,12 @@ C_LLD_NATIVE
             cc -B"$candidate/bin" -fuse-ld=lld "$work/main.c" -o "$work/lld-test"
             ;;
         macos-*)
+            require_executable "$candidate/bin/ld64.lld"
+            "$candidate/bin/ld64.lld" --version
             info_bool features.link_macho || { echo 'macOS LLD does not declare native Mach-O linking' >&2; return 1; }
             [ "$(info_value features.link_elf)" = false ] || { echo 'macOS LLD over-declares ELF linking' >&2; return 1; }
             [ "$(info_value features.link_coff)" = false ] || { echo 'macOS LLD over-declares COFF linking' >&2; return 1; }
             [ "$(info_value features.link_wasm)" = false ] || { echo 'macOS LLD over-declares Wasm linking' >&2; return 1; }
-            require_executable "$candidate/bin/ld64.lld"
             cc -fuse-ld="$candidate/bin/ld64.lld" "$work/main.c" -o "$work/lld-test"
             ;;
         *)
@@ -505,8 +482,10 @@ framed_wait() {
     local fd="$1"
     local log="$2"
     local pattern="$3"
-    local max_reads="${4:-120}"
-    local i=0
+    local timeout_seconds="${4:-120}"
+    local deadline=$((SECONDS + timeout_seconds))
+    local remaining
+    local read_timeout
     local index
     local message
 
@@ -522,9 +501,13 @@ framed_wait() {
         fi
     done
 
-    while [ "$i" -lt "$max_reads" ]; do
-        if ! framed_read "$fd" 2; then
-            i=$((i + 1))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        remaining=$((deadline - SECONDS))
+        read_timeout=2
+        [ "$remaining" -ge "$read_timeout" ] || read_timeout="$remaining"
+        [ "$read_timeout" -gt 0 ] || break
+
+        if ! framed_read "$fd" "$read_timeout"; then
             continue
         fi
         printf '%s\n' "$FRAMED_MESSAGE" >> "$log"
@@ -532,7 +515,6 @@ framed_wait() {
             return 0
         fi
         FRAMED_PENDING+=("$FRAMED_MESSAGE")
-        i=$((i + 1))
     done
     echo "timed out waiting for framed protocol message matching: $pattern" >&2
     cat "$log" >&2
@@ -755,6 +737,22 @@ run_clang_driver_clean() {
         "$candidate/bin/$driver" "$@"
 }
 
+run_macos_clang_clean() {
+    local candidate="$1"
+    local driver="$2"
+    local clean_home="$3"
+    shift 3
+
+    mkdir -p "$clean_home"
+    env -i \
+        HOME="$clean_home" \
+        PATH=/usr/bin:/bin \
+        LANG=C \
+        LC_ALL=C \
+        TZ=UTC \
+        "$candidate/bin/$driver" "$@"
+}
+
 clang_linux_relocation_probe() {
     local candidate="$1"
     local label="$2"
@@ -936,27 +934,21 @@ clang_macos_relocation_probe() {
     local label="$2"
     local clean_home="$tmp_root/clang-macos-home-$label"
     local resource_dir
-    local sdk_args=()
-
-    mapfile -t sdk_args < <(macos_sdk_args)
     mkdir -p "$clean_home"
 
     "$candidate/bin/clang" --version
     resource_dir="$(require_package_owned_clang_resource_dir "$candidate")"
     echo "clang resource dir ($label): $resource_dir"
 
-    env -i HOME="$clean_home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
-        "$candidate/bin/clang" "${sdk_args[@]}" \
+    run_macos_clang_clean "$candidate" clang "$clean_home" \
         "$tmp_root/clang-test.c" -o "$tmp_root/clang-macos-c-$label"
     "$tmp_root/clang-macos-c-$label" | grep -F "hello clang 42"
 
-    env -i HOME="$clean_home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
-        "$candidate/bin/clang++" "${sdk_args[@]}" \
+    run_macos_clang_clean "$candidate" clang++ "$clean_home" \
         "$tmp_root/clang-cpp-test.cpp" -o "$tmp_root/clang-macos-cpp-$label"
     "$tmp_root/clang-macos-cpp-$label" | grep -F "42"
 
-    env -i HOME="$clean_home" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
-        "$candidate/bin/clang" "${sdk_args[@]}" -flto \
+    run_macos_clang_clean "$candidate" clang "$clean_home" -flto \
         -fuse-ld="$candidate/bin/ld64.lld" \
         "$tmp_root/clang-test.c" -o "$tmp_root/clang-macos-lto-$label"
     "$tmp_root/clang-macos-lto-$label" | grep -F "hello clang 42"
@@ -1268,7 +1260,7 @@ assert_no_llvm_development_payload() {
         while IFS= read -r -d '' archive; do
             base="$(basename "$archive")"
             case "$base" in
-                libc++.a|libc++abi.a|libc++experimental.a|libunwind.a|libclang_rt.*)
+                libc++.a|libunwind.a|libclang_rt.*)
                     continue
                     ;;
             esac
@@ -1292,16 +1284,25 @@ case "$LLVM_TOOL" in
         done
         require_executable "$root/bin/clang"
         require_executable "$root/bin/clang++"
-        require_executable "$root/bin/ld.lld"
 
         "$root/bin/clang" --version
         "$root/bin/clang++" --version
-        "$root/bin/ld.lld" --version
+        if [ "$(uname -s)" = Darwin ]; then
+            require_executable "$root/bin/ld64.lld"
+            "$root/bin/ld64.lld" --version
+        else
+            require_executable "$root/bin/ld.lld"
+            "$root/bin/ld.lld" --version
+        fi
 
         resource_dir="$(require_package_owned_clang_resource_dir "$root")"
         echo "clang resource dir: $resource_dir"
 
         if [ "$(uname -s)" = "Linux" ]; then
+            [ "$(info_value requires.system_development_environment)" = true ] || {
+                echo 'Linux Clang is missing its native system development environment prerequisite metadata' >&2
+                exit 1
+            }
             [ -f "$root/bin/clang++.cfg" ] || {
                 echo "Linux Clang packaged libc++ driver config is missing" >&2
                 exit 1
@@ -1335,18 +1336,22 @@ C_EOF
         if [ "$(uname -s)" = "Linux" ]; then
             run_clang_driver_clean "$root" clang "$tmp_root/clang-home-A" "$clang_poison" \
                 "$tmp_root/clang-test.c" -o "$tmp_root/clang-test"
+        elif [ "$(uname -s)" = "Darwin" ]; then
+            run_macos_clang_clean "$root" clang "$tmp_root/clang-macos-home-A" \
+                "$tmp_root/clang-test.c" -o "$tmp_root/clang-test"
         else
             "$root/bin/clang" "${sdk_args[@]}" "$tmp_root/clang-test.c" -o "$tmp_root/clang-test"
         fi
         "$tmp_root/clang-test" | grep -F "hello clang 42"
 
         if [ "$(uname -s)" = "Darwin" ]; then
-            require_executable "$root/bin/ld64.lld"
-            "$root/bin/clang" "${sdk_args[@]}" -fuse-ld="$root/bin/ld64.lld" \
+            run_macos_clang_clean "$root" clang "$tmp_root/clang-macos-home-A" \
+                -fuse-ld="$root/bin/ld64.lld" \
                 "$tmp_root/clang-test.c" -o "$tmp_root/clang-lld-test"
             "$tmp_root/clang-lld-test" | grep -F "hello clang 42"
 
-            "$root/bin/clang" "${sdk_args[@]}" -flto -fuse-ld="$root/bin/ld64.lld" \
+            run_macos_clang_clean "$root" clang "$tmp_root/clang-macos-home-A" \
+                -flto -fuse-ld="$root/bin/ld64.lld" \
                 "$tmp_root/clang-test.c" -o "$tmp_root/clang-lto-test"
             "$tmp_root/clang-lto-test" | grep -F "hello clang 42"
         elif [ "$(uname -s)" = "Linux" ]; then
@@ -1367,17 +1372,43 @@ C_EOF
 
         cat > "$tmp_root/clang-cpp-test.cpp" <<'CPP_EOF'
 #include <iostream>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
+struct Base {
+    virtual ~Base() = default;
+};
+
+struct Derived : Base {
+    int value = 42;
+};
+
 int main() {
-    std::vector<int> values = {20, 22};
-    std::cout << (values[0] + values[1]) << "\n";
+    std::vector<std::string> values = {"20", "22"};
+    Base *base = new Derived();
+    Derived *derived = dynamic_cast<Derived *>(base);
+    if (derived == nullptr) return 1;
+
+    int result = 0;
+    try {
+        throw std::runtime_error("cup-runtime");
+    } catch (const std::exception &error) {
+        if (std::string(error.what()) != "cup-runtime") return 2;
+        result = std::stoi(values[0]) + std::stoi(values[1]);
+    }
+    if (derived->value != result) return 3;
+    delete base;
+    std::cout << result << "\n";
     return 0;
 }
 CPP_EOF
         mapfile -t sdk_args < <(macos_sdk_args)
         if [ "$(uname -s)" = "Linux" ]; then
             run_clang_driver_clean "$root" clang++ "$tmp_root/clang-home-A" "$clang_poison" \
+                "$tmp_root/clang-cpp-test.cpp" -o "$tmp_root/clang-cpp-test"
+        elif [ "$(uname -s)" = "Darwin" ]; then
+            run_macos_clang_clean "$root" clang++ "$tmp_root/clang-macos-home-A" \
                 "$tmp_root/clang-cpp-test.cpp" -o "$tmp_root/clang-cpp-test"
         else
             "$root/bin/clang++" "${sdk_args[@]}" "$tmp_root/clang-cpp-test.cpp" -o "$tmp_root/clang-cpp-test"
@@ -1392,6 +1423,11 @@ CPP_EOF
             run_clang_driver_clean "$root" clang++ "$tmp_root/clang-home-A" "$clang_poison" \
                 -stdlib=libc++ "$tmp_root/clang-cpp-test.cpp" -o "$tmp_root/clang-libcxx-test"
             "$tmp_root/clang-libcxx-test" | grep -F "42"
+            if ldd "$tmp_root/clang-libcxx-test" 2>/dev/null | grep -E 'libc\+\+|libc\+\+abi' >/dev/null; then
+                echo 'Linux packaged libc++ probe fell back to a dynamic libc++/libc++abi' >&2
+                ldd "$tmp_root/clang-libcxx-test" >&2 || true
+                exit 1
+            fi
         elif [ "$(uname -s)" != "Darwin" ]; then
             "$root/bin/clang++" -stdlib=libc++ "$tmp_root/clang-cpp-test.cpp" -o "$tmp_root/clang-libcxx-test"
             "$tmp_root/clang-libcxx-test" | grep -F "42"

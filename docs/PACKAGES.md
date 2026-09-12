@@ -209,7 +209,7 @@ At least one executable entry is required. Every declared `entry.*` path must sa
 
 `features.*` records behavioral capabilities deliberately exposed by the completed package. A command or payload being present is evidence for `entry.*` or `contents.*`; it does not by itself create a `features.*` promise. Positive feature claims therefore have a corresponding product-test oracle. Every `features.*` value is the literal boolean `true` or `false`; the exact keys depend on the tool.
 
-`requires.*` records an explicit external platform prerequisite that is necessary for a declared capability but is not package payload. It is used only when the platform itself owns that prerequisite, and its values are likewise literal `true` or `false`. The current macOS examples are the Apple SDK used for native compilation and Apple's system `debugserver` used by LLDB local process control. A requirement must never be inferred silently from the build runner.
+`requires.*` records an explicit external platform prerequisite that is necessary for a declared capability but is not package payload. It is used only when the platform/toolchain environment owns that prerequisite, and its values are likewise literal `true` or `false`. Current examples are the Linux native development environment used by Clang's default C/C++ compilation path, the Apple developer tools/SDK used for macOS native compilation and Apple's system `debugserver` used by LLDB local process control. A requirement must never be inferred silently from the build runner.
 
 Examples include:
 
@@ -364,7 +364,7 @@ Python can be a genuine runtime capability of a distributed tool.
 
 GDB and LLDB include Python support. The clang-tidy package also carries a package-owned Python runtime for the deliberate `run-clang-tidy` and `clang-tidy-diff` helpers. The standalone clang-format package does not include `git-clang-format`: that upstream integration helper requires an external Git runtime and would make the formatter package non-self-contained for a feature outside CUP's deliberate formatter surface.
 
-When package-owned Python is required, the producer copies the interpreter and the standard-library/runtime material needed by the selected tool. Development-only Python configuration directories are excluded from the final package.
+When package-owned Python is required, the producer copies the interpreter and the standard-library/runtime material needed by the selected tool. Builder `site-packages`/`dist-packages`, development `config-*` directories, `Tools`, `__phello__`, caches, CPython tests and GUI/demo modules are excluded. Existing package-owned LLDB modules are preserved, so the runtime cannot inherit unrelated Clang/libxml2 Python packages from the builder.
 
 For POSIX LLDB, the packaged interpreter path is derived from the Python version selected by the build, for example:
 

@@ -110,6 +110,10 @@ LLVM_RUNTIME_BUILD_DIR=""
 LLVM_BUILD_DIR=""
 LLDB_PACKAGED_PYTHON_RELATIVE=""
 CLANG_CXX_RUNTIME_DEFAULT=false
+WINDOWS_CLANG_SYSROOT_PROVIDER=""
+WINDOWS_CLANG_SYSROOT_COMPONENTS=()
+WINDOWS_CLANG_SYSROOT_PACKAGES=()
+WINDOWS_CLANG_SYSROOT_VERSIONS=()
 
 llvm_runtimes_enabled() {
     [ "$TOOL" = "clang" ] && [ -n "$LLVM_RUNTIMES" ]
@@ -119,12 +123,23 @@ llvm_common_cmake_args() {
     printf '%s\n' \
         -DLLVM_INCLUDE_TESTS=OFF \
         -DLLVM_INCLUDE_BENCHMARKS=OFF \
+        -DLLVM_INCLUDE_EXAMPLES=OFF \
         -DLLVM_INCLUDE_DOCS=OFF \
         -DLLVM_BUILD_DOCS=OFF \
         -DLLVM_BUILD_UTILS=OFF \
         -DLLVM_ENABLE_BINDINGS=OFF \
         -DLLVM_ENABLE_ASSERTIONS=OFF \
-        -DLLVM_ENABLE_LIBPFM=OFF
+        -DLLVM_ENABLE_LIBPFM=OFF \
+        -DLLVM_ENABLE_LIBEDIT=OFF \
+        -DLLVM_APPEND_VC_REV=OFF
+
+    # libxml2 is part of the deliberate product contract only for COFF LLD on
+    # Windows. LLDB has a separate LLDB_ENABLE_LIBXML2 switch below.
+    if [ "$TOOL" = lld ] && is_windows_platform "$HOST_PLATFORM"; then
+        printf '%s\n' -DLLVM_ENABLE_LIBXML2=ON
+    else
+        printf '%s\n' -DLLVM_ENABLE_LIBXML2=OFF
+    fi
 
     # Only the Clang package deliberately owns LLVM command-line tools such as
     # llvm-ar/llvm-nm/llvm-objdump. The other standalone packages use LLVM
@@ -143,6 +158,14 @@ macos_sdk_path() {
 
 macos_deployment_target() {
     printf '%s\n' '15.0'
+}
+
+macos_native_arch() {
+    case "$HOST_PLATFORM" in
+        macos-x64) printf '%s\n' 'x86_64' ;;
+        macos-arm64) printf '%s\n' 'arm64' ;;
+        *) return 1 ;;
+    esac
 }
 
 cmake_native_path() {
@@ -270,13 +293,14 @@ llvm_compiler_rt_installed_cxx_abi_args() {
 }
 
 llvm_compiler_rt_sanitizers_to_build() {
-    printf '%s\n' 'asan;ubsan_minimal'
+    printf '%s\n' 'asan'
 }
 
 llvm_compiler_rt_sanitizer_cmake_args() {
     local args=(
         -DCOMPILER_RT_BUILD_SANITIZERS=ON
         -DCOMPILER_RT_BUILD_PROFILE=ON
+        -DCOMPILER_RT_BUILD_PROFILE_ROCM=OFF
         -DCOMPILER_RT_BUILD_CTX_PROFILE=OFF
         -DCOMPILER_RT_BUILD_LIBFUZZER=OFF
         -DCOMPILER_RT_BUILD_XRAY=OFF
@@ -309,6 +333,24 @@ windows_clang_msys2_package_prefix() {
             die "unsupported Windows Clang host platform for MSYS2 package lookup: $HOST_PLATFORM"
             ;;
     esac
+}
+
+msys2_package_version() {
+    local package="$1"
+    pacman -Q "$package" 2>/dev/null | awk 'NF >= 2 {print $2; exit}'
+}
+
+record_windows_clang_sysroot_component() {
+    local component="$1"
+    local package="$2"
+    local version
+
+    version="$(msys2_package_version "$package")"
+    [ -n "$version" ] || die "could not determine MSYS2 package version: $package"
+
+    WINDOWS_CLANG_SYSROOT_COMPONENTS+=("$component")
+    WINDOWS_CLANG_SYSROOT_PACKAGES+=("$package")
+    WINDOWS_CLANG_SYSROOT_VERSIONS+=("$version")
 }
 
 copy_msys2_package_files_to_clang_sysroot() {
@@ -371,6 +413,10 @@ copy_windows_clang_mingw_sysroot_from_packages() {
         if ! copy_msys2_package_files_to_clang_sysroot "$package" "$canonical_target_dir"; then
             die "required MSYS2 package payload not available for Clang sysroot: $package"
         fi
+        case "$package" in
+            *-headers) record_windows_clang_sysroot_component headers "$package" ;;
+            *-crt) record_windows_clang_sysroot_component crt "$package" ;;
+        esac
         copied_required=true
     done
 
@@ -380,10 +426,16 @@ copy_windows_clang_mingw_sysroot_from_packages() {
     )
 
     for package in "${optional_packages[@]}"; do
-        if ! copy_msys2_package_files_to_clang_sysroot "$package" "$canonical_target_dir"; then
+        if copy_msys2_package_files_to_clang_sysroot "$package" "$canonical_target_dir"; then
+            case "$package" in
+                *-winpthreads) record_windows_clang_sysroot_component winpthreads "$package" ;;
+            esac
+        else
             log "  optional MSYS2 package payload not copied: $package"
         fi
     done
+
+    WINDOWS_CLANG_SYSROOT_PROVIDER="msys2-clang64"
 
     [ "$copied_required" = true ]
 }
@@ -398,6 +450,8 @@ copy_windows_clang_mingw_sysroot_from_layout() {
         log "copying MinGW target sysroot for Clang from $source_sysroot"
         cp -RPp "$source_sysroot/include" "$canonical_target_dir/"
         cp -RPp "$source_sysroot/lib" "$canonical_target_dir/"
+        WINDOWS_CLANG_SYSROOT_PROVIDER="mingw-prefix-layout"
+        WINDOWS_CLANG_SYSROOT_COMPONENTS=(headers crt)
         return 0
     fi
 
@@ -405,6 +459,8 @@ copy_windows_clang_mingw_sysroot_from_layout() {
         log "copying MinGW flat sysroot for Clang from $MINGW_PREFIX"
         cp -RPp "$MINGW_PREFIX/include" "$canonical_target_dir/"
         cp -RPp "$MINGW_PREFIX/lib" "$canonical_target_dir/"
+        WINDOWS_CLANG_SYSROOT_PROVIDER="mingw-prefix-layout"
+        WINDOWS_CLANG_SYSROOT_COMPONENTS=(headers crt)
         return 0
     fi
 
@@ -731,20 +787,20 @@ copy_clang_sanitizer_runtime_dlls() {
 prune_llvm_package_bins() {
     case "$TOOL" in
         clang)
-            local -a clang_bins=(
-                clang clang++ clang-cpp clang-cl clang-scan-deps
-                lld ld.lld lld-link wasm-ld
-                llvm-ar llvm-ranlib llvm-nm llvm-objcopy llvm-objdump llvm-readobj llvm-readelf
-                llvm-strip llvm-size llvm-strings llvm-lib llvm-dlltool llvm-rc
-            )
             if is_macos_platform "$HOST_PLATFORM"; then
-                clang_bins+=(ld64.lld)
+                prune_bin_except clang clang++ ld64.lld
+            else
+                # MinGW Clang uses ld.lld for -fuse-ld=lld as well; lld-link is
+                # the public Windows frontend only in the standalone LLD package.
+                prune_bin_except clang clang++ ld.lld
             fi
-            prune_bin_except "${clang_bins[@]}"
             ;;
         lld)
-            prune_bin_except \
-                lld ld.lld lld-link wasm-ld ld64.lld
+            case "$HOST_PLATFORM" in
+                linux-*) prune_bin_except ld.lld ;;
+                windows-x64) prune_bin_except lld-link ;;
+                macos-*) prune_bin_except ld64.lld ;;
+            esac
             ;;
         lldb)
             if is_macos_platform "$HOST_PLATFORM"; then
@@ -766,8 +822,7 @@ prune_llvm_package_bins() {
             done
             ;;
         clangd)
-            prune_bin_except \
-                clangd clangd-indexer
+            prune_bin_except clangd
             ;;
         clang-format)
             prune_bin_except clang-format
@@ -1222,7 +1277,7 @@ validate_llvm_package_layout() {
             [ -n "$resource_dir" ] || die "clangd package is missing its Clang resource directory"
             [ -f "$resource_dir/include/stddef.h" ] || die "clangd package is missing built-in Clang headers"
             while IFS= read -r -d '' bin_entry; do
-                is_kept_bin_tool "$(basename "$bin_entry")" clangd clangd-indexer ||
+                is_kept_bin_tool "$(basename "$bin_entry")" clangd ||
                     die "clangd package retained unexpected sibling executable: $bin_entry"
             done < <(find "$package_root/bin" -mindepth 1 -maxdepth 1 \( -type f -o -type l \) -print0)
             for forbidden in include share libexec; do
@@ -1243,14 +1298,269 @@ validate_llvm_package_layout() {
             ;;
         clang-tidy)
             prefix_executable_exists "$package_root" clang-tidy || die "clang-tidy package is missing bin/clang-tidy"
+            prefix_executable_exists "$package_root" clang-apply-replacements || die "clang-tidy package is missing clang-apply-replacements"
             prefix_executable_exists "$package_root" run-clang-tidy || die "clang-tidy package is missing run-clang-tidy"
             prefix_executable_exists "$package_root" clang-tidy-diff || die "clang-tidy package is missing clang-tidy-diff"
+            if [ -d "$package_root/lib/clang" ]; then
+                for candidate in "$package_root/lib/clang"/*; do
+                    [ -d "$candidate" ] || continue
+                    [ -z "$resource_dir" ] || die "clang-tidy package contains multiple Clang resource directories"
+                    resource_dir="$candidate"
+                done
+            fi
+            [ -n "$resource_dir" ] || die "clang-tidy package is missing its Clang resource directory"
+            [ -f "$resource_dir/include/stddef.h" ] || die "clang-tidy package is missing built-in Clang headers"
             [ ! -e "$package_root/include" ] && [ ! -L "$package_root/include" ] ||
                 die "clang-tidy package retained development headers"
             [ ! -e "$package_root/share" ] && [ ! -L "$package_root/share" ] ||
                 die "clang-tidy package retained unrelated share payload"
             ;;
     esac
+}
+
+package_forbid_bin_tool() {
+    local package_root="$1"
+    local name="$2"
+    local candidate
+
+    while IFS= read -r candidate; do
+        if package_bin_exact_file_exists "$package_root" "$candidate"; then
+            die "$TOOL package retained forbidden bin entry: bin/$candidate"
+        fi
+    done < <(package_bin_candidate_names "$name")
+}
+
+verify_llvm_final_python_site_packages() {
+    local package_root="$1"
+    local packages_dir
+    local entry
+
+    case "$TOOL" in
+        lldb)
+            for packages_dir in \
+                "$package_root"/lib/python*/site-packages \
+                "$package_root"/lib/python*/dist-packages; do
+                [ -d "$packages_dir" ] || continue
+                for entry in "$packages_dir"/*; do
+                    [ -e "$entry" ] || [ -L "$entry" ] || continue
+                    [ "$(basename "$entry")" = lldb ] ||
+                        die "LLDB package retained ambient Python package: ${entry#"$package_root"/}"
+                done
+            done
+            ;;
+        clang-tidy)
+            for packages_dir in \
+                "$package_root"/lib/python*/site-packages \
+                "$package_root"/lib/python*/dist-packages; do
+                [ -d "$packages_dir" ] || continue
+                if find "$packages_dir" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+                    die "clang-tidy package retained ambient Python site-packages: ${packages_dir#"$package_root"/}"
+                fi
+            done
+            ;;
+    esac
+}
+
+verify_llvm_final_runtime_policy() {
+    local package_root="$1"
+    local resource_dir=""
+    local forbidden
+    local expected_builtins
+
+    [ "$TOOL" = clang ] || return 0
+
+    for forbidden in '*profile_rocm*' '*ubsan_minimal*' '*lsan*' '*stats*' '*ubsan_loop_detect*' '*c++experimental*'; do
+        if find "$package_root" -type f -name "$forbidden" -print -quit | grep -q .; then
+            die "Clang package retained runtime outside CUP scope: $forbidden"
+        fi
+    done
+
+    [ ! -e "$package_root/include/fuzzer" ] || die "Clang package retained libFuzzer development headers"
+    [ ! -e "$package_root/lib/$(clang_runtime_platform_dir)" ] ||
+        die "Clang package retained duplicate compiler-rt staging directory"
+
+    resource_dir="$(find "$package_root/lib/clang" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null || true)"
+    [ -n "$resource_dir" ] || die "Clang package is missing its resource directory"
+    [ -f "$resource_dir/include/stddef.h" ] || die "Clang package is missing builtin resource headers"
+
+    if is_windows_platform "$HOST_PLATFORM"; then
+        [ ! -e "$resource_dir/lib/$HOST_TRIPLE" ] || die "Clang package retained compiler-rt host-triple alias"
+        [ ! -e "$resource_dir/lib/$TARGET_TRIPLE" ] || die "Clang package retained compiler-rt target-triple alias"
+        [ ! -e "$resource_dir/lib/x86_64-w64-windows-gnu" ] || die "Clang package retained compiler-rt GNU-triple alias"
+    fi
+
+    expected_builtins="$(compiler_rt_builtins_basename)"
+    [ -f "$resource_dir/lib/$(clang_runtime_platform_dir)/$expected_builtins" ] ||
+        die "Clang package is missing target compiler-rt builtins: $expected_builtins"
+}
+
+verify_llvm_final_bin_policy() {
+    local package_root="$1"
+    local candidate
+
+    case "$TOOL" in
+        clang)
+            for candidate in clang-cl clang-cpp clang-scan-deps wasm-ld lld-link; do
+                package_forbid_bin_tool "$package_root" "$candidate"
+            done
+            if is_macos_platform "$HOST_PLATFORM"; then
+                package_forbid_bin_tool "$package_root" ld.lld
+            else
+                package_forbid_bin_tool "$package_root" ld64.lld
+            fi
+            if find "$package_root/bin" -mindepth 1 -maxdepth 1 -name 'llvm-*' -print -quit | grep -q .; then
+                die "Clang package retained LLVM toolbox commands outside the compiler contract"
+            fi
+            ;;
+        lld)
+            case "$HOST_PLATFORM" in
+                linux-*)
+                    prefix_executable_exists "$package_root" ld.lld || die "LLD package is missing ld.lld"
+                    for candidate in lld-link wasm-ld ld64.lld; do package_forbid_bin_tool "$package_root" "$candidate"; done
+                    ;;
+                windows-x64)
+                    prefix_executable_exists "$package_root" lld-link || die "LLD package is missing lld-link"
+                    for candidate in lld ld.lld wasm-ld ld64.lld; do package_forbid_bin_tool "$package_root" "$candidate"; done
+                    ;;
+                macos-*)
+                    prefix_executable_exists "$package_root" ld64.lld || die "LLD package is missing ld64.lld"
+                    for candidate in ld.lld lld-link wasm-ld; do package_forbid_bin_tool "$package_root" "$candidate"; done
+                    ;;
+            esac
+            ;;
+        clangd)
+            prefix_executable_exists "$package_root" clangd || die "clangd package is missing clangd"
+            package_forbid_bin_tool "$package_root" clangd-indexer
+            ;;
+    esac
+}
+
+verify_llvm_final_resource_policy() {
+    local package_root="$1"
+    local resource_dir=""
+    local candidate
+
+    case "$TOOL" in
+        clang-format)
+            [ ! -e "$package_root/lib/clang" ] && [ ! -L "$package_root/lib/clang" ] ||
+                die "clang-format package retained unused Clang resource directory"
+            return 0
+            ;;
+        clang)
+            # Clang's resource directory is already validated together with its
+            # compiler-rt runtime ownership below.
+            return 0
+            ;;
+        lldb|clangd|clang-tidy)
+            if [ -d "$package_root/lib/clang" ]; then
+                for candidate in "$package_root/lib/clang"/*; do
+                    [ -d "$candidate" ] || continue
+                    [ -z "$resource_dir" ] ||
+                        die "$TOOL package contains multiple final Clang resource directories"
+                    resource_dir="$candidate"
+                done
+            fi
+            [ -n "$resource_dir" ] || die "$TOOL package is missing its final Clang resource directory"
+            [ -f "$resource_dir/include/stddef.h" ] ||
+                die "$TOOL package is missing final built-in Clang headers"
+            ;;
+    esac
+}
+
+verify_llvm_linux_architecture() {
+    local package_root="$1"
+    local expected
+    local file
+    local output
+    local machine
+
+    case "$HOST_PLATFORM" in
+        linux-x64) expected='Advanced Micro Devices X86-64' ;;
+        linux-arm64) expected='AArch64' ;;
+        *) return 0 ;;
+    esac
+
+    command -v readelf >/dev/null 2>&1 || die "readelf is required for Linux package architecture validation"
+    while IFS= read -r -d '' file; do
+        output="$(LC_ALL=C readelf -hW "$file" 2>/dev/null || true)"
+        [ -n "$output" ] || continue
+        while IFS= read -r machine; do
+            [ -n "$machine" ] || continue
+            [ "$machine" = "$expected" ] ||
+                die "wrong Linux architecture in ${file#"$package_root"/}: $machine (expected $expected)"
+        done < <(printf '%s\n' "$output" | awk -F: '/^[[:space:]]*Machine:/ {sub(/^[[:space:]]+/, "", $2); print $2}')
+    done < <(find "$package_root/bin" "$package_root/lib" -type f \
+        \( -perm -0100 -o -name '*.so' -o -name '*.so.*' -o -name '*.a' \) -print0 2>/dev/null)
+}
+
+verify_llvm_windows_architecture() {
+    local package_root="$1"
+    local file
+    local output
+    local arch
+
+    is_windows_platform "$HOST_PLATFORM" || return 0
+    command -v objdump >/dev/null 2>&1 || die "objdump is required for Windows package architecture validation"
+
+    while IFS= read -r -d '' file; do
+        output="$(LC_ALL=C objdump -f "$file" 2>/dev/null || true)"
+        [ -n "$output" ] || continue
+        while IFS= read -r arch; do
+            [ -n "$arch" ] || continue
+            case "$arch" in
+                i386:x86-64) ;;
+                *) die "wrong Windows architecture in ${file#"$package_root"/}: $arch (expected i386:x86-64)" ;;
+            esac
+        done < <(printf '%s\n' "$output" | sed -n 's/^[[:space:]]*architecture: \([^,]*\),.*/\1/p')
+    done < <(find "$package_root/bin" "$package_root/lib" -type f \
+        \( -name '*.exe' -o -name '*.dll' -o -name '*.pyd' -o -name '*.a' \) -print0 2>/dev/null)
+}
+
+verify_llvm_macos_architecture() {
+    local package_root="$1"
+    local expected
+    local file
+    local description
+    local archs
+    local arch
+
+    is_macos_platform "$HOST_PLATFORM" || return 0
+    expected="$(macos_native_arch)"
+    command -v file >/dev/null 2>&1 || die "file is required for macOS package architecture validation"
+    command -v lipo >/dev/null 2>&1 || die "lipo is required for macOS package architecture validation"
+
+    while IFS= read -r -d '' file; do
+        description="$(LC_ALL=C file -b "$file" 2>/dev/null || true)"
+        case "$description" in
+            *Mach-O*|*archive*) ;;
+            *) continue ;;
+        esac
+        archs="$(lipo -archs "$file" 2>/dev/null || true)"
+        [ -n "$archs" ] || continue
+        for arch in $archs; do
+            [ "$arch" = "$expected" ] ||
+                die "wrong macOS architecture in ${file#"$package_root"/}: $arch (expected $expected)"
+        done
+    done < <(find "$package_root/bin" "$package_root/lib" -type f \
+        \( -perm -0100 -o -name '*.dylib' -o -name '*.a' \) -print0 2>/dev/null)
+}
+
+verify_llvm_final_architecture() {
+    local package_root="$1"
+
+    verify_llvm_linux_architecture "$package_root"
+    verify_llvm_windows_architecture "$package_root"
+    verify_llvm_macos_architecture "$package_root"
+}
+
+package_verify_final_tool_policy() {
+    local package_root="$1"
+
+    verify_llvm_final_bin_policy "$package_root"
+    verify_llvm_final_runtime_policy "$package_root"
+    verify_llvm_final_resource_policy "$package_root"
+    verify_llvm_final_python_site_packages "$package_root"
+    verify_llvm_final_architecture "$package_root"
 }
 
 clang_runtime_platform_dir() {
@@ -1268,12 +1578,6 @@ clang_resource_runtime_alias_dirs() {
 
     platform_dir="$(clang_runtime_platform_dir)"
     printf '%s\n' "$resource_dir/lib/$platform_dir"
-
-    if is_windows_platform "$HOST_PLATFORM"; then
-        printf '%s\n' "$resource_dir/lib/$HOST_TRIPLE"
-        printf '%s\n' "$resource_dir/lib/$TARGET_TRIPLE"
-        printf '%s\n' "$resource_dir/lib/x86_64-w64-windows-gnu"
-    fi
 }
 
 copy_clang_runtimes_to_resource_dir() {
@@ -1310,39 +1614,28 @@ copy_clang_runtimes_to_resource_dir() {
         fi
     done
 
-    if [ "$copied" = true ] && is_windows_platform "$HOST_PLATFORM"; then
-        copy_clang_resource_runtime_aliases "$destination" "$resource_dir"
-    fi
-
     if [ "$copied" = false ]; then
         log "no separate clang runtime directory found to copy into resource dir"
     fi
 }
 
-copy_clang_resource_runtime_aliases() {
-    local canonical_dir="$1"
-    local resource_dir="$2"
-    local alias_dir
-
-    if ! is_windows_platform "$HOST_PLATFORM"; then
-        return 0
-    fi
-
-    while IFS= read -r alias_dir; do
-        [ -n "$alias_dir" ] || continue
-        [ "$alias_dir" != "$canonical_dir" ] || continue
-        mkdir -p "$alias_dir"
-        cp -RPp "$canonical_dir"/. "$alias_dir"/
-    done < <(clang_resource_runtime_alias_dirs "$resource_dir" | sort -u)
+compiler_rt_builtins_basename() {
+    case "$HOST_PLATFORM" in
+        linux-x64|windows-x64) printf '%s\n' 'libclang_rt.builtins-x86_64.a' ;;
+        linux-arm64) printf '%s\n' 'libclang_rt.builtins-aarch64.a' ;;
+        macos-x64) printf '%s\n' 'libclang_rt.builtins_x86_64_osx.a' ;;
+        macos-arm64) printf '%s\n' 'libclang_rt.builtins_arm64_osx.a' ;;
+        *) die "unsupported compiler-rt builtins platform: $HOST_PLATFORM" ;;
+    esac
 }
 
 copy_compiler_rt_builtins_to_resource_dir() {
     local builtins_build_dir="$1"
     local resource_dir
+    local expected_basename
     local builtin
-    local copied=false
-    local destinations=()
     local destination
+    local matches=()
 
     resource_dir="$(clang_resource_dir || true)"
     if [ -z "$resource_dir" ]; then
@@ -1350,38 +1643,39 @@ copy_compiler_rt_builtins_to_resource_dir() {
         return 0
     fi
 
-    while IFS= read -r destination; do
-        [ -n "$destination" ] && destinations+=("$destination")
-    done < <(clang_resource_runtime_alias_dirs "$resource_dir" | sort -u)
+    expected_basename="$(compiler_rt_builtins_basename)"
+    destination="$resource_dir/lib/$(clang_runtime_platform_dir)"
 
     while IFS= read -r builtin; do
         [ -n "$builtin" ] || continue
         [ -f "$builtin" ] || continue
+        matches+=("$builtin")
+    done < <(find "$builtins_build_dir" -type f -name "$expected_basename" | sort -u)
 
-        for destination in "${destinations[@]}"; do
-            mkdir -p "$destination"
-            cp -f "$builtin" "$destination/$(basename "$builtin")"
-        done
+    [ "${#matches[@]}" -eq 1 ] ||
+        die "expected exactly one $expected_basename under $builtins_build_dir, found ${#matches[@]}"
 
-        log "  copied compiler-rt builtin: $(basename "$builtin")"
-        copied=true
-    done < <(find "$builtins_build_dir" -type f \
-        \( -name 'libclang_rt.builtins*.a' -o -name 'clang_rt.builtins*.lib' \) | sort -u)
-
-    if [ "$copied" = false ]; then
-        log "warning: no compiler-rt builtins were found under $builtins_build_dir"
-    fi
+    mkdir -p "$destination"
+    cp -f "${matches[0]}" "$destination/$expected_basename"
+    log "  copied compiler-rt builtin: $expected_basename"
 }
 
 find_compiler_rt_builtins_library() {
     local resource_dir
+    local expected_basename
+    local matches=()
+    local candidate
 
     resource_dir="$(clang_resource_dir || true)"
     [ -n "$resource_dir" ] || return 1
+    expected_basename="$(compiler_rt_builtins_basename)"
 
-    find "$resource_dir/lib" -type f \
-        \( -name 'libclang_rt.builtins*.a' -o -name 'clang_rt.builtins*.lib' \) \
-        | sort | head -n 1
+    while IFS= read -r candidate; do
+        [ -n "$candidate" ] && matches+=("$candidate")
+    done < <(find "$resource_dir/lib" -type f -name "$expected_basename" | sort -u)
+
+    [ "${#matches[@]}" -eq 1 ] || return 1
+    printf '%s\n' "${matches[0]}"
 }
 
 
@@ -1466,6 +1760,7 @@ llvm_runtime_common_args() {
         sdk_path="$(macos_sdk_path)"
         args+=(
             -DCMAKE_OSX_DEPLOYMENT_TARGET="$(macos_deployment_target)"
+            -DCMAKE_OSX_ARCHITECTURES="$(macos_native_arch)"
         )
         if [ -n "$sdk_path" ]; then
             args+=(
@@ -1530,7 +1825,7 @@ build_clang_builtins_runtime() {
         -DCOMPILER_RT_BUILD_MEMPROF=OFF
         -DCOMPILER_RT_BUILD_ORC=OFF
         -DCOMPILER_RT_BUILD_GWP_ASAN=OFF
-        -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON
+        -DCOMPILER_RT_DEFAULT_TARGET_ONLY:BOOL=ON
     )
 
     while IFS= read -r arg; do
@@ -1630,6 +1925,7 @@ build_clang_cxx_runtimes() {
         -DLIBUNWIND_USE_COMPILER_RT=ON
         -DLIBCXXABI_ENABLE_SHARED=OFF
         -DLIBCXXABI_ENABLE_STATIC=ON
+        -DLIBCXXABI_INSTALL_LIBRARY=OFF
         -DLIBCXXABI_USE_LLVM_UNWINDER=ON
         -DLIBCXXABI_USE_COMPILER_RT=ON
         -DLIBCXX_ENABLE_SHARED=OFF
@@ -1766,7 +2062,7 @@ build_clang_sanitizer_runtimes() {
     cmake_sanitizer_args+=(
         -DLLVM_ENABLE_RUNTIMES=compiler-rt
         -DCOMPILER_RT_BUILD_BUILTINS=OFF
-        -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON
+        -DCOMPILER_RT_DEFAULT_TARGET_ONLY:BOOL=ON
         -DCOMPILER_RT_USE_BUILTINS_LIBRARY=ON
         -DCOMPILER_RT_USE_LIBCXX=ON
         -DCOMPILER_RT_EXCLUDE_ATOMIC_BUILTIN=OFF
@@ -1835,6 +2131,59 @@ build_clang_sanitizer_runtimes() {
     copy_clang_runtimes_to_resource_dir
 }
 
+prune_unowned_clang_runtime_payload() {
+    local platform_dir
+    local resource_dir
+    local header
+
+    [ "$TOOL" = clang ] || return 0
+
+    # CUP deliberately provides builtins, ASan, full UBSan, normal profiling
+    # and libc++. Remove compiler-rt variants whose separate modes are outside
+    # that product contract before the package runtime-closure step runs.
+    find "$PREFIX" -type f \
+        \( -name '*profile_rocm*' \
+           -o -name '*ubsan_minimal*' \
+           -o -name '*lsan*' \
+           -o -name '*stats*' \
+           -o -name '*ubsan_loop_detect*' \
+           -o -name '*c++experimental*' \) -delete
+
+    rm -rf "$PREFIX/include/fuzzer"
+
+    # Keep the public interfaces for the runtimes CUP actually ships. The
+    # remaining sanitizer headers belong to independent runtimes/capabilities.
+    if [ -d "$PREFIX/include/sanitizer" ]; then
+        for header in "$PREFIX/include/sanitizer"/*; do
+            [ -f "$header" ] || continue
+            case "$(basename "$header")" in
+                allocator_interface.h|asan_interface.h|common_interface_defs.h|ubsan_interface.h)
+                    ;;
+                *) rm -f "$header" ;;
+            esac
+        done
+    fi
+
+    # Runtime sub-builds install into a temporary top-level platform directory.
+    # Once copied into Clang's canonical resource directory it has no product
+    # ownership and would otherwise duplicate every runtime in the archive.
+    platform_dir="$(clang_runtime_platform_dir)"
+    rm -rf "$PREFIX/lib/$platform_dir" "$PREFIX/lib/clang_rt/$platform_dir"
+
+    # Older V52 Windows packaging also materialized triple aliases inside the
+    # resource directory. They are not consumed by the runtime naming/layout
+    # produced here; reject their survival rather than keeping duplicate bytes.
+    if is_windows_platform "$HOST_PLATFORM"; then
+        resource_dir="$(clang_resource_dir || true)"
+        if [ -n "$resource_dir" ]; then
+            rm -rf \
+                "$resource_dir/lib/$HOST_TRIPLE" \
+                "$resource_dir/lib/$TARGET_TRIPLE" \
+                "$resource_dir/lib/x86_64-w64-windows-gnu"
+        fi
+    fi
+}
+
 build_llvm_runtimes() {
     local source_dir="$1"
     local tool_build_dir="$2"
@@ -1850,6 +2199,7 @@ build_llvm_runtimes() {
     build_clang_builtins_runtime "$source_dir" "$tool_build_dir"
     build_clang_cxx_runtimes "$source_dir" "$tool_build_dir"
     build_clang_sanitizer_runtimes "$source_dir" "$tool_build_dir"
+    prune_unowned_clang_runtime_payload
 }
 
 materialize_lldb_clang_resources() {
@@ -1989,6 +2339,13 @@ build_llvm_tool() {
             cmake_extra_args+=(-DCLANG_ENABLE_STATIC_ANALYZER=ON)
             ;;
     esac
+
+    # A standalone Clang on macOS should consume the declared Apple SDK
+    # prerequisite through the platform discovery mechanism rather than rely
+    # on every caller to inject -isysroot manually.
+    if [ "$TOOL" = clang ] && is_macos_platform "$HOST_PLATFORM"; then
+        cmake_extra_args+=(-DCLANG_USE_XCSELECT=ON)
+    fi
     case "$TOOL" in
         clangd|clang-tidy)
             cmake_extra_args+=(
@@ -2087,73 +2444,9 @@ build_llvm_tool() {
     copy_windows_runtime_dlls "$PREFIX/bin"
 }
 
-llvm_exe_suffix() {
-    if is_windows_platform "$HOST_PLATFORM"; then
-        printf '%s\n' ".exe"
-    else
-        printf '%s\n' ""
-    fi
-}
-
-llvm_bin_exists() {
-    local name="$1"
-    local exe_suffix
-    exe_suffix="$(llvm_exe_suffix)"
-
-    [ -x "$PREFIX/bin/$name" ] || [ -x "$PREFIX/bin/$name$exe_suffix" ]
-}
-
-append_lld_frontend_info() {
-    local -n out_ref="$1"
-    local frontends=()
-    local frontend
-
-    [ "$TOOL" = "lld" ] || return 0
-
-    for frontend in ld.lld lld-link wasm-ld ld64.lld; do
-        if llvm_bin_exists "$frontend"; then
-            frontends+=("$frontend")
-            case "$frontend" in
-                ld.lld) out_ref+=("contents.frontend.ld_lld=true") ;;
-                lld-link) out_ref+=("contents.frontend.lld_link=true") ;;
-                wasm-ld) out_ref+=("contents.frontend.wasm_ld=true") ;;
-                ld64.lld) out_ref+=("contents.frontend.ld64_lld=true") ;;
-            esac
-        else
-            case "$frontend" in
-                ld.lld) out_ref+=("contents.frontend.ld_lld=false") ;;
-                lld-link) out_ref+=("contents.frontend.lld_link=false") ;;
-                wasm-ld) out_ref+=("contents.frontend.wasm_ld=false") ;;
-                ld64.lld) out_ref+=("contents.frontend.ld64_lld=false") ;;
-            esac
-        fi
-    done
-
-    if [ "${#frontends[@]}" -gt 0 ]; then
-        local joined
-        joined="$(IFS=,; printf '%s' "${frontends[*]}")"
-        out_ref+=("contents.frontends=$joined")
-    fi
-}
-
 write_llvm_info() {
-    local has_clang
-    local has_clangpp
     local has_resource_dir
-    local has_lld
-    local has_lld_link
-    local has_ld64_lld
-    local has_native_lld
-    local has_lldb
     local has_lldb_server
-    local has_lldb_dap
-    local has_clangd
-    local has_clangd_indexer
-    local has_clang_format
-    local has_clang_tidy
-    local has_clang_apply_replacements
-    local has_run_clang_tidy
-    local has_clang_tidy_diff
     local cmake_python
     local cmake_libxml2
     local cmake_lzma
@@ -2162,9 +2455,6 @@ write_llvm_info() {
     local cmake_zlib
     local cmake_zstd
     local has_compiler_rt
-    local has_asan
-    local has_ubsan
-    local has_profile_runtime
     local has_cxx_runtime
     local cxx_runtime_default
     local has_lldb_argdumper
@@ -2173,43 +2463,12 @@ write_llvm_info() {
     local has_driver_config
     local lldb_resource_dir=""
     local has_lldb_clang_resources=false
-    local lld_link_elf=false
-    local lld_link_coff=false
-    local lld_link_macho=false
-    local lldb_process_launch=false
-    local lldb_dap_feature=false
-    local lldb_remote_debugging=false
+    local mingw_components=""
+    local i
 
-    has_clang="$(metadata_bool_for_executable "$PREFIX" clang)"
-    has_clangpp="$(metadata_bool_for_executable "$PREFIX" clang++)"
     has_resource_dir="$(metadata_bool_for_dirs "$PREFIX" 'clang')"
-    has_lld="$(metadata_bool_for_executable "$PREFIX" ld.lld)"
-    has_lld_link="$(metadata_bool_for_executable "$PREFIX" lld-link)"
-    has_ld64_lld="$(metadata_bool_for_executable "$PREFIX" ld64.lld)"
-    has_native_lld="$has_lld"
-    case "$HOST_PLATFORM" in
-        linux-*)
-            lld_link_elf="$has_lld"
-            ;;
-        windows-x64)
-            lld_link_coff="$has_lld_link"
-            ;;
-        macos-*)
-            has_native_lld="$has_ld64_lld"
-            lld_link_macho="$has_ld64_lld"
-            ;;
-    esac
-    has_lldb="$(metadata_bool_for_executable "$PREFIX" lldb)"
     has_lldb_server="$(metadata_bool_for_executable "$PREFIX" lldb-server)"
-    has_lldb_dap="$(metadata_bool_for_executable "$PREFIX" lldb-dap)"
     has_lldb_argdumper="$(metadata_bool_for_executable "$PREFIX" lldb-argdumper)"
-    has_clangd="$(metadata_bool_for_executable "$PREFIX" clangd)"
-    has_clangd_indexer="$(metadata_bool_for_executable "$PREFIX" clangd-indexer)"
-    has_clang_format="$(metadata_bool_for_executable "$PREFIX" clang-format)"
-    has_clang_tidy="$(metadata_bool_for_executable "$PREFIX" clang-tidy)"
-    has_clang_apply_replacements="$(metadata_bool_for_executable "$PREFIX" clang-apply-replacements)"
-    has_run_clang_tidy="$(metadata_bool_for_executable "$PREFIX" run-clang-tidy)"
-    has_clang_tidy_diff="$(metadata_bool_for_executable "$PREFIX" clang-tidy-diff)"
 
     if [ -z "${LLVM_BUILD_DIR:-}" ]; then
         die "LLVM_BUILD_DIR is not set; write_llvm_info must be called after build_llvm_tool"
@@ -2223,9 +2482,6 @@ write_llvm_info() {
     cmake_zlib="$(cmake_cache_bool "${LLVM_BUILD_DIR:-}" LLVM_ENABLE_ZLIB)"
     cmake_zstd="$(cmake_cache_bool "${LLVM_BUILD_DIR:-}" LLVM_ENABLE_ZSTD)"
     has_compiler_rt="$(metadata_bool_for_files "$PREFIX" 'clang_rt.*' 'libclang_rt.*')"
-    has_asan="$(metadata_bool_for_files "$PREFIX" 'clang_rt.asan*' 'libclang_rt.asan*')"
-    has_ubsan="$(metadata_bool_for_files "$PREFIX" 'clang_rt.ubsan*' 'libclang_rt.ubsan*')"
-    has_profile_runtime="$(metadata_bool_for_files "$PREFIX" 'clang_rt.profile*' 'libclang_rt.profile*')"
     has_cxx_runtime="$(llvm_cxx_runtime_files_present)"
     cxx_runtime_default="$CLANG_CXX_RUNTIME_DEFAULT"
     if [ "$cxx_runtime_default" = true ] && [ "$has_cxx_runtime" != true ]; then
@@ -2275,8 +2531,6 @@ write_llvm_info() {
 
     info+=("${CONTENTS_EXTRA[@]}")
 
-    append_lld_frontend_info info
-
     case "$TOOL" in
         clang)
             info+=(
@@ -2284,42 +2538,77 @@ write_llvm_info() {
                 "config.llvm_runtimes_enabled=$(llvm_runtimes_enabled && printf true || printf false)"
                 "$(info_required_entry entry.clang "$PREFIX" clang)"
                 "$(info_required_entry entry.clang++ "$PREFIX" clang++)"
-                "features.c=$has_clang"
-                "features.cpp=$has_clangpp"
-                "features.resource_dir=$has_resource_dir"
-                "features.lld_integration=$has_native_lld"
+                "features.c=true"
+                "features.cpp=true"
+                "features.resource_dir=true"
+                "features.lld_integration=true"
                 "features.lto=true"
                 "contents.compiler_rt=$has_compiler_rt"
                 "contents.llvm_runtimes=$has_llvm_runtimes"
-                "features.asan=$has_asan"
-                "features.ubsan=$has_ubsan"
-                "features.profile_runtime=$has_profile_runtime"
-                "features.cxx_runtime=$has_cxx_runtime"
+                "features.asan=true"
+                "features.ubsan=true"
+                "features.profile_runtime=true"
+                "features.cxx_runtime=true"
                 "config.cxx_runtime_default=$cxx_runtime_default"
                 "contents.mingw_sysroot=$has_mingw_sysroot"
-                "features.sysroot=$has_mingw_sysroot"
+                "features.sysroot=$(is_windows_platform "$HOST_PLATFORM" && printf true || printf false)"
                 "config.driver_config=$has_driver_config"
             )
+            if is_linux_platform "$HOST_PLATFORM"; then
+                info+=("requires.system_development_environment=true")
+            fi
             if is_macos_platform "$HOST_PLATFORM"; then
                 info+=(
                     "requires.apple_developer_tools=true"
                     "requires.macos_sdk=true"
                 )
             fi
+            if is_windows_platform "$HOST_PLATFORM"; then
+                [ "$has_mingw_sysroot" = true ] || die "Windows Clang package is missing its MinGW sysroot"
+                [ -n "$WINDOWS_CLANG_SYSROOT_PROVIDER" ] || die "Windows Clang sysroot provider was not recorded"
+                mingw_components="$(IFS=,; printf '%s' "${WINDOWS_CLANG_SYSROOT_COMPONENTS[*]}")"
+                info+=(
+                    "contents.mingw_sysroot.provider=$WINDOWS_CLANG_SYSROOT_PROVIDER"
+                    "contents.mingw_sysroot.components=$mingw_components"
+                )
+                for ((i = 0; i < ${#WINDOWS_CLANG_SYSROOT_PACKAGES[@]}; i++)); do
+                    info+=(
+                        "contents.mingw_sysroot.${WINDOWS_CLANG_SYSROOT_COMPONENTS[$i]}.package=${WINDOWS_CLANG_SYSROOT_PACKAGES[$i]}"
+                        "contents.mingw_sysroot.${WINDOWS_CLANG_SYSROOT_COMPONENTS[$i]}.version=${WINDOWS_CLANG_SYSROOT_VERSIONS[$i]}"
+                    )
+                done
+            fi
             ;;
         lld)
-            info+=(
-                "$(info_required_entry entry.ld_lld "$PREFIX" ld.lld)"
-                "features.link_elf=$lld_link_elf"
-                "features.link_coff=$lld_link_coff"
-                "features.link_wasm=false"
-                "features.link_macho=$lld_link_macho"
-            )
-            if is_windows_platform "$HOST_PLATFORM"; then
-                info+=("$(info_required_entry entry.lld_link "$PREFIX" lld-link)")
-            elif is_macos_platform "$HOST_PLATFORM"; then
-                info+=("$(info_required_entry entry.ld64_lld "$PREFIX" ld64.lld)")
-            fi
+            case "$HOST_PLATFORM" in
+                linux-*)
+                    info+=(
+                        "$(info_required_entry entry.ld_lld "$PREFIX" ld.lld)"
+                        "features.link_elf=true"
+                        "features.link_coff=false"
+                        "features.link_wasm=false"
+                        "features.link_macho=false"
+                    )
+                    ;;
+                windows-x64)
+                    info+=(
+                        "$(info_required_entry entry.lld_link "$PREFIX" lld-link)"
+                        "features.link_elf=false"
+                        "features.link_coff=true"
+                        "features.link_wasm=false"
+                        "features.link_macho=false"
+                    )
+                    ;;
+                macos-*)
+                    info+=(
+                        "$(info_required_entry entry.ld64_lld "$PREFIX" ld64.lld)"
+                        "features.link_elf=false"
+                        "features.link_coff=false"
+                        "features.link_wasm=false"
+                        "features.link_macho=true"
+                    )
+                    ;;
+            esac
             ;;
         lldb)
             if lldb_resource_dir="$(clang_resource_dir)" &&
@@ -2333,12 +2622,6 @@ write_llvm_info() {
             # debugserver, so that external developer-platform prerequisite is made
             # explicit below. CUP does not claim self-contained remote debugging on
             # macOS because the remote target also needs a deployable debugserver.
-            lldb_process_launch="$has_lldb"
-            lldb_dap_feature="$has_lldb_dap"
-            if ! is_macos_platform "$HOST_PLATFORM"; then
-                lldb_remote_debugging="$has_lldb_server"
-            fi
-
             info+=(
                 "contents.python_runtime=packaged"
                 "contents.python_runtime.version=$PACKAGED_PYTHON_RUNTIME_VERSION"
@@ -2357,13 +2640,13 @@ write_llvm_info() {
                 "config.lzma=$cmake_lzma"
                 "config.libedit=$cmake_libedit"
                 "config.curses=$cmake_curses"
-                "features.python=$cmake_python"
-                "features.target_create=$has_lldb"
-                "features.breakpoints=$has_lldb"
-                "features.symbol_lookup=$has_lldb"
-                "features.process_launch=$lldb_process_launch"
-                "features.lldb_dap=$lldb_dap_feature"
-                "features.remote_debugging=$lldb_remote_debugging"
+                "features.python=true"
+                "features.target_create=true"
+                "features.breakpoints=true"
+                "features.symbol_lookup=true"
+                "features.process_launch=true"
+                "features.lldb_dap=true"
+                "features.remote_debugging=$(is_macos_platform "$HOST_PLATFORM" && printf false || printf true)"
             )
             if is_macos_platform "$HOST_PLATFORM"; then
                 info+=("requires.system_debugserver=true")
@@ -2374,40 +2657,37 @@ write_llvm_info() {
         clangd)
             info+=(
                 "$(info_required_entry entry.clangd "$PREFIX" clangd)"
-                "contents.clangd_indexer=$has_clangd_indexer"
                 "contents.clang_resources=$has_resource_dir"
-                "features.resource_dir=$has_resource_dir"
-                "features.check_compile_commands=$has_clangd"
-                "features.lsp=$has_clangd"
+                "features.resource_dir=true"
+                "features.check_compile_commands=true"
+                "features.lsp=true"
             )
             ;;
         clang-format)
             info+=(
                 "$(info_required_entry entry.clang_format "$PREFIX" clang-format)"
-                "features.format_file=$has_clang_format"
-                "features.style_config=$has_clang_format"
-                "features.dry_run_werror=$has_clang_format"
+                "features.format_file=true"
+                "features.style_config=true"
+                "features.dry_run_werror=true"
                 "features.git_clang_format=false"
             )
             ;;
         clang-tidy)
-            if [ "$has_run_clang_tidy" = true ] || [ "$has_clang_tidy_diff" = true ]; then
-                info+=(
-                    "contents.python_runtime=packaged"
-                    "contents.python_runtime.version=$PACKAGED_PYTHON_RUNTIME_VERSION"
-                )
-            fi
+            [ -n "$PACKAGED_PYTHON_RUNTIME_VERSION" ] || die "clang-tidy package is missing its package-owned Python runtime provenance"
             info+=(
+                "contents.python_runtime=packaged"
+                "contents.python_runtime.version=$PACKAGED_PYTHON_RUNTIME_VERSION"
                 "$(info_required_entry entry.clang_tidy "$PREFIX" clang-tidy)"
-                "$(info_entry_if_present entry.clang_apply_replacements "$PREFIX" clang-apply-replacements)"
-                "$(info_entry_if_present entry.run_clang_tidy "$PREFIX" run-clang-tidy)"
-                "$(info_entry_if_present entry.clang_tidy_diff "$PREFIX" clang-tidy-diff)"
-                "features.list_checks=$has_clang_tidy"
-                "features.analyze_c=$has_clang_tidy"
-                "features.clang_analyzer=$has_clang_tidy"
-                "features.apply_replacements=$has_clang_apply_replacements"
-                "features.run_clang_tidy=$has_run_clang_tidy"
-                "features.clang_tidy_diff=$has_clang_tidy_diff"
+                "$(info_required_entry entry.clang_apply_replacements "$PREFIX" clang-apply-replacements)"
+                "$(info_required_entry entry.run_clang_tidy "$PREFIX" run-clang-tidy)"
+                "$(info_required_entry entry.clang_tidy_diff "$PREFIX" clang-tidy-diff)"
+                "contents.clang_resources=true"
+                "features.list_checks=true"
+                "features.analyze_c=true"
+                "features.clang_analyzer=true"
+                "features.apply_replacements=true"
+                "features.run_clang_tidy=true"
+                "features.clang_tidy_diff=true"
             )
             ;;
     esac

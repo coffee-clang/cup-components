@@ -102,14 +102,14 @@ assert_clang_alias_graph() {
 
     assert_alias_resolves "$prefix" clang "$terminal"
     assert_alias_resolves "$prefix" clang++ "$terminal"
-    assert_alias_resolves "$prefix" clang-cl "$terminal"
-    assert_alias_resolves "$prefix" clang-cpp "$terminal"
-
     assert_alias_resolves "$prefix" ld.lld lld
-    assert_alias_resolves "$prefix" llvm-strip llvm-objcopy
-    assert_alias_resolves "$prefix" llvm-ranlib llvm-ar
-    assert_alias_resolves "$prefix" llvm-lib llvm-ar
-    assert_alias_resolves "$prefix" llvm-readelf llvm-readobj
+
+    for removed in \
+        clang-cl clang-cpp \
+        llvm-strip llvm-objcopy llvm-ranlib llvm-ar llvm-lib llvm-readelf llvm-readobj; do
+        [ ! -e "$bin/$removed" ] && [ ! -L "$bin/$removed" ] ||
+            fail "Clang pruning retained command outside the final compiler surface: $removed"
+    done
 
     [ ! -e "$bin/llvm-unrelated" ] && [ ! -L "$bin/llvm-unrelated" ] ||
         fail "Clang pruning retained unrelated LLVM executable"
@@ -135,7 +135,7 @@ test_clang_pruning_alias_closure() {
     assert_clang_alias_graph "$prefix" clang-22
 
     echo "DRIVER_ALIAS_CLOSURE=PASS"
-    echo "LLVM_ALIAS_CLOSURE=PASS"
+    echo "NATIVE_LLD_ALIAS_CLOSURE=PASS"
     echo "UNRELATED_BIN_PRUNING=PASS"
     echo "COMMON_PACKAGE_LINK_VALIDATION=PASS"
 }

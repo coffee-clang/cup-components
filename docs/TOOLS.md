@@ -207,31 +207,25 @@ Bundled libc++ is an available package capability. It is not forced as the defau
 
 On Linux, `clang++.cfg` adds only the package-relative library search path needed to use the bundled runtime explicitly. It does not add `-stdlib=libc++` globally.
 
-`ld.lld` can be kept inside the Clang package when required for the declared linker/LTO integration. That does not replace the separate standalone LLD package.
+The package keeps only the native LLD frontend required by the declared linker/LTO integration: `ld.lld` on Linux and Windows/MinGW, and `ld64.lld` on macOS. Its private `lld` backing executable is retained on POSIX only when required by the installed symlink. This integration payload does not turn the compiler package into a second standalone linker package.
 
-Windows Clang also carries the MinGW target sysroot and its package-relative driver configuration. macOS Clang keeps the Mach-O LLD frontend needed by its declared linker/LTO capability. Normal macOS native compilation uses the active Apple SDK; this external platform prerequisite is declared in `info.txt` rather than being mistaken for package payload.
+Windows Clang also carries the MinGW target sysroot and its package-relative driver configuration. `info.txt` records that sysroot's MSYS2 provider plus the exact headers, CRT and winpthreads package versions actually copied. Linux deliberately uses the platform's native development environment for the default C/C++ headers, startup/runtime material, default C++ standard library and platform linker; that external prerequisite is explicit as `requires.system_development_environment=true`. macOS similarly keeps its Apple developer-tools/SDK prerequisites explicit. The compiler is built with xcselect SDK discovery enabled so ordinary native compilation consumes the active Apple SDK without a test-only `-isysroot` injection.
 
-The Clang build also needs a small set of LLVM utility commands while constructing compiler runtimes. Useful utility binaries can remain in the final compiler package, but their presence is inventory/toolchain convenience rather than a separate `features.*` promise unless CUP deliberately promotes one later.
+LLVM utility commands used while constructing compiler runtimes are build tools, not final Clang package commands. They are pruned together with non-native LLD frontends and unrelated Clang sibling tools.
 
 The standalone Clang package does not enable the Clang static analyzer as an additional product surface; analyzer checks are owned by the `clang-tidy` package. Optional libpfm discovery is disabled for all LLVM-family builds so runner-installed performance-counter libraries cannot change package build identity.
 
 ### LLD
 
-The standalone LLD package is rooted in:
+The standalone LLD package exposes only the native frontend for its host:
 
 ```text
-ld.lld
+Linux    -> ld.lld
+Windows  -> lld-link.exe
+macOS    -> ld64.lld
 ```
 
-Other LLD frontends can remain in the payload when the selected upstream install provides them, such as:
-
-```text
-lld-link
-wasm-ld
-ld64.lld
-```
-
-CUP deliberately qualifies the native linker format for the package host: ELF on Linux, PE/COFF on Windows and Mach-O on macOS. Extra upstream frontends are recorded as package contents and may be exposed as entries when they are the native frontend; their mere presence does not promote every cross-link format to a CUP capability.
+On Linux and macOS the installed frontend can be a symlink to a private `lld` backing executable; the backing file is package implementation rather than another public entry. CUP qualifies ELF linking on Linux, PE/COFF linking on Windows and Mach-O linking on macOS. Cross-format frontends such as `wasm-ld` and non-native ELF/COFF/Mach-O frontends are pruned instead of being shipped as unowned upstream convenience payload.
 
 ### LLDB
 
@@ -275,7 +269,7 @@ The required public command is:
 clangd
 ```
 
-`clangd-indexer` may remain as optional upstream payload when the selected release installs it. CUP records that presence as package contents; it is not a separate public entry or `features.*` promise. The package deliberately exposes and qualifies clangd's LSP behavior; development-only `dexp`, the Darwin XPC transport and embedded clang-tidy checks are not part of this package contract.
+The package deliberately exposes and qualifies clangd's LSP behavior. `clangd-indexer`, development-only `dexp`, the Darwin XPC transport and embedded clang-tidy checks are not part of this package contract and are pruned if upstream installs them.
 
 Clangd embeds the Clang parser but still requires its matching built-in headers. The package therefore keeps the corresponding package-relative Clang resource directory and requires a representative built-in header such as `stddef.h` to be present.
 
@@ -295,7 +289,7 @@ The CUP package deliberately exposes `clang-format` itself. `git-clang-format` i
 
 ### clang-tidy
 
-The package keeps these command roots when the selected release provides them:
+The package requires these deliberate command roots:
 
 ```text
 clang-tidy
@@ -306,7 +300,7 @@ clang-tidy-diff
 
 Some LLVM releases install `clang-tidy-diff.py` as shared Clang data rather than as a direct executable. The producer normalizes the helper into the package's command/helper layout before pruning unrelated clang-tools-extra development, analyzer, documentation and editor-integration payload.
 
-Python helper commands execute through the package-owned Python runtime. POSIX packages remove interpreter caches, CPython test suites and GUI/demo modules; macOS framework Python packages additionally preserve the `Resources/Python.app` companion required by the framework launcher after relocation.
+Python helper commands execute through the package-owned Python runtime. The common Python copier excludes builder `site-packages`/`dist-packages`, development `config-*` directories, `Tools`, `__phello__`, caches, CPython test suites and GUI/demo modules on every platform. Pre-existing package-owned LLDB `site-packages` are preserved rather than replaced by the builder environment. macOS framework Python packages additionally preserve the `Resources/Python.app` companion required by the framework launcher after relocation.
 
 ## Valgrind
 

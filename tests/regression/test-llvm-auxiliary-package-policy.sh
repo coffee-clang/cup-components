@@ -156,7 +156,8 @@ assert_noise_removed "$prefix"
 # clang-tidy deliberately keeps its two Python helpers, but not the rest of the
 # clang-tools-extra install surface.
 prefix="$TMP/clang-tidy"
-mkdir -p "$prefix/bin" "$prefix/libexec/llvm-python-scripts" "$prefix/lib"
+mkdir -p "$prefix/bin" "$prefix/libexec/llvm-python-scripts" "$prefix/lib/clang/23/include"
+printf 'stddef\n' > "$prefix/lib/clang/23/include/stddef.h"
 for exe in clang-tidy clang-apply-replacements run-clang-tidy clang-tidy-diff; do make_exe "$prefix/bin/$exe"; done
 make_exe "$prefix/libexec/python3"
 printf 'print("run")\n' > "$prefix/libexec/llvm-python-scripts/run-clang-tidy.py"
@@ -196,13 +197,15 @@ assert_noise_removed "$prefix"
 prefix="$TMP/lld"
 mkdir -p "$prefix/bin" "$prefix/include/lld" "$prefix/share/opt-viewer"
 make_exe "$prefix/bin/lld"
+ln -s lld "$prefix/bin/ld.lld"
 printf 'header\n' > "$prefix/include/lld/Driver.h"
 printf 'print("opt")\n' > "$prefix/share/opt-viewer/opt-viewer.py"
 PREFIX="$prefix" TOOL=lld HOST_PLATFORM=linux-x64
 prune_llvm_package_bins
 prune_llvm_auxiliary_share_payload
 prune_llvm_development_payload
-[ -x "$prefix/bin/lld" ] || fail 'LLD public root was removed'
+[ -L "$prefix/bin/ld.lld" ] || fail 'LLD native Linux frontend was removed'
+[ -x "$prefix/bin/lld" ] || fail 'LLD native frontend backing executable was removed'
 [ ! -e "$prefix/share/opt-viewer" ] || fail 'LLD retained unowned opt-viewer payload'
 [ ! -e "$prefix/include" ] || fail 'LLD retained empty include directory'
 
@@ -223,7 +226,8 @@ validate_llvm_package_layout
 [ ! -e "$prefix/libexec" ] || fail 'Windows clangd retained analyzer libexec variants'
 
 prefix="$TMP/clang-tidy-windows"
-mkdir -p "$prefix/bin" "$prefix/libexec/llvm-python-scripts" "$prefix/lib"
+mkdir -p "$prefix/bin" "$prefix/libexec/llvm-python-scripts" "$prefix/lib/clang/23/include"
+printf 'stddef\n' > "$prefix/lib/clang/23/include/stddef.h"
 for exe in clang-tidy.exe clang-apply-replacements.exe; do make_exe "$prefix/bin/$exe"; done
 make_exe "$prefix/bin/run-clang-tidy.bat"
 make_exe "$prefix/bin/clang-tidy-diff.bat"

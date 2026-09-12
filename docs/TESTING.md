@@ -107,7 +107,7 @@ Clang checks include:
 - Linux and macOS relocation behavior;
 - Windows sysroot/driver behavior on the Windows path.
 
-LLD performs a real native-format link for the package host: ELF on Linux, PE/COFF on Windows and Mach-O on macOS. Additional upstream frontends can remain package contents, but their presence alone is not a CUP capability claim.
+LLD performs a real native-format link through the only public frontend retained for the package host: ELF through `ld.lld` on Linux, PE/COFF through `lld-link.exe` on Windows and Mach-O through `ld64.lld` on macOS. Windows qualification also checks an AMD64 output and exercises embedded manifest handling. Non-native upstream frontends are absent from the final package.
 
 LLDB checks include:
 
@@ -122,11 +122,11 @@ LLDB checks include:
 - on macOS, the declared system `debugserver` prerequisite is exercised by real local process launch/DAP rather than by a separate filesystem lookup proxy, while remote debugging remains undeclared;
 - POSIX relocation with previous roots unavailable; the final path contains real spaces and repeats the local process-launch oracle after relocation.
 
-clangd checks the language-server entry, matching Clang resource headers, compile-command consumption and a real bounded LSP initialize/document-symbol/shutdown session. The LSP test requires a valid compilation database to be loaded and rejects fallback parsing. `clangd-indexer` remains optional payload when upstream installs it; background indexing is not a separate CUP capability claim.
+clangd checks the language-server entry, matching package-owned Clang resource headers, compile-command consumption and a real bounded LSP initialize/document-symbol/shutdown session. The source consumes a representative builtin header (`stddef.h`), the LSP test requires a valid compilation database to be loaded and rejects fallback parsing, and the full behavior is repeated after relocation. `clangd-indexer` is deliberately absent; background indexing is not a separate CUP capability claim.
 
 clang-format checks formatting behavior, style-file discovery, dry-run failure semantics and relocation; `git-clang-format`, Python solely used by that helper and compiler builtin resource headers are deliberately absent from the standalone self-contained package.
 
-clang-tidy checks the main analyzer command plus real `run-clang-tidy` and `clang-tidy-diff` operations, package-owned Python identity and relocation with previous roots unavailable.
+clang-tidy checks the main analyzer command, package-owned Clang resources, real `run-clang-tidy`/`clang-tidy-diff` operations and a real `clang-tidy --export-fixes` -> `clang-apply-replacements` source modification. Its package-owned Python runtime and relocation with previous roots unavailable are also exercised.
 
 ### Valgrind checks
 

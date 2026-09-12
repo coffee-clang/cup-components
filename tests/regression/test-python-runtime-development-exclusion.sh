@@ -21,9 +21,12 @@ PY_CFG="$PY_PREFIX/bin/python3.12-config"
 STDLIB="$PY_PREFIX/lib/python3.12"
 mkdir -p \
     "$PY_PREFIX/bin" \
+    "$STDLIB/config-3.12" \
     "$STDLIB/config-3.12-x86_64-linux-gnu" \
     "$STDLIB/config-3.12d-x86_64-linux-gnu" \
-    "$STDLIB/site-packages" \
+    "$STDLIB/site-packages/clang" \
+    "$STDLIB/Tools" \
+    "$STDLIB/__phello__" \
     "$STDLIB/test" \
     "$STDLIB/tests" \
     "$STDLIB/idlelib" \
@@ -58,9 +61,14 @@ ln -s '_sysconfigdata__x86_64-linux-gnu.py' \
     "$STDLIB/_sysconfigdata__linux_x86_64-linux-gnu.py"
 printf 'host-site-customization\n' > "$TMP/host-python-site/sitecustomize.py"
 ln -s "$TMP/host-python-site/sitecustomize.py" "$STDLIB/sitecustomize.py"
+printf 'plain-dev-config\n' > "$STDLIB/config-3.12/Makefile"
 printf 'dev-archive\n' > "$STDLIB/config-3.12-x86_64-linux-gnu/libpython3.12.a"
 printf 'dev-object\n' > "$STDLIB/config-3.12d-x86_64-linux-gnu/python.o"
 printf 'source-site-package\n' > "$STDLIB/site-packages/should-not-copy.py"
+printf 'ambient-clang-binding\n' > "$STDLIB/site-packages/clang/__init__.py"
+printf 'ambient-libxml2-binding\n' > "$STDLIB/site-packages/libxml2.py"
+printf 'builder-tool\n' > "$STDLIB/Tools/helper.py"
+printf 'hello-test-package\n' > "$STDLIB/__phello__/__init__.py"
 printf 'preserved-lldb-module\n' > "$PREFIX/lib/python3.12/site-packages/lldb.py"
 printf 'test-only\n' > "$STDLIB/test/test_runtime.py"
 printf 'tests-only\n' > "$STDLIB/tests/test_runtime.py"
@@ -112,8 +120,14 @@ copy_posix_python_runtime "$PY_BIN" true "bin/python3.12"
     echo 'pre-existing package module was not preserved' >&2
     exit 1
 }
-[ ! -e "$PREFIX/lib/python3.12/site-packages/should-not-copy.py" ] || {
+[ ! -e "$PREFIX/lib/python3.12/site-packages/should-not-copy.py" ] && \
+    [ ! -e "$PREFIX/lib/python3.12/site-packages/clang" ] && \
+    [ ! -e "$PREFIX/lib/python3.12/site-packages/libxml2.py" ] || {
     echo 'source site-packages leaked into package runtime' >&2
+    exit 1
+}
+[ ! -e "$PREFIX/lib/python3.12/config-3.12" ] || {
+    echo 'plain CPython development config directory leaked into package runtime' >&2
     exit 1
 }
 [ ! -e "$PREFIX/lib/python3.12/config-3.12-x86_64-linux-gnu" ] || {
@@ -124,7 +138,7 @@ copy_posix_python_runtime "$PY_BIN" true "bin/python3.12"
     echo 'debug-CPython development config directory leaked into package runtime' >&2
     exit 1
 }
-for excluded in test tests idlelib tkinter turtledemo; do
+for excluded in test tests idlelib tkinter turtledemo Tools __phello__; do
     [ ! -e "$PREFIX/lib/python3.12/$excluded" ] || {
         echo "non-runtime Python payload leaked into package: $excluded" >&2
         exit 1

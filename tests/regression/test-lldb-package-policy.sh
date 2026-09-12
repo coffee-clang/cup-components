@@ -70,7 +70,7 @@ need "$BUILD" 'Linux/Windows LLDB package retained unused lldb-argdumper helper'
 # features.lldb_server alias; remote debugging is the real behavioral claim.
 need "$BUILD" 'contents.lldb_server=$has_lldb_server' 'lldb-server payload inventory is missing'
 need "$BUILD" 'info_required_entry entry.lldb_server' 'Linux/Windows lldb-server public entry is missing'
-need "$BUILD" 'features.remote_debugging=$lldb_remote_debugging' 'remote-debugging feature metadata is missing'
+need "$BUILD" 'features.remote_debugging=$(is_macos_platform "$HOST_PLATFORM" && printf false || printf true)' 'remote-debugging feature metadata is not explicit per platform'
 reject "$BUILD" 'features.lldb_server=' 'redundant lldb-server behavioral feature remains'
 need "$BUILD" 'requires.system_debugserver=true' 'macOS system-debugserver prerequisite is missing'
 # Apple developer tools remain a Clang prerequisite, but must not be duplicated

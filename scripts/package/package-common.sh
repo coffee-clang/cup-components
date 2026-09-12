@@ -746,7 +746,8 @@ prune_python_runtime_nonruntime_payload() {
     # helper Python. Keep the ordinary stdlib intact for user scripting.
     find "$destination" -type d -name __pycache__ -prune -exec rm -rf {} +
     find "$destination" -type d \
-        \( -name test -o -name tests -o -name idlelib -o -name tkinter -o -name turtledemo \) \
+        \( -name test -o -name tests -o -name idlelib -o -name tkinter -o -name turtledemo \
+           -o -name Tools -o -name __phello__ \) \
         -prune -exec rm -rf {} +
     find "$destination" -type f \
         \( -name '_ctypes_test*.so' -o -name '_ctypes_test*.pyd' \
@@ -754,6 +755,53 @@ prune_python_runtime_nonruntime_payload() {
            -o -name '_xxtestfuzz*.so' -o -name '_xxtestfuzz*.pyd' \
            -o -name 'xxlimited*.so' -o -name 'xxlimited*.pyd' \
            -o -name 'xxsubtype*.so' -o -name 'xxsubtype*.pyd' \) -delete
+}
+
+copy_python_stdlib_runtime_entries() {
+    local stdlib="$1"
+    local destination="$2"
+    local version="$3"
+    local entries_file
+    local entry
+    local base
+    local status
+
+    [ -d "$stdlib" ] || die "Python standard library was not found: $stdlib"
+    mkdir -p "$destination"
+
+    # Materialize the top-level enumeration before copying so a find failure is
+    # not hidden by process-substitution semantics. An incomplete stdlib copy is
+    # not an acceptable package runtime.
+    entries_file="$(mktemp)" || die "could not allocate Python stdlib enumeration file"
+    if find "$stdlib" -mindepth 1 -maxdepth 1 -print0 > "$entries_file"; then
+        :
+    else
+        status=$?
+        rm -f "$entries_file"
+        return "$status"
+    fi
+
+    # Preserve package-owned site-packages already installed by LLDB and copy
+    # only interpreter runtime entries from the builder Python. Source-side
+    # third-party packages and CPython development metadata are not part of the
+    # CUP Python runtime contract.
+    while IFS= read -r -d '' entry; do
+        base="$(basename "$entry")"
+        case "$base" in
+            site-packages|dist-packages|sitecustomize.py|Tools|__phello__|\
+            "config-$version"|"config-$version-"*|"config-${version}d"|"config-${version}d-"*)
+                continue
+                ;;
+        esac
+        if cp -RPp "$entry" "$destination/"; then
+            :
+        else
+            status=$?
+            rm -f "$entries_file"
+            return "$status"
+        fi
+    done < "$entries_file"
+    rm -f "$entries_file"
 }
 
 copy_posix_python_runtime() {
@@ -765,9 +813,6 @@ copy_posix_python_runtime() {
     local python_prefix
     local stdlib
     local destination
-    local entry_list
-    local entry
-    local base
     local framework_app
 
     if ! is_linux_platform "$HOST_PLATFORM" && ! is_macos_platform "$HOST_PLATFORM"; then
@@ -791,25 +836,7 @@ copy_posix_python_runtime() {
     [ -d "$stdlib" ] || die "Python standard library was not found: $stdlib"
 
     destination="$PREFIX/lib/python$version"
-    mkdir -p "$destination" "$CUP_WORK_DIR"
-    entry_list="$CUP_WORK_DIR/python-runtime-entries.$$.list"
-    rm -f "$entry_list"
-    if ! find "$stdlib" -mindepth 1 -maxdepth 1 -print0 > "$entry_list"; then
-        rm -f "$entry_list"
-        die "could not enumerate Python runtime entries: $stdlib"
-    fi
-
-    # Copy only interpreter-owned runtime entries. Preserve LLDB modules already
-    # installed into site-packages/dist-packages and exclude CPython's installed
-    # build/configuration directory (Makefiles, objects and static libpython).
-    while IFS= read -r -d '' entry; do
-        base="$(basename "$entry")"
-        case "$base" in
-            site-packages|dist-packages|sitecustomize.py|"config-$version-"*|"config-${version}d-"*) continue ;;
-        esac
-        cp -RPp "$entry" "$destination/"
-    done < "$entry_list"
-    rm -f "$entry_list"
+    copy_python_stdlib_runtime_entries "$stdlib" "$destination" "$version" || return $?
 
     # Match the Windows Python package policy: interpreter caches, CPython's
     # own regression suites and GUI/demo modules are not runtime responsibility
@@ -1768,8 +1795,7 @@ PYSCRIPT
 
     log "copying Python standard library: $stdlib -> $dst"
 
-    mkdir -p "$dst"
-    cp -RPp "$stdlib"/. "$dst"/
+    copy_python_stdlib_runtime_entries "$stdlib" "$dst" "$version" || return $?
 
     if [ "$include_lldb" = true ]; then
         if [ -d "$dst/site-packages/lldb" ]; then
@@ -2754,6 +2780,9 @@ create_packages() {
     prepare_linux_runtime_closure "$prefix" "$host_platform"
     prepare_macos_runtime_closure "$prefix" "$host_platform"
     package_normalize_root "$prefix" "$package_root" "$host_platform"
+    if declare -F package_verify_final_tool_policy >/dev/null 2>&1; then
+        package_verify_final_tool_policy "$package_root" "$host_platform"
+    fi
     package_verify_info_contract \
         "$package_root" "$tool" "$version" "$host_platform" "$target_platform" "$revision"
     package_generate_manifest "$package_root" "$host_platform"

@@ -101,9 +101,9 @@ SH
 #!/usr/bin/env sh
 [ "$1" = '-archs' ] || exit 2
 case "$2" in
-    *.a) exit 91 ;;
+    *.a) printf '%s\n' "${MOCK_ARCHIVE_ARCH:-${MOCK_ARCH:-x86_64}}" ;;
+    *) printf '%s\n' "${MOCK_ARCH:-x86_64}" ;;
 esac
-printf '%s\n' "${MOCK_ARCH:-x86_64}"
 SH
 
     cat > "$bin/otool" <<'SH'
@@ -316,6 +316,36 @@ test_static_relocation_contract() {
     require_text "$TEST_SCRIPT" 'MACOS_CODESIGN_VERIFY=PASS'
 }
 
+
+test_final_archive_architecture_policy() {
+    local funcs="$TEST_TMP/final-architecture-functions.sh"
+    local fake_bin="$TEST_TMP/final-architecture-tools"
+    local candidate="$TEST_TMP/final-architecture-package"
+
+    : > "$funcs"
+    extract_function "$BUILD_SCRIPT" macos_native_arch >> "$funcs"
+    printf '\n' >> "$funcs"
+    extract_function "$BUILD_SCRIPT" verify_llvm_macos_architecture >> "$funcs"
+    [ -s "$funcs" ] || fail 'final macOS architecture validator is absent'
+
+    make_fake_macos_tools "$fake_bin"
+    make_candidate "$candidate"
+
+    # shellcheck disable=SC1090
+    source "$funcs"
+    is_macos_platform() { case "$1" in macos-*) return 0 ;; *) return 1 ;; esac; }
+    die() { echo "$*" >&2; exit 1; }
+    HOST_PLATFORM=macos-x64
+
+    PATH="$fake_bin:$PATH" MOCK_ARCH=x86_64 MOCK_ARCHIVE_ARCH=x86_64 \
+        verify_llvm_macos_architecture "$candidate" >/dev/null
+
+    if (PATH="$fake_bin:$PATH" MOCK_ARCH=x86_64 MOCK_ARCHIVE_ARCH=i386 \
+        verify_llvm_macos_architecture "$candidate" >/dev/null 2>&1); then
+        fail 'wrong-architecture static archive was accepted by final macOS policy'
+    fi
+}
+
 test_mutations() {
     local bad="$TEST_TMP/mutant.sh"
 
@@ -363,6 +393,7 @@ test_static_relocation_contract
 test_version_helpers
 test_resource_dir_portability
 test_package_contract_helper
+test_final_archive_architecture_policy
 test_mutations
 
 echo 'CLANG_MACOS_PACKAGE_POLICY=PASS'

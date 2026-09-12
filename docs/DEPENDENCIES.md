@@ -372,6 +372,8 @@ libc++
 
 Because these projects come from the same selected LLVM release, they do not create independent package revisions.
 
+Windows Clang additionally materializes a MinGW target sysroot from the MSYS2 Clang64 environment. Package metadata records the provider and exact MSYS2 headers, CRT and winpthreads versions whose bytes are copied. These builder-provided component versions are provenance for the realized target sysroot; they are not independent CUP version-selection inputs or revision-driving source components. Linux Clang intentionally relies on the host native C/C++ development environment for its default system headers/libraries and platform linker, while macOS Clang relies on the Apple developer tools/SDK and uses xcselect SDK discovery.
+
 ## Valgrind build dependencies
 
 Valgrind is built only on Linux with the GNU toolchain image.
@@ -391,12 +393,12 @@ Examples:
 | GCC | GCC runtimes, selected Binutils composition and target MinGW-w64 material where required |
 | GNU ld | standalone linker commands and their required host runtime libraries |
 | GDB | GDB command/data, package-owned Python and the libraries required by enabled debugger features |
-| Clang | Clang resources, compiler runtimes, packaged C++ runtime capability and linker payload required by declared integration |
-| LLD | selected LLD frontends and their host runtime libraries |
+| Clang | Clang resources, compiler runtimes, packaged C++ runtime capability, native LLD integration payload and the Windows MinGW target sysroot where applicable |
+| LLD | the host-native LLD frontend (plus any private POSIX backing executable) and its required host runtime libraries |
 | LLDB | LLDB commands, package-owned Python, Clang resources and required debugger libraries |
 | clang-format | formatter command only; no Git/Python dependency for `git-clang-format` |
 | clang-tidy | tidy commands plus `run-clang-tidy`/`clang-tidy-diff` and their package-owned Python runtime |
-| clangd | language server, optional indexer and matching Clang built-in headers |
+| clangd | language server and matching Clang built-in headers; the standalone indexer is outside the package contract |
 | Valgrind | Valgrind runtime objects, `vgdb`, public client headers and relocatable pkg-config metadata |
 
 The operating system supplies the base runtime defined in [Packages](PACKAGES.md#self-contained-package-boundary). Every other realized host runtime dependency must be package-owned if the tool requires it.

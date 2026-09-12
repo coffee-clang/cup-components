@@ -128,12 +128,23 @@ function Assert-NoLlvmDevelopmentPayload {
         foreach ($archive in Get-ChildItem -Path $libDir -File -ErrorAction SilentlyContinue | Where-Object {
             $_.Name -like '*.a' -or $_.Name -like '*.lib'
         }) {
-            if ($archive.Name -match '^(libc\+\+|libc\+\+abi|libc\+\+experimental|libunwind)(\.a|\.lib)$' -or
+            if ($archive.Name -match '^(libc\+\+|libunwind)(\.a|\.lib)$' -or
                 $archive.Name -like 'libclang_rt.*') {
                 continue
             }
             throw "LLVM static development archive leaked into package: $($archive.FullName)"
         }
+    }
+}
+
+function Get-PEImportedDlls {
+    param([Parameter(Mandatory = $true)][string] $FilePath)
+
+    if (-not $runnerObjdump) { throw 'objdump is required for PE import qualification' }
+
+    foreach ($line in (& $runnerObjdump.Source -p $FilePath 2>&1)) {
+        $text = $line.ToString()
+        if ($text -match 'DLL Name:\s*(\S+)') { $Matches[1] }
     }
 }
 
@@ -293,10 +304,7 @@ function Invoke-LldNativeProbe {
     foreach ($feature in @('link_elf', 'link_wasm', 'link_macho')) {
         if (Test-InfoBool "features.$feature") { throw "Windows LLD over-declares $feature" }
     }
-    Invoke-Native -FilePath "$PackageRoot\bin\ld.lld.exe" -ArgumentList @('--version')
     Invoke-Native -FilePath "$PackageRoot\bin\lld-link.exe" -ArgumentList @('--version')
-    Invoke-OptionalNative -FilePath "$PackageRoot\bin\wasm-ld.exe" -ArgumentList @('--version')
-    Invoke-OptionalNative -FilePath "$PackageRoot\bin\ld64.lld.exe" -ArgumentList @('--version')
 
     if (-not $runnerClang) { throw 'runner clang.exe is required to produce an independent COFF object for the LLD test' }
     $work = Join-Path $testDir "lld-native-$Label"
@@ -305,16 +313,29 @@ function Invoke-LldNativeProbe {
     $source = Join-Path $work 'main.c'
     $object = Join-Path $work 'main.obj'
     $exe = Join-Path $work 'lld-test.exe'
+    $manifest = Join-Path $work 'lld-test.manifest'
     'int main(void) { return 0; }' | Set-Content $source
+@'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity version="1.0.0.0" processorArchitecture="amd64" name="cup.lld.test" type="win32"/>
+</assembly>
+'@ | Set-Content $manifest
     Invoke-Native -FilePath $runnerClang.Source -ArgumentList @(
         '-target', 'x86_64-pc-windows-msvc', '-c', $source, '-o', $object
     )
     Assert-FileExists $object
     Invoke-Native -FilePath "$PackageRoot\bin\lld-link.exe" -ArgumentList @(
-        '/entry:main', '/subsystem:console', '/nodefaultlib', "/out:$exe", $object
+        '/entry:main', '/subsystem:console', '/nodefaultlib', '/manifest:embed',
+        "/manifestinput:$manifest", "/out:$exe", $object
     )
     Assert-FileExists $exe
     Assert-FileMagic -Path $exe -Hex '4d5a'
+    if (-not $runnerObjdump) { throw 'objdump is required to verify the LLD PE/COFF architecture' }
+    $header = (& $runnerObjdump.Source -f $exe 2>&1) -join "`n"
+    if ($header -notmatch 'architecture:\s*i386:x86-64') {
+        throw "LLD produced a non-AMD64 PE/COFF executable at relocation $Label`n$header"
+    }
     Write-Host "LLD_NATIVE_$Label=PASS"
 }
 
@@ -413,12 +434,16 @@ function Start-FramedProcess {
     $psi.CreateNoWindow = $true
     $psi.RedirectStandardInput = $true
     $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $false
+    $psi.RedirectStandardError = $true
     if ($WorkingDirectory) { $psi.WorkingDirectory = $WorkingDirectory }
     foreach ($arg in $ArgumentList) { [void]$psi.ArgumentList.Add($arg) }
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $psi
     if (-not $process.Start()) { throw "Could not start framed process: $FilePath" }
+    # Drain stderr immediately so a verbose language/debug adapter can never
+    # block on a full redirected pipe while the framed stdout protocol waits.
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    $process | Add-Member -NotePropertyName CupStderrTask -NotePropertyValue $stderrTask
     $script:FramedPending = [Collections.Generic.List[object]]::new()
     return $process
 }
@@ -517,7 +542,8 @@ function Invoke-ClangdLspProbe {
     New-Item -ItemType Directory -Force $project | Out-Null
     $main = Join-Path $project 'main.c'
 @'
-int cup_lsp_value(void) { return 42; }
+#include <stddef.h>
+size_t cup_lsp_value(void) { return (size_t)42; }
 int main(void) { return cup_lsp_value() == 42 ? 0 : 1; }
 '@ | Set-Content $main
     $db = @(
@@ -545,7 +571,7 @@ int main(void) { return cup_lsp_value() == 42 ? 0 : 1; }
         Send-FramedJson $process @{ jsonrpc='2.0'; method='exit'; params=$null }
         $process.StandardInput.Close()
         if (-not $process.WaitForExit(5000)) { throw "clangd LSP did not exit at relocation $Label" }
-        $stderrText = $process.StandardError.ReadToEnd()
+        $stderrText = $process.CupStderrTask.GetAwaiter().GetResult()
         if ($stderrText -match 'Failed to load compilation database|Failed to find compilation database|command clangd fallback') {
             throw "clangd LSP did not consume its compilation database at relocation $Label`n$stderrText"
         }
@@ -757,6 +783,8 @@ Assert-NoLlvmDevelopmentPayload
 # create independent test inputs; packaged tools must resolve their own runtime.
 $runnerClang = Get-Command clang.exe -ErrorAction SilentlyContinue
 $runnerGcc = Get-Command gcc.exe -ErrorAction SilentlyContinue
+$runnerObjdump = Get-Command llvm-objdump.exe -ErrorAction SilentlyContinue
+if (-not $runnerObjdump) { $runnerObjdump = Get-Command objdump.exe -ErrorAction SilentlyContinue }
 
 # Do not let a developer/runner Python environment make LLDB appear relocatable.
 Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
@@ -809,7 +837,28 @@ switch ($Tool) {
         $cppSource = Join-Path $testDir 'clang-cpp-test.cpp'
         $cppObject = Join-Path $testDir 'clang-cpp-test.o'
         $cppExe = Join-Path $testDir 'clang-cpp-test.exe'
-        'int add(int a, int b) { return a + b; } int main() { return add(20, 22) == 42 ? 0 : 1; }' | Set-Content $cppSource
+@'
+#include <stdexcept>
+#include <string>
+#include <vector>
+struct Base { virtual ~Base() = default; };
+struct Derived : Base { int value = 42; };
+int main() {
+    std::vector<std::string> values = {"20", "22"};
+    Base *base = new Derived();
+    Derived *derived = dynamic_cast<Derived *>(base);
+    if (!derived) return 1;
+    int result = 0;
+    try { throw std::runtime_error("cup-runtime"); }
+    catch (const std::exception &error) {
+        if (std::string(error.what()) != "cup-runtime") return 2;
+        result = std::stoi(values[0]) + std::stoi(values[1]);
+    }
+    if (derived->value != result) return 3;
+    delete base;
+    return result == 42 ? 0 : 4;
+}
+'@ | Set-Content $cppSource
         Invoke-Native -FilePath "$root\bin\clang++.exe" -ArgumentList @('-fsyntax-only', $cppSource)
         Invoke-Native -FilePath "$root\bin\clang++.exe" -ArgumentList @('-c', $cppSource, '-o', $cppObject)
         Assert-FileExists $cppObject
@@ -824,6 +873,10 @@ switch ($Tool) {
             )
             Assert-FileExists $libcxxExe
             Invoke-Native -FilePath $libcxxExe
+            $libcxxImports = @(Get-PEImportedDlls -FilePath $libcxxExe)
+            if ($libcxxImports | Where-Object { $_ -match '^libc\+\+(abi)?\.dll$' }) {
+                throw "Windows packaged libc++ probe fell back to a dynamic libc++/libc++abi: $($libcxxImports -join ', ')"
+            }
         } else {
             throw 'required packaged Clang C++ runtime is not declared; libc++ test cannot run'
         }
@@ -953,7 +1006,10 @@ int main(void) {
         $projectDir = Join-Path $testDir 'clangd-project'
         New-Item -ItemType Directory -Force $projectDir | Out-Null
         $sourcePath = Join-Path $projectDir 'main.c'
-        'int main(void) { return 0; }' | Set-Content $sourcePath
+@'
+#include <stddef.h>
+int main(void) { return (int)sizeof(size_t) > 0 ? 0 : 1; }
+'@ | Set-Content $sourcePath
         $sourcePathForJson = To-ForwardSlashPath $sourcePath
         $projectDirForJson = To-ForwardSlashPath $projectDir
         @"
@@ -1145,6 +1201,10 @@ switch ($Tool) {
             '-stdlib=libc++', '-fuse-ld=lld', $cppSource, '-o', $relocatedLibcxx
         )
         Invoke-Native -FilePath $relocatedLibcxx
+        $relocatedLibcxxImports = @(Get-PEImportedDlls -FilePath $relocatedLibcxx)
+        if ($relocatedLibcxxImports | Where-Object { $_ -match '^libc\+\+(abi)?\.dll$' }) {
+            throw "relocated Windows libc++ probe fell back to a dynamic libc++/libc++abi: $($relocatedLibcxxImports -join ', ')"
+        }
         $relocatedLto = Join-Path $testDir 'relocated-clang-lto-test.exe'
         Invoke-Native -FilePath "$relocatedRoot\bin\clang.exe" -ArgumentList @(
             '-flto', '-fuse-ld=lld', $cSource, '-o', $relocatedLto

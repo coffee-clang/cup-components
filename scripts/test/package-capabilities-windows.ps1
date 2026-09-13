@@ -185,9 +185,6 @@ switch ($Tool) {
         Show-Executable 'clang.exe' 'features.c'
         Show-Executable 'clang++.exe' 'features.cpp'
         Show-Executable 'ld.lld.exe' 'features.lld_integration'
-        Show-Executable 'llvm-ar.exe'
-        Show-Executable 'llvm-ranlib.exe'
-        Show-Executable 'llvm-objdump.exe'
         Show-Version 'clang.exe'
     }
     'lld' {
@@ -197,7 +194,7 @@ switch ($Tool) {
         Show-Executable 'lld-link.exe' 'features.link_coff'
         Show-Executable 'wasm-ld.exe' 'features.link_wasm'
         Show-Executable 'ld64.lld.exe' 'features.link_macho'
-        Show-Version 'ld.lld.exe'
+        Show-Version 'lld-link.exe'
     }
     'lldb' {
         Write-Host ""

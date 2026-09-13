@@ -575,10 +575,10 @@ EOF
 EOF
 
     cat > "$cfg_cxx" <<'EOF'
-@cup-windows-clang-common.cfg
 -stdlib=libc++
 -isystem
 <CFGDIR>/../include/c++/v1
+@cup-windows-clang-common.cfg
 EOF
 
     cat > "$target_cfg_1" <<'EOF'
@@ -1631,8 +1631,7 @@ compiler_rt_builtins_basename() {
     case "$HOST_PLATFORM" in
         linux-x64|windows-x64) printf '%s\n' 'libclang_rt.builtins-x86_64.a' ;;
         linux-arm64) printf '%s\n' 'libclang_rt.builtins-aarch64.a' ;;
-        macos-x64) printf '%s\n' 'libclang_rt.builtins_x86_64_osx.a' ;;
-        macos-arm64) printf '%s\n' 'libclang_rt.builtins_arm64_osx.a' ;;
+        macos-x64|macos-arm64) printf '%s\n' 'libclang_rt.osx.a' ;;
         *) die "unsupported compiler-rt builtins platform: $HOST_PLATFORM" ;;
     esac
 }

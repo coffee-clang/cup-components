@@ -28,6 +28,19 @@ reject() {
 need "$BUILD" 'config.cxx_runtime_default=$cxx_runtime_default' 'C++ default policy is not recorded as configuration metadata'
 reject "$BUILD" 'features.cxx_runtime_default=' 'C++ runtime default is still misclassified as a behavioral feature'
 need "$BUILD" 'CLANG_CXX_RUNTIME_DEFAULT=true' 'Windows packaged libc++ default is not owned by the driver-config writer'
+need "$BUILD" "macos-x64|macos-arm64) printf '%s\\n' 'libclang_rt.osx.a'" 'macOS compiler-rt builtins do not use the canonical Darwin driver filename'
+reject "$BUILD" 'libclang_rt.builtins_x86_64_osx.a' 'macOS x64 builtins can still be materialized under the internal arch-specific filename'
+reject "$BUILD" 'libclang_rt.builtins_arm64_osx.a' 'macOS arm64 builtins can still be materialized under the internal arch-specific filename'
+
+# clang++.cfg must prepend libc++ headers before expanding the common config,
+# whose target C headers are intentionally shared with clang.cfg.
+cxx_cfg_block="$(awk '/cat > "\$cfg_cxx" <<'\''EOF'\''/{inside=1; next} inside && /^EOF$/{exit} inside{print}' "$BUILD")"
+cxx_header_line="$(printf '%s\n' "$cxx_cfg_block" | grep -n -F '<CFGDIR>/../include/c++/v1' | head -n1 | cut -d: -f1 || true)"
+cxx_common_line="$(printf '%s\n' "$cxx_cfg_block" | grep -n -F '@cup-windows-clang-common.cfg' | head -n1 | cut -d: -f1 || true)"
+if [ -z "$cxx_header_line" ] || [ -z "$cxx_common_line" ] || [ "$cxx_header_line" -ge "$cxx_common_line" ]; then
+    echo 'LLVM capability-scope policy: Windows clang++.cfg does not put libc++ headers before target C headers' >&2
+    failures=$((failures + 1))
+fi
 reject "$BUILD" 'features.llvm_ar=' 'llvm-ar presence is still promoted to a Clang feature'
 reject "$BUILD" 'features.llvm_ranlib=' 'llvm-ranlib presence is still promoted to a Clang feature'
 reject "$BUILD" 'features.llvm_objdump=' 'llvm-objdump presence is still promoted to a Clang feature'
@@ -100,6 +113,12 @@ need "$WINDOWS" "'/manifest:embed'" 'Windows LLD does not exercise COFF manifest
 need "$WINDOWS" 'function Assert-PEMachineAMD64' 'Windows LLD has no PE Machine oracle'
 need "$WINDOWS" 'if ($machine -ne 0x8664)' 'Windows LLD does not verify IMAGE_FILE_MACHINE_AMD64'
 need "$WINDOWS" 'Assert-PEMachineAMD64 -Path $exe' 'Windows LLD native probe does not apply the PE Machine oracle'
+need "$REPORT_POSIX" 'macos-*) try_version ld64.lld --version' 'POSIX LLD reporter does not version the native macOS frontend'
+need "$REPORT_WINDOWS" "Show-Version 'lld-link.exe'" 'Windows LLD reporter does not version the native COFF frontend'
+reject "$REPORT_WINDOWS" "Show-Version 'ld.lld.exe'" 'Windows LLD reporter still versions the non-native ELF frontend'
+for stale_clang_probe in llvm-ar.exe llvm-ranlib.exe llvm-objdump.exe; do
+    reject "$REPORT_WINDOWS" "Show-Executable '$stale_clang_probe'" "Windows Clang reporter still diagnoses removed toolbox command: $stale_clang_probe"
+done
 reject "$POSIX" 'lld_cross_format_probe()' 'cross-format LLD qualification is still present'
 reject "$WINDOWS" 'Invoke-LldCrossFormatProbe' 'Windows cross-format LLD qualification is still present'
 [ ! -e "$ROOT/tests/fixtures/lld" ] || { echo 'LLVM capability-scope policy: LLD cross-format fixture directory still exists' >&2; failures=$((failures + 1)); }

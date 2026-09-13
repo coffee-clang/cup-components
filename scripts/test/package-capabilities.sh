@@ -275,7 +275,10 @@ show_llvm() {
             mark_exe lld-link features.link_coff
             mark_exe wasm-ld features.link_wasm
             mark_exe ld64.lld features.link_macho
-            try_version ld.lld --version
+            case "$(info_value platform.host)" in
+                macos-*) try_version ld64.lld --version ;;
+                *) try_version ld.lld --version ;;
+            esac
             ;;
         lldb)
             mark_exe lldb features.target_create

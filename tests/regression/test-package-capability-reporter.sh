@@ -157,6 +157,34 @@ grep -Eq '^  present  ld64\.lld[[:space:]]+declared:features\.lld_integration=tr
 }
 assert_no_warning "$tmp/clang-macos.out"
 
+# Standalone LLD version reporting follows the same native frontend policy.
+lld_macos="$tmp/lld-macos"
+mkdir -p "$lld_macos/bin"
+cat > "$lld_macos/info.txt" <<'EOF_LLD_MACOS_INFO'
+package.component=linker
+package.tool=lld
+package.version=1.0
+platform.host=macos-x64
+features.link_elf=false
+features.link_coff=false
+features.link_wasm=false
+features.link_macho=true
+EOF_LLD_MACOS_INFO
+cat > "$lld_macos/bin/ld64.lld" <<'EOF_LLD_MACOS_EXE'
+#!/usr/bin/env sh
+printf '%s\n' 'LLD-MACOS-NATIVE-VERSION'
+EOF_LLD_MACOS_EXE
+chmod 0755 "$lld_macos/bin/ld64.lld"
+bash "$reporter" "$lld_macos" lld > "$tmp/lld-macos.out"
+grep -Fq '[version: ld64.lld]' "$tmp/lld-macos.out"
+grep -Fq 'LLD-MACOS-NATIVE-VERSION' "$tmp/lld-macos.out"
+! grep -Fq '[version: ld.lld]' "$tmp/lld-macos.out" || {
+    echo 'macOS LLD reporter still versions the non-native ld.lld frontend' >&2
+    cat "$tmp/lld-macos.out" >&2
+    exit 1
+}
+assert_no_warning "$tmp/lld-macos.out"
+
 # Metadata scope is repository-wide: executable/payload presence must not be
 # promoted into behavioral features unless CUP deliberately qualifies it.
 gcc_builder="$repo_root/scripts/build/build-gcc.sh"

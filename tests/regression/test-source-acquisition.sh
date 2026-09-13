@@ -68,6 +68,69 @@ grep -F $'fixture\t99.99.99\tfixture-99.99.99.tar.xz\t'"$(printf '0%.0s' {1..64}
     exit 1
 }
 
+# Source downloads use curl's bounded retry mechanism for transfer errors too.
+# This is load-bearing for transient failures that surface as non-HTTP curl
+# statuses after an upstream server error, while fetch() must still delete a
+# partial output when all attempts fail.
+fetch_bin="$TMP/fetch-bin"
+fetch_args="$TMP/fetch-args"
+fetch_output="$TMP/fetch-output"
+mkdir -p "$fetch_bin"
+cat > "$fetch_bin/curl" <<EOF_FETCH_CURL
+#!/usr/bin/env sh
+printf '%s\n' "\$@" > '$fetch_args'
+out=''
+while [ "\$#" -gt 0 ]; do
+    if [ "\$1" = -o ]; then
+        shift
+        out="\$1"
+        break
+    fi
+    shift
+done
+[ -n "\$out" ] || exit 97
+printf 'downloaded\n' > "\$out"
+EOF_FETCH_CURL
+chmod 0755 "$fetch_bin/curl"
+PATH="$fetch_bin:$PATH" fetch https://example.invalid/retry-source.tar.xz "$fetch_output"
+[ -f "$fetch_output" ] || {
+    echo 'source fetch stub did not create the requested output' >&2
+    exit 1
+}
+grep -Fx -- '--retry-all-errors' "$fetch_args" >/dev/null || {
+    echo 'source fetch does not retry transfer errors beyond curl default transient classes' >&2
+    exit 1
+}
+grep -Fx -- '--retry' "$fetch_args" >/dev/null || {
+    echo 'source fetch lost its bounded retry count' >&2
+    exit 1
+}
+
+cat > "$fetch_bin/curl" <<EOF_FETCH_FAIL
+#!/usr/bin/env sh
+out=''
+while [ "\$#" -gt 0 ]; do
+    if [ "\$1" = -o ]; then
+        shift
+        out="\$1"
+        break
+    fi
+    shift
+done
+[ -z "\$out" ] || printf 'partial\n' > "\$out"
+exit 56
+EOF_FETCH_FAIL
+chmod 0755 "$fetch_bin/curl"
+rm -f "$fetch_output"
+if PATH="$fetch_bin:$PATH" fetch https://example.invalid/failing-source.tar.xz "$fetch_output"; then
+    echo 'failed source fetch was accepted' >&2
+    exit 1
+fi
+[ ! -e "$fetch_output" ] || {
+    echo 'failed source fetch left a partial archive behind' >&2
+    exit 1
+}
+
 # MSYS2's default deepcopy symlink mode can fail on a link-before-target tar
 # ordering. Exercise the common retry contract without pretending this Linux
 # regression is the native MSYS2 proof.

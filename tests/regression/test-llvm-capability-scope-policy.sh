@@ -41,6 +41,24 @@ if [ -z "$cxx_header_line" ] || [ -z "$cxx_common_line" ] || [ "$cxx_header_line
     echo 'LLVM capability-scope policy: Windows clang++.cfg does not put libc++ headers before target C headers' >&2
     failures=$((failures + 1))
 fi
+cxx_unwind_line="$(printf '%s\n' "$cxx_cfg_block" | grep -n -F -- '--unwindlib=libunwind' | head -n1 | cut -d: -f1 || true)"
+if [ -z "$cxx_unwind_line" ] || [ "$cxx_unwind_line" -le "$cxx_common_line" ]; then
+    echo 'LLVM capability-scope policy: Windows clang++.cfg does not select packaged libunwind after the common runtime configuration' >&2
+    failures=$((failures + 1))
+fi
+printf '%s\n' "$cxx_cfg_block" | grep -Fx -- '--start-no-unused-arguments' >/dev/null || {
+    echo 'LLVM capability-scope policy: Windows clang++.cfg does not suppress compile-only unused warnings around the unwind default' >&2
+    failures=$((failures + 1))
+}
+printf '%s\n' "$cxx_cfg_block" | grep -Fx -- '--end-no-unused-arguments' >/dev/null || {
+    echo 'LLVM capability-scope policy: Windows clang++.cfg does not close the compile-only unused-warning scope' >&2
+    failures=$((failures + 1))
+}
+common_cfg_block="$(awk '/cat > "\$cfg_common" <<EOF/{inside=1; next} inside && /^EOF$/{exit} inside{print}' "$BUILD")"
+if printf '%s\n' "$common_cfg_block" | grep -F -- '--unwindlib=' >/dev/null; then
+    echo 'LLVM capability-scope policy: Windows C and C++ drivers are unnecessarily coupled to the same unwind default' >&2
+    failures=$((failures + 1))
+fi
 reject "$BUILD" 'features.llvm_ar=' 'llvm-ar presence is still promoted to a Clang feature'
 reject "$BUILD" 'features.llvm_ranlib=' 'llvm-ranlib presence is still promoted to a Clang feature'
 reject "$BUILD" 'features.llvm_objdump=' 'llvm-objdump presence is still promoted to a Clang feature'

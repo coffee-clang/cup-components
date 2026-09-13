@@ -266,7 +266,7 @@ fetch() {
 
     log "downloading: $url"
 
-    if ! curl -fL --retry 3 --retry-delay 5 --connect-timeout 20 -o "$output" "$url"; then
+    if ! curl -fL --retry 3 --retry-all-errors --retry-delay 5 --connect-timeout 20 -o "$output" "$url"; then
         rm -f "$output"
         return 1
     fi

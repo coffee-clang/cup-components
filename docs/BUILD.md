@@ -274,7 +274,7 @@ The common source layer performs these steps:
 1. resolve `stable` or preserve the explicit numeric version;
 2. construct the upstream source URL for the selected family;
 3. choose a deterministic local archive name;
-4. reuse the cached archive if it already exists, otherwise download it;
+4. reuse the cached archive if it already exists, otherwise download it with bounded retries that also cover transient transfer errors;
 5. calculate its SHA-256;
 6. verify the digest when the repository knows the selected stable digest or when `source_sha256` was supplied;
 7. extract the archive into `.cup-build/src`;

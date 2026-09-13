@@ -20,7 +20,7 @@ Each GitHub workflow runs this script once in its Ubuntu `select` job, before an
 
 It checks common behavior such as:
 
-- source acquisition success and failure propagation;
+- source acquisition, bounded transfer-error retry configuration and failure cleanup/propagation;
 - package identity and revision rules;
 - `info.txt` field/path compatibility;
 - `manifest.txt` format and regeneration;

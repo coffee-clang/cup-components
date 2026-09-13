@@ -579,6 +579,9 @@ EOF
 -isystem
 <CFGDIR>/../include/c++/v1
 @cup-windows-clang-common.cfg
+--start-no-unused-arguments
+--unwindlib=libunwind
+--end-no-unused-arguments
 EOF
 
     cat > "$target_cfg_1" <<'EOF'

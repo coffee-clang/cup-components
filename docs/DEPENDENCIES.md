@@ -79,213 +79,37 @@ Windows runtime closure uses the PE/DLL inspection tools available in the select
 
 These commands are build-machine dependencies. Their presence does not make them package payload.
 
-## Linux build environments
+## Build environments
 
-Linux builds use two Ubuntu 24.04 Docker images stored in the repository.
+The repository keeps platform build environments separate from package ownership. Their installed package sets provide compilers, build systems, headers and libraries from which a producer may build a tool; only files selected by the producer and required by runtime closure become package content.
 
-### GNU toolchain image
+### Linux
 
-`docker/toolchain-builder.Dockerfile` builds GCC, GNU ld, GDB and Valgrind.
+Linux builds use two Ubuntu 24.04 images owned by the repository:
 
-It installs:
+- `docker/toolchain-builder.Dockerfile` for GCC, GNU ld, GDB and Valgrind;
+- `docker/llvm-builder.Dockerfile` for LLVM-family tools.
 
-```text
-build-essential
-binutils
-ca-certificates
-curl
-wget
-file
-flex
-gawk
-gettext
-bison
-libtool
-make
-patch
-patchelf
-perl
-python3
-python3-dev
-tar
-texinfo
-unzip
-xz-utils
-bzip2
-zip
-pkg-config
-libgmp-dev
-libmpfr-dev
-libreadline-dev
-libexpat1-dev
-zlib1g-dev
-libncurses-dev
-liblzma-dev
-libzstd-dev
-libdebuginfod-dev
-libsource-highlight-dev
-libxxhash-dev
-libbabeltrace-dev
-libc6-dbg
-```
+The toolchain image provides the GNU build stack plus the development libraries needed by GDB/Valgrind and GCC-family builds. The LLVM image provides CMake/Ninja, Clang/LLVM build prerequisites and the Python/SWIG/XML/terminal/compression development inputs needed by LLDB and the other selected LLVM projects. Architecture-specific additions, such as Intel Processor Trace support on Linux x64, remain build-environment details rather than package-wide dependencies.
 
-On x64 Linux builders it also installs:
+The Dockerfiles are the source of truth for the exact installed package set. Keeping that inventory there avoids duplicating a list that must otherwise be synchronized with the actual builder image.
 
-```text
-libipt-dev
-```
+### Windows
 
-Some packages are used only by one of the tool families sharing this image. The image is a common build environment; its entire installed package set is not copied into each produced tool package.
-
-### LLVM image
-
-`docker/llvm-builder.Dockerfile` builds LLVM-family tools on Linux.
-
-It installs:
-
-```text
-build-essential
-binutils
-ca-certificates
-cmake
-curl
-file
-ninja-build
-patchelf
-pkg-config
-python3
-python3-dev
-swig
-tar
-unzip
-xz-utils
-bzip2
-zip
-zlib1g-dev
-libzstd-dev
-libxml2-dev
-libedit-dev
-libncurses-dev
-liblzma-dev
-libffi-dev
-```
-
-These dependencies provide the CMake/Ninja build environment and the optional libraries used by selected LLVM/LLDB configurations.
-
-## Windows build environments
-
-Windows workflows use MSYS2 through `msys2/setup-msys2`.
-
-Two environments are deliberate:
+Windows workflows use MSYS2 through `msys2/setup-msys2` with two deliberate environments:
 
 - `UCRT64` for GCC, GNU ld and GDB;
 - `CLANG64` for LLVM-family tools.
 
-`scripts/setup/setup-windows-msys2.sh` reads the corresponding package list from the repository.
+`scripts/setup/setup-windows-msys2.sh` installs the corresponding repository-owned package list. The exact lists are maintained in `scripts/setup/msys2-ucrt64-packages.txt` and `scripts/setup/msys2-clang64-packages.txt`. UCRT64 supplies the GNU-oriented compiler/build environment and debugger dependencies; CLANG64 supplies the LLVM-oriented compiler/runtime environment, CMake/Ninja, Python/SWIG and the libraries needed by LLVM/LLDB.
 
-### UCRT64 package list
+For Windows Clang, selected MSYS2 files have an additional role: the producer materializes the MinGW target headers, CRT and winpthreads into the package-owned target sysroot and records their provider/version provenance. That deliberate target payload is distinct from treating the whole CLANG64 environment as package content.
 
-`scripts/setup/msys2-ucrt64-packages.txt` contains:
+### macOS
 
-```text
-base-devel
-git
-curl
-tar
-gzip
-bzip2
-xz
-zip
-unzip
-patch
-texinfo
-python
-mingw-w64-ucrt-x86_64-gcc
-mingw-w64-ucrt-x86_64-binutils
-mingw-w64-ucrt-x86_64-make
-mingw-w64-ucrt-x86_64-cmake
-mingw-w64-ucrt-x86_64-ninja
-mingw-w64-ucrt-x86_64-autotools
-mingw-w64-ucrt-x86_64-pkgconf
-mingw-w64-ucrt-x86_64-gmp
-mingw-w64-ucrt-x86_64-mpfr
-mingw-w64-ucrt-x86_64-mpc
-mingw-w64-ucrt-x86_64-isl
-mingw-w64-ucrt-x86_64-readline
-mingw-w64-ucrt-x86_64-expat
-mingw-w64-ucrt-x86_64-zlib
-mingw-w64-ucrt-x86_64-ncurses
-mingw-w64-ucrt-x86_64-xz
-mingw-w64-ucrt-x86_64-zstd
-mingw-w64-ucrt-x86_64-python
-```
+macOS LLVM-family builds use GitHub-hosted macOS runners plus `scripts/setup/setup-macos-builder.sh`. The setup installs the CMake/Ninja build stack and the Python/SWIG, compression, XML and terminal-editing dependencies required by the selected LLVM/LLDB configuration, then exports the relevant Homebrew prefixes through `CMAKE_PREFIX_PATH`, `PKG_CONFIG_PATH` and the workflow path.
 
-### CLANG64 package list
-
-`scripts/setup/msys2-clang64-packages.txt` contains:
-
-```text
-base-devel
-git
-curl
-tar
-gzip
-bzip2
-xz
-zip
-unzip
-patch
-python
-mingw-w64-clang-x86_64-clang
-mingw-w64-clang-x86_64-compiler-rt
-mingw-w64-clang-x86_64-libc++
-mingw-w64-clang-x86_64-libunwind
-mingw-w64-clang-x86_64-lld
-mingw-w64-clang-x86_64-llvm-tools
-mingw-w64-clang-x86_64-cmake
-mingw-w64-clang-x86_64-ninja
-mingw-w64-clang-x86_64-pkgconf
-mingw-w64-clang-x86_64-swig
-mingw-w64-clang-x86_64-python
-mingw-w64-clang-x86_64-zlib
-mingw-w64-clang-x86_64-zstd
-mingw-w64-clang-x86_64-libxml2
-mingw-w64-clang-x86_64-libffi
-mingw-w64-clang-x86_64-sqlite3
-mingw-w64-clang-x86_64-ncurses
-mingw-w64-clang-x86_64-xz
-mingw-w64-clang-x86_64-curl
-perl
-```
-
-CLANG64 is used for the LLVM-family Windows build so its compiler and C++ runtime model matches the selected LLVM-oriented environment.
-
-## macOS build environment
-
-macOS LLVM-family builds use GitHub-hosted macOS runners and Homebrew.
-
-`scripts/setup/setup-macos-builder.sh` installs:
-
-```text
-bash
-cmake
-ninja
-python
-swig
-xz
-zstd
-zlib
-libxml2
-ncurses
-libedit
-pkg-config
-```
-
-The setup exports the required Homebrew prefixes through `CMAKE_PREFIX_PATH`, `PKG_CONFIG_PATH` and the workflow path.
-
-The active macOS SDK is selected with `xcrun`.
-
-Homebrew installation paths are temporary build-environment paths. A finished package cannot rely on an absolute Homebrew location for a required non-system runtime library.
+The setup script is the source of truth for the exact Homebrew formula set. The active macOS SDK is selected with `xcrun`. Homebrew installation paths are temporary build-environment paths: a finished package cannot rely on an absolute Homebrew location for a required non-system runtime library.
 
 ## Upstream sources
 
@@ -357,7 +181,7 @@ These development packages are not copied wholesale into GDB. After GDB's public
 
 LLVM-family builds use CMake, Ninja, the platform compiler, Python and the build utilities required by the selected LLVM projects.
 
-LLDB additionally uses Python, SWIG, libxml2, LZMA and terminal-editing support according to the selected platform recipe.
+LLDB additionally uses Python, SWIG, libxml2, LZMA and terminal-editing support according to the selected platform recipe. Windows LLD also enables libxml2 for its COFF configuration; any resulting non-system runtime DLLs are handled by the normal Windows runtime-closure mechanism rather than by copying the build environment wholesale.
 
 Each LLVM-family package configures only the LLVM projects needed to produce its declared payload. The exact per-tool project selection is owned by [Tool packages](TOOLS.md#llvm-project-selection).
 

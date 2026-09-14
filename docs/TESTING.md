@@ -98,17 +98,16 @@ The GDB package check verifies:
 
 Clang checks include:
 
-- `clang` and `clang++`;
-- package-owned resource-directory discovery;
-- C and C++ compilation/linking;
-- packaged libc++ as an explicit capability;
+- `clang` and `clang++` plus package-owned resource-directory discovery;
+- C and C++ compilation, linking and execution through the platform's declared driver defaults, with separate syntax/compile checks on Windows;
+- packaged libc++ as an explicit capability, including STL, exceptions and RTTI; on Windows the default `clang++` path must use the packaged C++ runtime/unwinder without falling back to target-side libc++ DLLs;
 - LTO through packaged LLD where declared;
-- compiler-rt builtins resolving to a package-owned archive at the original and relocated roots;
-- sanitizer/runtime capabilities where declared;
-- Linux and macOS relocation behavior;
-- Windows sysroot/driver behavior on the Windows path.
+- compiler-rt builtins resolving to a package-owned archive at both the original and relocated roots;
+- sanitizer and profile-runtime behavior where declared;
+- relocation with the previous package root unavailable, including paths with spaces where the platform path exercises them;
+- Windows MinGW sysroot/driver behavior and macOS SDK/minimum-OS/signature requirements.
 
-LLD performs a real native-format link through the only public frontend retained for the package host: ELF through `ld.lld` on Linux, PE/COFF through `lld-link.exe` on Windows and Mach-O through `ld64.lld` on macOS. Windows qualification reads the PE header and requires `IMAGE_FILE_MACHINE_AMD64`, then exercises embedded manifest handling. Non-native upstream frontends are absent from the final package.
+LLD performs a real native-format link through the only public frontend retained for the package host: ELF through `ld.lld` on Linux, PE/COFF through `lld-link.exe` on Windows and Mach-O through `ld64.lld` on macOS. The Windows test reads the PE header and requires `IMAGE_FILE_MACHINE_AMD64`, then exercises embedded manifest handling. Non-native upstream frontends are absent from the final package.
 
 LLDB checks include:
 
@@ -117,11 +116,11 @@ LLDB checks include:
 - isolated package-owned Python search paths on Windows;
 - Clang resource-directory ownership;
 - target creation, breakpoint and symbol lookup behavior;
-- process launch whenever `features.process_launch=true`; an environment restriction is an evidence failure rather than a package PASS;
+- process launch whenever `features.process_launch=true`; an environment restriction is a test failure rather than a package PASS;
 - a real `lldb-dap` protocol session when DAP is declared; protocol waits are deadline-bounded and treat EOF/closed transport as termination instead of spinning until the deadline;
 - on Linux and Windows, a real packaged `lldb-server platform` session when remote debugging is declared, with native remote launch, breakpoint/expression and bounded cleanup;
 - on macOS, the declared system `debugserver` prerequisite is exercised by real local process launch/DAP rather than by a separate filesystem lookup proxy, while remote debugging remains undeclared;
-- POSIX relocation with previous roots unavailable; the final path contains real spaces and repeats the local process-launch oracle after relocation.
+- POSIX relocation with previous roots unavailable; the final path contains real spaces and repeats the local process-launch check after relocation.
 
 clangd checks the language-server entry, matching package-owned Clang resource headers, compile-command consumption and a real bounded LSP initialize/document-symbol/shutdown session. The source consumes a representative builtin header (`stddef.h`), the LSP test requires a valid compilation database to be loaded and rejects fallback parsing, and the full behavior is repeated after relocation. `clangd-indexer` is deliberately absent; background indexing is not a separate CUP capability claim.
 
@@ -176,28 +175,15 @@ Run all of them with:
 tests/run.sh
 ```
 
-The current suite covers:
+The runner discovers the regression scripts in that directory rather than maintaining a second filename inventory in the documentation. Together they protect repository-level decisions that are easy to break without noticing, including:
 
-```text
-test-clang-bin-pruning.sh
-test-clang-linux-package-policy.sh
-test-clang-macos-package-policy.sh
-test-gcc-package-ownership.sh
-test-gdb-package-policy.sh
-test-ld-builder-synthetic.sh
-test-ld-product-model.sh
-test-lldb-clang-resource-materialization.sh
-test-lldb-package-policy.sh
-test-llvm-auxiliary-package-policy.sh
-test-llvm-capability-scope-policy.sh
-test-package-capability-reporter.sh
-test-producer-interfaces.sh
-test-python-runtime-development-exclusion.sh
-test-reproducible-archives.sh
-test-source-acquisition.sh
-```
+- package ownership, pruning and tool-specific final-scope rules;
+- source acquisition, version input handling and workflow/producer interfaces;
+- manifest/object semantics, archive reproducibility and package-capability reporting;
+- Python runtime selection and exclusion of development or ambient interpreter material;
+- LLVM resource/runtime ownership and the distinction between build-time utilities and final package surface.
 
-These checks protect repository-level decisions that are easy to break without noticing, such as package pruning, version input handling, manifest/object behavior, Python runtime selection, source acquisition and workflow interfaces.
+These checks deliberately target repository contracts and synthetic edge cases. They complement, rather than replace, the native tool-package tests described above.
 
 ## What local checks cannot establish
 

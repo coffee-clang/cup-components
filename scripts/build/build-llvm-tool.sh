@@ -141,10 +141,10 @@ llvm_common_cmake_args() {
         printf '%s\n' -DLLVM_ENABLE_LIBXML2=OFF
     fi
 
-    # Only the Clang package deliberately owns LLVM command-line tools such as
-    # llvm-ar/llvm-nm/llvm-objdump. The other standalone packages use LLVM
-    # libraries but ship project-owned commands, so keep LLVM's tool targets
-    # available for dependencies without building the entire llvm-* toolbox.
+    # Clang runtime construction needs LLVM utility targets such as llvm-ar,
+    # while the smaller standalone tools do not need the full llvm-* toolbox.
+    # These utilities are build-time dependencies and are pruned from the final
+    # Clang package surface.
     if [ "$TOOL" != clang ]; then
         printf '%s\n' -DLLVM_BUILD_TOOLS=OFF
     fi
@@ -2180,9 +2180,9 @@ prune_unowned_clang_runtime_payload() {
     platform_dir="$(clang_runtime_platform_dir)"
     rm -rf "$PREFIX/lib/$platform_dir" "$PREFIX/lib/clang_rt/$platform_dir"
 
-    # Older V52 Windows packaging also materialized triple aliases inside the
-    # resource directory. They are not consumed by the runtime naming/layout
-    # produced here; reject their survival rather than keeping duplicate bytes.
+    # Triple-alias runtime directories are not consumed by the canonical
+    # resource layout produced here; remove them rather than retaining duplicate
+    # runtime bytes under alternate target names.
     if is_windows_platform "$HOST_PLATFORM"; then
         resource_dir="$(clang_resource_dir || true)"
         if [ -n "$resource_dir" ]; then

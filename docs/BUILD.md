@@ -29,6 +29,8 @@ close required host runtime dependencies
         ↓
 normalize the package tree
         ↓
+apply the tool-specific final package policy, when defined
+        ↓
 write/validate info.txt and generate manifest.txt
         ↓
 create and semantically verify tar.xz, tar.gz and zip
@@ -42,7 +44,7 @@ verify SHA256SUMS
 optionally publish the finished archives
 ```
 
-Tool-family builders own configure/build/install and tool-specific package selection. `scripts/package/package-common.sh` owns common source handling, metadata rules, manifest generation, runtime closure and archive finalization.
+Tool-family builders own configure/build/install, tool-specific package selection and any final package policy that must be checked after common normalization. `scripts/package/package-common.sh` owns common source handling, metadata rules, manifest generation, runtime closure and archive finalization; during finalization it invokes the tool policy against the exact normalized package tree before metadata and archives are sealed.
 
 ## GitHub Actions workflows
 
@@ -101,9 +103,9 @@ platform
 
 because they are native-only in the current repository. Internally that one value becomes both host and target. This prevents unsupported host/target combinations from being represented by the workflow interface.
 
-### LLVM tool input
+### LLVM matrix and tool input
 
-The LLVM workflow also accepts one tool name:
+The LLVM workflow can run either one selected tool/platform pair or the complete supported native matrix. `full_matrix=true` expands the workflow to every combination of:
 
 ```text
 clang
@@ -113,6 +115,18 @@ clangd
 lld
 lldb
 ```
+
+and:
+
+```text
+linux-x64
+linux-arm64
+windows-x64
+macos-x64
+macos-arm64
+```
+
+When `full_matrix=false`, `tool` and `platform` select the single matrix cell to build. The same `version`, optional `source_sha256` and publication policy apply to every cell selected by the workflow.
 
 ### Version behavior
 
@@ -239,7 +253,7 @@ The setup selects Homebrew `python` because Python can become package-owned runt
 
 The active macOS SDK is selected through `xcrun`. The current deployment target is macOS 15.0.
 
-The exact dependency lists are documented in [Dependencies](DEPENDENCIES.md).
+[Dependencies](DEPENDENCIES.md) explains the role of these environments and points to the repository files that own their exact package lists.
 
 ## Working directories
 
@@ -319,16 +333,17 @@ After the tool-specific package tree has been selected, common finalization perf
 2. removal of non-relocatable libtool metadata that still contains temporary build paths;
 3. host runtime closure for the selected platform;
 4. package-root normalization;
-5. `info.txt` contract validation;
-6. `manifest.txt` generation, followed by independent regeneration from each extracted archive;
-7. timestamp normalization where supported by the package path;
-8. creation of `tar.xz`, `tar.gz` and `zip`;
-9. creation of `SHA256SUMS`;
-10. creation of `release.env` for later workflow steps.
+5. the tool-specific final package policy, when that builder defines one;
+6. `info.txt` contract validation;
+7. `manifest.txt` generation, followed by independent regeneration from each extracted archive;
+8. timestamp normalization where supported by the package path;
+9. creation of `tar.xz`, `tar.gz` and `zip`;
+10. semantic verification of every archive against the normalized package tree;
+11. creation of `SHA256SUMS` and `release.env` for later workflow steps.
 
-The workflow then runs the tool-specific product test and verifies `SHA256SUMS` before upload or publication. Archive semantic verification itself is already part of common finalization.
+The final tool-policy hook is intentionally after runtime closure and normalization. It therefore checks the same package tree that will be represented by `info.txt`, `manifest.txt` and the archives, rather than an earlier staging tree. LLVM-family builders use this boundary to enforce their final public-command, runtime/resource and native-architecture policy without duplicating common finalization.
 
-The common finalizer does not decide which public commands belong to GDB, Clang, Valgrind or another family. That decision remains in the corresponding tool builder.
+The workflow then runs the tool-specific product test and verifies `SHA256SUMS` before upload or publication. The common finalizer owns finalization mechanics; each family remains the owner of which commands and payload are valid for its product.
 
 ## Build output
 

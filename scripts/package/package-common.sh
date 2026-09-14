@@ -1449,8 +1449,9 @@ verify_macos_runtime_libraries() {
                         die "packaged @loader_path dependency is missing for $(basename "$file"): $dependency"
                     ;;
                 @executable_path/*)
-                    # Current producer output does not require this form. Rejecting it keeps
-                    # package validation deterministic rather than guessing the main executable.
+                    # Resolving @executable_path would require choosing a main executable for
+                    # a library during package-wide closure. No package contract owns that
+                    # interpretation, so reject the form instead of guessing a launcher.
                     die "unsupported @executable_path dependency in package: $(basename "$file"): $dependency"
                     ;;
                 /*)

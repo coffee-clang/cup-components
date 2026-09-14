@@ -207,7 +207,7 @@ At least one executable entry is required. Every declared `entry.*` path must sa
 
 ### Capability metadata
 
-`features.*` records behavioral capabilities deliberately exposed by the completed package. A command or payload being present is evidence for `entry.*` or `contents.*`; it does not by itself create a `features.*` promise. Positive feature claims therefore have a corresponding product-test oracle. Every `features.*` value is the literal boolean `true` or `false`; the exact keys depend on the tool.
+`features.*` records behavioral capabilities deliberately exposed by the completed package. A command or payload being present is evidence for `entry.*` or `contents.*`; it does not by itself create a `features.*` promise. Positive feature claims therefore have a corresponding behavioral package test. Every `features.*` value is the literal boolean `true` or `false`; the exact keys depend on the tool.
 
 `requires.*` records an explicit external platform prerequisite that is necessary for a declared capability but is not package payload. It is used only when the platform/toolchain environment owns that prerequisite, and its values are likewise literal `true` or `false`. Current examples are the Linux native development environment used by Clang's default C/C++ compilation path, the Apple developer tools/SDK used for macOS native compilation and Apple's system `debugserver` used by LLDB local process control. A requirement must never be inferred silently from the build runner.
 

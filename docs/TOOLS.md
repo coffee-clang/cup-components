@@ -182,7 +182,7 @@ lld          -> lld
 lldb         -> clang;lldb
 ```
 
-Building a project does not automatically make all of its installed files part of the final package.
+Building a project does not automatically make all of its installed files part of the final package. After common runtime closure and package normalization, LLVM-family packages are checked again against their tool-specific final policy. That check includes the native architecture of packaged executables, shared libraries and static archives retained by the package, so a package cannot retain a foreign-architecture object merely because it was produced by the upstream install.
 
 ### Clang
 
@@ -203,15 +203,15 @@ libunwind + libc++abi + libc++
 compiler-rt sanitizers/profile runtime
 ```
 
-On macOS, the compiler-rt Darwin architecture lists are constrained to the package architecture for both builtins and sanitizer/profile runtime construction. The packaged builtins use Clang's canonical Darwin resource name `libclang_rt.osx.a`, while the final LLVM package validation checks native object architecture, including load-bearing static archives, rather than validating only executable/shared-library slices.
+`libc++abi` participates in construction of the packaged C++ runtime but is not retained as a separate public archive: the static ABI library is folded into `libc++.a`. The final package keeps `libc++.a` and the required `libunwind.a` together with the C++ headers. On macOS the static libc++/ABI/unwind build uses hidden/hermetic symbols so this package-owned static runtime can coexist with the Apple C++ runtime already present in system processes.
 
-Bundled libc++ is an available package capability. It is not forced as the default C++ standard library on every host. On macOS the static libc++/ABI/unwind build uses hidden/hermetic symbols so a package-owned static runtime can coexist with the Apple C++ runtime already present in system processes.
+Bundled libc++ is an available package capability, but its default use is platform-specific. On Linux, `clang++.cfg` adds only the package-relative library search path needed to use the bundled runtime explicitly and does not add `-stdlib=libc++` globally. On Windows, the package-relative `clang++.cfg` makes packaged libc++ the C++ default, places its headers before the MinGW C headers so wrapper headers can use `include_next`, and selects the packaged LLVM unwinder with `--unwindlib=libunwind`; the C driver remains independent of that C++ unwind default.
 
-On Linux, `clang++.cfg` adds only the package-relative library search path needed to use the bundled runtime explicitly. It does not add `-stdlib=libc++` globally.
+On macOS, the compiler-rt Darwin architecture lists are constrained to the package architecture for both builtins and sanitizer/profile runtime construction. The packaged builtins use Clang's canonical Darwin resource name `libclang_rt.osx.a`.
 
 The package keeps only the native LLD frontend required by the declared linker/LTO integration: `ld.lld` on Linux and Windows/MinGW, and `ld64.lld` on macOS. Its private `lld` backing executable is retained on POSIX only when required by the installed symlink. This integration payload does not turn the compiler package into a second standalone linker package.
 
-Windows Clang also carries the MinGW target sysroot and its package-relative driver configuration. The `clang++` configuration places packaged libc++ headers before the target C headers so libc++ wrapper headers can correctly reach the MinGW C library through `include_next`. `info.txt` records that sysroot's MSYS2 provider plus the exact headers, CRT and winpthreads package versions actually copied. Linux deliberately uses the platform's native development environment for the default C/C++ headers, startup/runtime material, default C++ standard library and platform linker; that external prerequisite is explicit as `requires.system_development_environment=true`. macOS similarly keeps its Apple developer-tools/SDK prerequisites explicit. The compiler is built with xcselect SDK discovery enabled so ordinary native compilation consumes the active Apple SDK without a test-only `-isysroot` injection.
+Windows Clang also carries the MinGW target sysroot. `info.txt` records that sysroot's MSYS2 provider plus the exact headers, CRT and winpthreads package versions actually copied. Linux deliberately uses the platform's native development environment for the default C/C++ headers, startup/runtime material, default C++ standard library and platform linker; that external prerequisite is explicit as `requires.system_development_environment=true`. macOS similarly keeps its Apple developer-tools/SDK prerequisites explicit. The compiler is built with xcselect SDK discovery enabled so ordinary native compilation consumes the active Apple SDK without a test-only `-isysroot` injection.
 
 LLVM utility commands used while constructing compiler runtimes are build tools, not final Clang package commands. They are pruned together with non-native LLD frontends and unrelated Clang sibling tools.
 
@@ -261,7 +261,7 @@ LLDB enables Python. The Python executable path is derived from the interpreter 
 
 If the LLDB installation does not already contain the generated Clang built-in headers it needs, the producer copies the single matching resource directory produced by that LLVM build. The path is derived from the selected build rather than assuming a fixed `lib/clang/<major>` directory.
 
-`lldb-vscode` is not a deliberate package command. On macOS, `lldb-argdumper` is retained as a private runtime helper because native evidence shows that the normal LLDB `run` path uses it for argument expansion. It is not a public `entry.*` command. Linux and Windows do not retain it because their qualified normal launch paths do not require it. The installed Python-side companion is pruned on every platform because the packaged runtime does not consume that alias.
+`lldb-vscode` is not a deliberate package command. On macOS, `lldb-argdumper` is retained as a private runtime helper used by the normal LLDB `run` path for argument expansion. It is not a public `entry.*` command. Linux and Windows do not retain it because their normal launch paths do not require it. The installed Python-side companion is pruned on every platform because the packaged runtime does not consume that alias.
 
 ### clangd
 

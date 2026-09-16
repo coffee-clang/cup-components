@@ -1,119 +1,93 @@
 # Dependencies
 
-`cup-components` uses dependencies for several different purposes. Keeping those purposes separate is important because a library needed to build a tool is not automatically a file that belongs in the final package.
+A dependency can be needed to **build** a tool without belonging to the package that
+CUP installs. `cup-components` keeps build inputs, logical package components, runtime
+dependencies and operating-system responsibilities separate so the final package does
+not accidentally inherit its builder environment.
 
-For package runtime closure, see [Packages](PACKAGES.md#runtime-closure). For the package policy of each tool, see [Tool packages](TOOLS.md).
+For runtime closure, see [Packages](PACKAGES.md#runtime-closure). For tool-owned payload,
+see [Tool packages](TOOLS.md).
 
-## Dependency categories
+## Dependency model
 
-| Category | Meaning | Part of package identity? |
+| Kind | Responsibility | Package payload? |
 | --- | --- | --- |
-| Main upstream source | Source release of the tool being packaged | Yes: its selected version is the package version |
-| Logical composition component | Independently versioned component deliberately included in another logical package | Only where the package model says so |
-| Build dependency | Compiler, build utility, header or library needed while building | No |
-| Runtime dependency | Library or runtime file required by the finished host process | No; included in the package when required |
-| Operating-system runtime | Runtime deliberately supplied by the host operating system | No |
-| Build environment | Docker, MSYS2, Homebrew and runner configuration used to perform the build | No |
+| Primary upstream source | source release of the selected tool | source provenance only |
+| Logical composition component | independently selected component deliberately bundled into one logical package | when that package model owns it |
+| Build dependency | compiler, build system, headers, development libraries, utilities | no |
+| Host runtime dependency | file required by the finished packaged process | yes when non-system and required |
+| Operating-system runtime | runtime deliberately supplied by the host OS | no |
+| Builder environment | Docker/MSYS2/Homebrew/runner configuration | no |
 
-GCC is currently the only revision-bearing package family because its logical package composition contains independently versioned Binutils and, for Windows targets, MinGW-w64. The revision model is documented in [Specification](SPECIFICATION.md#gcc-composition-revision).
+GCC is currently the only revision-bearing family because its logical composition owns
+independently selected Binutils and, for Windows targets, MinGW-w64. Ordinary build or
+runtime dependencies do not create package revisions. See
+[Specification](SPECIFICATION.md#gcc-composition-revision).
 
-## GCC logical composition
-
-The package relationship is:
-
-```text
-native Linux GCC
-  selected GCC
-  selected Binutils
-
-Windows-target GCC
-  selected GCC
-  selected Binutils
-  selected MinGW-w64
-```
-
-The current default versions are defined in [Specification](SPECIFICATION.md#tools-and-versions). They are not a compatibility table: GCC, Binutils and MinGW-w64 can be selected independently for a build. A different composition must be assigned the intended GCC package revision.
-
-Standalone GNU ld uses Binutils as its main source rather than as an internal component of another package, so standalone ld is revisionless.
-
-GDB/LLDB Python runtimes, runtime libraries copied during closure, Homebrew packages and MSYS2 packages are not revision-driving components.
-
-LLVM subprojects such as Clang, LLD, LLDB, compiler-rt, libc++, libc++abi, libunwind and clang-tools-extra all come from the same selected LLVM project release in this repository.
-
-## Common packaging tools
-
-Common build/package handling uses normal platform utilities such as:
-
-```text
-bash
-curl
-tar
-xz
-gzip
-zip
-unzip
-find
-file
-sha256sum or shasum
-```
-
-Linux runtime closure also uses:
-
-```text
-readelf
-ldd
-realpath
-patchelf
-```
-
-macOS runtime closure uses:
-
-```text
-file
-otool
-install_name_tool
-codesign
-```
-
-Windows runtime closure uses the PE/DLL inspection tools available in the selected MSYS2 environment.
-
-These commands are build-machine dependencies. Their presence does not make them package payload.
+LLVM subprojects such as Clang, LLD, LLDB, compiler-rt, libc++, libc++abi, libunwind and
+clang-tools-extra all come from the same selected LLVM project release and therefore do
+not form independently versioned package-composition components.
 
 ## Build environments
 
-The repository keeps platform build environments separate from package ownership. Their installed package sets provide compilers, build systems, headers and libraries from which a producer may build a tool; only files selected by the producer and required by runtime closure become package content.
+The environment files are the source of truth for exact build-machine packages. This
+document describes their role rather than duplicating inventories that would have to be
+kept synchronized manually.
 
 ### Linux
 
-Linux builds use two Ubuntu 24.04 images owned by the repository:
+Linux builds use repository-owned Ubuntu 24.04 images:
 
-- `docker/toolchain-builder.Dockerfile` for GCC, GNU ld, GDB and Valgrind;
+- `docker/toolchain-builder.Dockerfile` for GCC, GNU `ld`, GDB and Valgrind;
 - `docker/llvm-builder.Dockerfile` for LLVM-family tools.
 
-The toolchain image provides the GNU build stack plus the development libraries needed by GDB/Valgrind and GCC-family builds. The LLVM image provides CMake/Ninja, Clang/LLVM build prerequisites and the Python/SWIG/XML/terminal/compression development inputs needed by LLDB and the other selected LLVM projects. Architecture-specific additions, such as Intel Processor Trace support on Linux x64, remain build-environment details rather than package-wide dependencies.
-
-The Dockerfiles are the source of truth for the exact installed package set. Keeping that inventory there avoids duplicating a list that must otherwise be synchronized with the actual builder image.
+They provide the compilers, build systems, development headers/libraries and packaging
+utilities required by those families. Architecture-specific build inputs remain
+builder details unless a selected tool explicitly owns them as package payload.
 
 ### Windows
 
-Windows workflows use MSYS2 through `msys2/setup-msys2` with two deliberate environments:
+Windows builds use MSYS2:
 
-- `UCRT64` for GCC, GNU ld and GDB;
-- `CLANG64` for LLVM-family tools.
+- UCRT64 for GCC, GNU `ld` and GDB;
+- CLANG64 for LLVM-family tools.
 
-`scripts/setup/setup-windows-msys2.sh` installs the corresponding repository-owned package list. The exact lists are maintained in `scripts/setup/msys2-ucrt64-packages.txt` and `scripts/setup/msys2-clang64-packages.txt`. UCRT64 supplies the GNU-oriented compiler/build environment and debugger dependencies; CLANG64 supplies the LLVM-oriented compiler/runtime environment, CMake/Ninja, Python/SWIG and the libraries needed by LLVM/LLDB.
+`scripts/setup/setup-windows-msys2.sh` installs the repository-owned package list from
+`scripts/setup/msys2-ucrt64-packages.txt` or
+`scripts/setup/msys2-clang64-packages.txt`.
 
-For Windows Clang, selected MSYS2 files have an additional role: the producer materializes the MinGW target headers, CRT and winpthreads into the package-owned target sysroot and records their provider/version provenance. That deliberate target payload is distinct from treating the whole CLANG64 environment as package content.
+Windows Clang is the deliberate exception where selected environment files become
+product input: the producer materializes the MinGW target headers, CRT and winpthreads
+into the package sysroot and records the exact provider versions. That does not make the
+rest of CLANG64 package-owned.
 
 ### macOS
 
-macOS LLVM-family builds use GitHub-hosted macOS runners plus `scripts/setup/setup-macos-builder.sh`. The setup installs the CMake/Ninja build stack and the Python/SWIG, compression, XML and terminal-editing dependencies required by the selected LLVM/LLDB configuration, then exports the relevant Homebrew prefixes through `CMAKE_PREFIX_PATH`, `PKG_CONFIG_PATH` and the workflow path.
+macOS LLVM builds use the GitHub macOS runner plus
+`scripts/setup/setup-macos-builder.sh`. That script owns the Homebrew formula set and
+exports the prefixes required by CMake and `pkg-config`.
 
-The setup script is the source of truth for the exact Homebrew formula set. The active macOS SDK is selected with `xcrun`. Homebrew installation paths are temporary build-environment paths: a finished package cannot rely on an absolute Homebrew location for a required non-system runtime library.
+The Apple SDK is discovered with `xcrun`. Homebrew paths are build-time paths; required
+non-system runtime libraries must be packaged and made relocatable rather than left as
+absolute Homebrew dependencies.
+
+## Common build and packaging tools
+
+Repository automation relies on ordinary host utilities such as Bash, `curl`, `tar`,
+`xz`, `gzip`, `zip`/`unzip`, `find`, `file` and SHA-256 tooling.
+
+Runtime closure additionally uses platform-format tools:
+
+- Linux: `readelf`, `ldd`, `realpath`, `patchelf`;
+- macOS: `otool`, `install_name_tool`, `codesign`;
+- Windows: PE/import inspection tools provided by the selected MSYS2 environment.
+
+These utilities help construct or inspect packages; they are not package payload merely
+because the producer uses them.
 
 ## Upstream sources
 
-The repository downloads versioned source releases for:
+The repository acquires versioned source releases for:
 
 ```text
 GCC
@@ -124,105 +98,71 @@ LLVM project
 Valgrind
 ```
 
-The URL pattern for each family is implemented by `scripts/package/package-common.sh`.
+Family URL construction and stable source digests are owned by
+`scripts/package/package-common.sh`. The source cache is `.cup-build/src`.
 
-Downloaded archives are cached under:
+The current stable archives are digest-verified before extraction. An explicit numeric
+version remains a valid build input even when the repository has no built-in digest for
+it; the caller can supply `source_sha256` to bind that build to exact source bytes. See
+[Build](BUILD.md#source-acquisition).
 
-```text
-.cup-build/src
-```
+## Tool-specific build inputs
 
-The current stable source releases have built-in SHA-256 values. Other explicit numeric versions remain valid inputs and can optionally receive a `source_sha256` value at workflow start.
+### GCC and GNU `ld`
 
-See [Build](BUILD.md#source-acquisition) for the acquisition sequence.
+GCC uses the normal C/C++ GNU build stack. On Linux its upstream
+`contrib/download_prerequisites` helper prepares GCC prerequisite sources such as GMP,
+MPFR, MPC and ISL. Native Windows builds instead consume the corresponding UCRT64 build
+environment.
 
-## GCC build dependencies
+Binutils is different from those ordinary prerequisites: a selected Binutils release is
+a deliberate component of a GCC package. A Windows-target GCC also deliberately owns a
+selected MinGW-w64 target toolchain. Standalone GNU `ld` uses Binutils as its primary
+source rather than as a nested component.
 
-GCC uses a C/C++ host compiler, Make and the build tools required by the GCC source tree.
+### GDB
 
-On Linux, GCC's own `contrib/download_prerequisites` helper prepares the upstream prerequisite source set used by GCC, including GMP, MPFR, MPC and ISL.
+GDB builds use the host compiler/build stack, Python and the development inputs needed
+by the selected debugger configuration. The Linux environment can provide terminal/TUI,
+Expat, compression, debuginfod, Source Highlight, xxHash, Babeltrace and Intel Processor
+Trace support where applicable.
 
-On Windows-native builds, the corresponding toolchain libraries are provided by the UCRT64 environment.
+Python and TUI are required by the current package policy. Other integrations remain
+configuration/runtime-content facts unless they correspond to a deliberately validated
+product capability. Development packages are never copied wholesale; the normal runtime
+closure starts only from the selected GDB product roots.
 
-Binutils is not merely a temporary build dependency of the GCC package: it is a deliberate logical package-composition component. Windows-target GCC additionally includes MinGW-w64 target headers, CRT and winpthreads as part of the target toolchain.
+### LLVM family
 
-The current GCC recipe builds C, C++, LTO and OpenMP support, disables multilib and NLS, and includes the selected native Linux sanitizer runtime files where applicable.
+LLVM builds use CMake, Ninja, the platform compiler and the inputs required by the
+selected LLVM projects. LLDB additionally needs Python, SWIG and its configured
+XML/compression/terminal dependencies. Windows LLD also enables libxml2 for its COFF
+configuration.
 
-## GNU ld build dependencies
+Clang package construction builds compiler-rt, libunwind, libc++abi and libc++ from the
+same LLVM source release. Windows Clang additionally owns the selected MinGW target
+sysroot described above. Linux and macOS Clang deliberately retain platform-owned native
+development prerequisites instead of copying an entire system SDK/toolchain into the
+package; these are explicit `requires.*` metadata where relevant.
 
-Standalone GNU ld is built from the selected Binutils source release with the normal GNU configure/Make build path.
+### Valgrind
 
-The build requires a host C compiler, Make and the common archive/package utilities. The final package deliberately keeps the linker commands rather than the complete Binutils toolbox.
+Valgrind is built only on Linux with the GNU toolchain environment. The build uses the
+host compiler and normal autotools/packaging stack. Optional upstream surfaces are kept
+only when they belong to the product policy described in [Tool packages](TOOLS.md#valgrind).
 
-## GDB build dependencies
+## Runtime ownership
 
-GDB uses a C/C++ host compiler, Make, Python and the platform libraries required by the configured debugger features.
+After a tool-specific package surface is selected, common runtime closure classifies its
+host dependencies as either operating-system-provided or package-owned:
 
-The current Linux environment provides build inputs for capabilities such as:
+- Linux leaves the deliberate glibc/loader boundary to the OS and packages required
+  non-base libraries;
+- macOS leaves `/usr/lib` and `/System/Library` dependencies to the OS and packages
+  required non-system libraries;
+- Windows leaves system DLLs to Windows and packages required non-system MSYS2/MinGW
+  runtime DLLs.
 
-```text
-readline / terminal UI
-Expat
-zlib
-LZMA
-Zstandard
-debuginfod
-GNU Source Highlight
-xxHash
-Babeltrace
-Intel Processor Trace on x64
-```
-
-Python and the text user interface are required capabilities in the current GDB recipe. Other integrations are enabled when the selected GDB source release exposes the corresponding configure option and the build environment provides the required input.
-
-These development packages are not copied wholesale into GDB. After GDB's public/runtime package roots are selected, normal platform runtime closure includes only the required non-system runtime files.
-
-## LLVM build dependencies
-
-LLVM-family builds use CMake, Ninja, the platform compiler, Python and the build utilities required by the selected LLVM projects.
-
-LLDB additionally uses Python, SWIG, libxml2, LZMA and terminal-editing support according to the selected platform recipe. Windows LLD also enables libxml2 for its COFF configuration; any resulting non-system runtime DLLs are handled by the normal Windows runtime-closure mechanism rather than by copying the build environment wholesale.
-
-Each LLVM-family package configures only the LLVM projects needed to produce its declared payload. The exact per-tool project selection is owned by [Tool packages](TOOLS.md#llvm-project-selection).
-
-Clang package construction also builds these LLVM runtime groups:
-
-```text
-compiler-rt
-libunwind
-libc++abi
-libc++
-```
-
-Because these projects come from the same selected LLVM release, they do not create independent package revisions.
-
-Windows Clang additionally materializes a MinGW target sysroot from the MSYS2 Clang64 environment. Package metadata records the provider and exact MSYS2 headers, CRT and winpthreads versions whose bytes are copied. These builder-provided component versions are provenance for the realized target sysroot; they are not independent CUP version-selection inputs or revision-driving source components. Linux Clang intentionally relies on the host native C/C++ development environment for its default system headers/libraries and platform linker, while macOS Clang relies on the Apple developer tools/SDK and uses xcselect SDK discovery.
-
-## Valgrind build dependencies
-
-Valgrind is built only on Linux with the GNU toolchain image.
-
-The build uses the host compiler, Make, Perl and libc debug symbols required by the current recipe and package checks.
-
-MPI support is disabled for the distributed package. The optional GDB Python front-end is not included, while core `vgdb` functionality remains part of the package when the selected release provides it.
-
-## Runtime dependency ownership
-
-The runtime-closure mechanism is shared by host platform, but each package starts from its own selected roots.
-
-Examples:
-
-| Package | Runtime responsibility |
-| --- | --- |
-| GCC | GCC runtimes, selected Binutils composition and target MinGW-w64 material where required |
-| GNU ld | standalone linker commands and their required host runtime libraries |
-| GDB | GDB command/data, package-owned Python and the libraries required by enabled debugger features |
-| Clang | Clang resources, compiler runtimes, packaged C++ runtime capability, native LLD integration payload and the Windows MinGW target sysroot where applicable |
-| LLD | the host-native LLD frontend (plus any private POSIX backing executable) and its required host runtime libraries |
-| LLDB | LLDB commands, package-owned Python, Clang resources and required debugger libraries |
-| clang-format | formatter command only; no Git/Python dependency for `git-clang-format` |
-| clang-tidy | tidy commands plus `run-clang-tidy`/`clang-tidy-diff` and their package-owned Python runtime |
-| clangd | language server and matching Clang built-in headers; the standalone indexer is outside the package contract |
-| Valgrind | Valgrind runtime objects, `vgdb`, public client headers and relocatable pkg-config metadata |
-
-The operating system supplies the base runtime defined in [Packages](PACKAGES.md#self-contained-package-boundary). Every other realized host runtime dependency must be package-owned if the tool requires it.
+This classification is about the finished process graph, not where a library happened
+to be installed on the build machine. The exact mechanics are defined in
+[Packages](PACKAGES.md#runtime-closure).

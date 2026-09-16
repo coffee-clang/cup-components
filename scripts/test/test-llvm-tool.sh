@@ -693,9 +693,8 @@ lldb_dap_probe() {
     framed_send "$in_fd" "$body"
     framed_wait "$out_fd" "$log" '"request_seq"[[:space:]]*:[[:space:]]*3.*"success"[[:space:]]*:[[:space:]]*true|"success"[[:space:]]*:[[:space:]]*true.*"request_seq"[[:space:]]*:[[:space:]]*3' 60
     framed_send "$in_fd" '{"seq":4,"type":"request","command":"configurationDone","arguments":{}}'
-    # configurationDone may respond before or after the pending launch response.
-    # The stopped-at-breakpoint oracle subsumes a successful configuration step,
-    # so wait only for the launch response and do not make message ordering brittle.
+    # configurationDone/launch responses can reorder; the breakpoint stop proves
+    # configuration succeeded, so do not make this wait order-sensitive.
     framed_wait "$out_fd" "$log" '"request_seq"[[:space:]]*:[[:space:]]*2.*"success"[[:space:]]*:[[:space:]]*true|"success"[[:space:]]*:[[:space:]]*true.*"request_seq"[[:space:]]*:[[:space:]]*2' 60
     framed_wait "$out_fd" "$log" '"event"[[:space:]]*:[[:space:]]*"stopped".*"reason"[[:space:]]*:[[:space:]]*"breakpoint"|"reason"[[:space:]]*:[[:space:]]*"breakpoint".*"event"[[:space:]]*:[[:space:]]*"stopped"' 60
 
@@ -1601,9 +1600,8 @@ int main(void) {
 C_EOF
         cc -g -O0 "$tmp_root/lldb-test.c" -o "$tmp_root/lldb-test"
 
-        # Target/symbol creation is always qualified. If process launch is a
-        # declared feature, the native runner must prove it; an environment
-        # restriction is evidence-gap/failure, never a package PASS.
+        # If process launch is declared, the native runner must prove it; an
+        # environment restriction is a failure, not a package PASS.
         "$root/bin/lldb" -b \
             -o "target create $tmp_root/lldb-test" \
             -o "breakpoint set --name cup_lldb_test_add_unique" \
@@ -1908,9 +1906,8 @@ case "$LLVM_TOOL" in
         ;;
     lldb)
         if [[ "$(info_value platform.host)" == linux-* || "$(info_value platform.host)" == macos-* ]]; then
-            # LLDB carries package-owned Python/resource state on POSIX hosts. A
-            # must disappear before B, and B before C, so absolute fallbacks
-            # cannot satisfy the identity checks. C contains real spaces.
+            # Remove each prior LLDB root before the next relocation so absolute
+            # fallbacks cannot satisfy package-owned Python/resource checks.
             reloc_b="$tmp_root/relocated-lldb-b"
             reloc_c="$tmp_root/relocation c with spaces"
             cp -RPp "$root" "$reloc_b"

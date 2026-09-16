@@ -133,9 +133,8 @@ elif [ -d "$prefix/lib/valgrind" ]; then
     VALGRIND_LIB="$prefix/lib/valgrind"
 fi
 
-# Valgrind propagates runtime preload paths through LD_PRELOAD.  The Linux
-# dynamic loader treats whitespace and ':' as entry separators and offers no
-# escaping, so expose a separator-free process-local alias only when needed.
+# LD_PRELOAD cannot escape whitespace or ':' separators; use a separator-free
+# process-local alias only when the relocated Valgrind path needs one.
 case "$VALGRIND_LIB" in
     *[[:space:]]*|*:*)
         exec 9<"$VALGRIND_LIB"
@@ -221,9 +220,8 @@ prune_valgrind_tool_development_sdk() {
         -o -name 'libvex-*.a' \
         -o -name 'libvexmultiarch-*.a' \) -delete
 
-    # The optional GDB Python monitor is not part of the relocatable core package.
-    # Some Valgrind releases can suppress it at configure time; remove it here
-    # as well so older layouts keep the same package contract.
+    # The optional GDB Python monitor is outside the core package; prune it even
+    # when an older upstream layout installs it.
     find "$PREFIX" -type f -name 'valgrind-monitor.py' -delete
 
     # The SDK archives are the only upstream payload installed under lib/valgrind

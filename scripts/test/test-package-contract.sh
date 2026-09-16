@@ -10,9 +10,8 @@ CUP_WORK_DIR="$TMP/work"
 CUP_OUT_DIR="$TMP/out"
 mkdir -p "$CUP_WORK_DIR" "$CUP_OUT_DIR"
 
-# Generic package graph/metadata fixtures are intentionally platform-neutral.
-# Runtime closure has dedicated mechanism tests below and must not make these
-# generic fixtures depend on tooling for a declared, non-native host platform.
+# Keep generic graph/metadata fixtures platform-neutral; runtime closure has its
+# own mechanism tests below.
 create_packages_without_runtime_closure() {
     (
         prepare_linux_runtime_closure() { :; }
@@ -21,9 +20,8 @@ create_packages_without_runtime_closure() {
     )
 }
 
-# Source acquisition is used through command substitution by every producer
-# family. Load-bearing failures must be propagated explicitly rather than
-# relying on errexit behavior inside the substitution.
+# Source acquisition runs through command substitution, so failures must be
+# propagated explicitly rather than relying on errexit.
 (
     source_test_root="$TMP/source-fetch-failure"
     CUP_SRC_DIR="$source_test_root/src"
@@ -231,9 +229,8 @@ if [ "$supports_symlinks" = true ]; then
     [ "$(cat "$zip_extract/$base/lib/libfixture-current.so")" = payload ] || { echo 'zip symlink chain resolves to wrong bytes' >&2; exit 1; }
 fi
 
-# Every advertised archive format must reconstruct the same logical package graph.
-# Recompute manifest v2 after extraction so ZIP cannot pass merely by carrying the
-# same manifest.txt while silently changing object kinds, modes, link text or bytes.
+# Every archive must reconstruct the same graph; regenerate manifest v2 after
+# extraction rather than trusting the archived manifest.txt.
 parity_xz="$TMP/parity-xz"
 parity_gz="$TMP/parity-gz"
 parity_zip="$TMP/parity-zip"
@@ -278,10 +275,8 @@ EOF_WINDOWS_MANIFEST
     zip -qr "$TMP/$windows_archive_base.zip" "$windows_archive_base"
 )
 
-# Info-ZIP status 1 is a warning status. A self-produced Windows ZIP may
-# therefore report a warning even though listing/extraction completed. The
-# common verifier must continue into its manifest/tree checks, while true
-# unzip failures remain fatal.
+# Info-ZIP status 1 is warning-only for these Windows ZIPs; continue into the
+# semantic checks while keeping true unzip failures fatal.
 chmod 0755 "$windows_archive_root/$windows_archive_base/bin/helper"
 rm -f "$TMP/$windows_archive_base.zip"
 (
@@ -467,10 +462,8 @@ assert_package_rejected packaged-python-version-invalid 'printf "contents.python
 assert_package_rejected invalid-feature-boolean 'printf "features.invalid=yes\n" >> "$candidate/info.txt"'
 assert_package_rejected invalid-requirement-boolean 'printf "requires.invalid=1\n" >> "$candidate/info.txt"'
 
-# A case-fold collision can only exist in a staging tree when the host
-# filesystem can represent names that differ by case. Probe that capability
-# before constructing the negative fixture; otherwise both writes name the
-# same object and there is no collision for the producer to reject.
+# Build the case-fold negative fixture only when the host filesystem can
+# represent distinct names that differ solely by case.
 case_probe="$TMP/case-distinct-path-probe"
 mkdir -p "$case_probe"
 printf upper > "$case_probe/Case"
@@ -836,9 +829,8 @@ if ! (
 fi
 printf 'macOS codesign prerequisite mechanism test passed\n'
 
-# Presence predicates must consume the complete enumerator output under pipefail.
-# This deliberately emits far more than a pipe buffer so an early-exiting consumer
-# would SIGPIPE the producer and could misclassify a non-empty object set as empty.
+# Emit more than a pipe buffer so presence predicates must consume the complete
+# enumerator under pipefail instead of hiding SIGPIPE.
 emit_many_runtime_objects() {
     local i
     for ((i = 0; i < 32768; i++)); do

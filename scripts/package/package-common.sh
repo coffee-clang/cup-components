@@ -22,9 +22,8 @@ if [ -z "${CUP_JOBS:-}" ]; then
 fi
 
 DEFAULT_GCC_VERSION="16.2.0"
-# The default GCC package composition is independent of the standalone GNU ld
-# default. Change the component version(s) and revision together when the
-# default GCC composition changes without changing the GCC release itself.
+# GCC composition defaults are independent of standalone GNU ld; change the
+# component defaults and GCC revision together when that composition changes.
 DEFAULT_GCC_BINUTILS_VERSION="2.47"
 DEFAULT_GCC_MINGW_VERSION="14.0.0"
 DEFAULT_GCC_REVISION="1"
@@ -418,12 +417,9 @@ extract_archive() {
         return 0
     fi
 
-    # MSYS2's default winsymlinks:deepcopy mode requires a symlink target to
-    # exist before the link entry is unpacked. A first pass can therefore fail
-    # only because an archive lists a link before its target, while still
-    # materializing that later target. Retrying into the same destination is
-    # the documented MSYS2 workaround and remains fail-closed for every other
-    # tar error because the second pass must itself succeed.
+    # MSYS2 winsymlinks:deepcopy can fail when a link precedes its target while
+    # still extracting that target. Retry the same destination once; the retry
+    # itself must succeed, so unrelated tar failures remain fatal.
     if is_windows_platform "${HOST_PLATFORM:-}"; then
         log "retrying tar source extraction after the Windows first pass failed"
         tar "$tar_mode" "$archive" -C "$destination" --strip-components=1 "${tar_excludes[@]}"
@@ -741,9 +737,8 @@ python_runtime_prefix() {
 prune_python_runtime_nonruntime_payload() {
     local destination="$1"
 
-    # CPython's caches, regression suites, GUI/demo modules and test-only
-    # extension modules are not runtime responsibility of packaged debugger or
-    # helper Python. Keep the ordinary stdlib intact for user scripting.
+    # Exclude CPython test/demo/cache payload; keep the normal stdlib for tool
+    # runtime and user scripting.
     find "$destination" -type d -name __pycache__ -prune -exec rm -rf {} +
     find "$destination" -type d \
         \( -name test -o -name tests -o -name idlelib -o -name tkinter -o -name turtledemo \
@@ -769,9 +764,8 @@ copy_python_stdlib_runtime_entries() {
     [ -d "$stdlib" ] || die "Python standard library was not found: $stdlib"
     mkdir -p "$destination"
 
-    # Materialize the top-level enumeration before copying so a find failure is
-    # not hidden by process-substitution semantics. An incomplete stdlib copy is
-    # not an acceptable package runtime.
+    # Materialize the enumeration first so a find failure cannot be hidden by
+    # process substitution and yield an incomplete stdlib.
     entries_file="$(mktemp)" || die "could not allocate Python stdlib enumeration file"
     if find "$stdlib" -mindepth 1 -maxdepth 1 -print0 > "$entries_file"; then
         :
@@ -781,10 +775,8 @@ copy_python_stdlib_runtime_entries() {
         return "$status"
     fi
 
-    # Preserve package-owned site-packages already installed by LLDB and copy
-    # only interpreter runtime entries from the builder Python. Source-side
-    # third-party packages and CPython development metadata are not part of the
-    # CUP Python runtime contract.
+    # Preserve package-owned LLDB modules; copy only interpreter runtime from
+    # builder Python, not its third-party/development payload.
     while IFS= read -r -d '' entry; do
         base="$(basename "$entry")"
         case "$base" in
@@ -838,10 +830,8 @@ copy_posix_python_runtime() {
     destination="$PREFIX/lib/python$version"
     copy_python_stdlib_runtime_entries "$stdlib" "$destination" "$version" || return $?
 
-    # Match the Windows Python package policy: interpreter caches, CPython's
-    # own regression suites and GUI/demo modules are not runtime responsibility
-    # for CUP's debugger/helper use cases. Keeping them also preserves builder
-    # paths in bytecode and needlessly inflates every Python-carrying package.
+    # Exclude CPython test/demo/cache payload; caches can also retain builder
+    # paths and needlessly enlarge Python-carrying packages.
     prune_python_runtime_nonruntime_payload "$destination"
 
     if [ "$copy_executable" = true ]; then
@@ -852,11 +842,8 @@ copy_posix_python_runtime() {
         chmod 0755 "$PREFIX/$executable_relative"
 
         if is_macos_platform "$HOST_PLATFORM"; then
-            # Homebrew/framework Python's command-line launcher loads the
-            # framework dylib and then spawns this companion executable. Once
-            # the dylib is relocated to <package>/lib/Python, CPython resolves
-            # the companion at <package>/lib/Resources/Python.app. Preserve
-            # that framework topology instead of depending on the host prefix.
+            # Framework Python resolves its companion relative to the relocated
+            # dylib; preserve Resources/Python.app inside the package topology.
             framework_app="$python_prefix/Resources/Python.app"
             if [ -d "$framework_app" ]; then
                 mkdir -p "$PREFIX/lib/Resources"
@@ -976,9 +963,8 @@ linux_copy_resolved_runtime_libraries() {
                 [ -n "$resolved" ] && [ -f "$resolved" ] ||
                     die "invalid Linux runtime dependency resolution for $(basename "$file"): $name -> $resolved"
 
-                # A dependency already supplied by the package keeps its upstream
-                # layout. The rewrite phase will make that directory reachable
-                # through a package-relative RUNPATH.
+                # Keep package-owned dependency layout; RUNPATH rewriting makes
+                # that directory reachable after relocation.
                 case "$resolved" in
                     "$prefix"/*) continue ;;
                 esac
@@ -1044,9 +1030,8 @@ linux_runtime_directory_for_dependency() {
             ;;
     esac
 
-    # External non-base libraries are copied by the closure phase into lib/.
-    # An upstream DT_RPATH can still make ldd report the original path, so use
-    # the package copy when it is byte-identical to that resolution.
+    # Closure copies external non-base libraries into lib/. If upstream RPATH
+    # makes ldd report the source path, prefer the byte-identical package copy.
     if [ -f "$copied" ] && cmp -s "$resolved" "$copied"; then
         printf '%s\n' "$canonical_prefix/lib"
         return 0
@@ -1127,10 +1112,8 @@ linux_patch_runtime_search_paths() {
     canonical_prefix="$(realpath -m "$prefix")" ||
         die "failed to canonicalize Linux package prefix before RUNPATH rewrite"
 
-    # A shared object may be loaded through a package-internal symlink from a
-    # different directory (LLDB's Python _lldb module is one real example).
-    # $ORIGIN is evaluated from that load pathname, so retain every internal
-    # ELF alias as an additional pathname when deriving the target RUNPATH.
+    # $ORIGIN is evaluated from the load pathname, so internal ELF symlink
+    # aliases must also contribute paths when deriving RUNPATH.
     while IFS= read -r -d '' alias; do
         alias_target="$(realpath -e "$alias" 2>/dev/null || true)"
         [ -n "$alias_target" ] || continue
@@ -1334,10 +1317,8 @@ macos_copy_and_rewrite_runtime_libraries() {
 
     mkdir -p "$prefix/lib"
 
-    # Runtime objects are rewritten in place as the closure converges. Preserve
-    # their original content identity so a later reference to the same external
-    # library is not misclassified as a basename collision merely because the
-    # packaged copy has already had its install-name/dependencies rewritten.
+    # Closure rewrites runtime objects in place; retain their original content
+    # identity so later references do not become false basename collisions.
     for existing in "$prefix"/lib/*; do
         [ -f "$existing" ] || continue
         original_runtime_sha["$existing"]="$(sha256_file "$existing")"
@@ -1449,9 +1430,8 @@ verify_macos_runtime_libraries() {
                         die "packaged @loader_path dependency is missing for $(basename "$file"): $dependency"
                     ;;
                 @executable_path/*)
-                    # Resolving @executable_path would require choosing a main executable for
-                    # a library during package-wide closure. No package contract owns that
-                    # interpretation, so reject the form instead of guessing a launcher.
+                    # A library-wide @executable_path has no unambiguous launcher; reject
+                    # it rather than guessing during package-wide closure.
                     die "unsupported @executable_path dependency in package: $(basename "$file"): $dependency"
                     ;;
                 /*)
@@ -2014,10 +1994,8 @@ package_file_mode_class() {
                 ;;
         esac
 
-        # MSYS2 also reports shebang scripts as executable even when chmod
-        # cannot carry a meaningful native-Windows execute permission. Mirror
-        # that archive semantics so manifest.txt and the emitted tar/ZIP modes
-        # describe the same logical package.
+        # Mirror MSYS2's shebang-executable semantics so manifest and archive
+        # mode classes describe the same logical Windows package.
         if [ -f "$path" ] &&
            LC_ALL=C head -c 2 "$path" 2>/dev/null | grep -q '^#!'; then
             printf '%s\n' 0755
@@ -2349,11 +2327,8 @@ package_read_link_target() {
     local link="$1"
     local line_count
 
-    # readlink writes one record terminator of its own. More than one output line
-    # therefore means the stored link target itself contains a newline. Command
-    # substitution would otherwise truncate trailing newlines and `read` would
-    # silently ignore everything after the first embedded newline. Such targets
-    # are outside the CUP package path grammar and must never be normalized.
+    # More than one readlink output line means the target contains a newline;
+    # reject it before shell parsing can truncate or split the stored target.
     line_count="$(readlink "$link" | wc -l | tr -d '[:space:]')" || return 1
     [ "$line_count" = 1 ] || return 1
     readlink "$link"

@@ -1,38 +1,83 @@
 # cup-components
 
-`cup-components` builds the prebuilt C development tools installed by `cup`.
+`cup-components` is the package producer for CUP.
+It turns upstream C development-tool releases into verified, relocatable packages
+that CUP can download and install without building those tools on the user's machine.
 
-The repository keeps the large upstream builds separate from the `cup` installer. For each supported tool and platform, it downloads the selected upstream source release, builds the tool, keeps the files required by the final distribution, closes the required host runtime dependencies, writes package metadata, validates the completed package and produces archives that `cup` can install.
+A producer build does more than compile upstream source. It selects the payload that
+belongs to one CUP tool, closes required host runtime dependencies, removes unrelated
+build/install material, writes package metadata and an exact manifest, emits equivalent
+archives and runs native product checks against the finished package.
 
-## Tools
+## Produced tools
 
-- GCC
-- GNU ld
-- GDB
-- Clang
-- clang-format
-- clang-tidy
-- clangd
-- LLD
-- LLDB
-- Valgrind
+The repository produces GCC, GNU `ld`, GDB, Clang, `clang-format`, `clang-tidy`,
+`clangd`, LLD, LLDB and Valgrind packages.
 
-## Platforms
+Supported package hosts are Linux x64/ARM64, Windows x64 and macOS x64/ARM64.
+Availability is tool-specific. GCC and standalone GNU `ld` additionally support the
+deliberate Linux x64 → Windows x64 cross-target package. The exact matrix is in the
+[specification](docs/SPECIFICATION.md#supported-combinations).
 
-- Linux x64
-- Linux arm64
-- Windows x64
-- macOS x64
-- macOS arm64
+## Package model
 
-Not every tool is available on every platform. GCC and GNU ld also support the deliberate Linux x64 to Windows x64 cross-target configuration. The complete matrix is documented in [Specification](docs/SPECIFICATION.md#supported-combinations).
+The central rule is that an upstream install tree is **not** automatically a CUP
+package. Each tool producer owns the commands, runtime data, target files and helpers
+that belong to its product. Common package code then makes that selected payload
+complete and portable.
 
-## What a build produces
+Every finished package contains:
 
-A completed package contains the selected tool, its required package-owned runtime files, `info.txt` semantic metadata and an exact `manifest.txt` inventory. The same package tree is emitted as `tar.xz`, `tar.gz` and `zip`, with archive checksums in `SHA256SUMS`.
+- the selected tool payload and required package-owned runtime files;
+- `info.txt`, which records package identity, entries, capabilities and provenance;
+- `manifest.txt`, which describes the exact finalized package tree;
+- equivalent `tar.xz`, `tar.gz` and `zip` archives;
+- archive digests in `SHA256SUMS`.
 
-A build can use the configured `stable` version or an explicit numeric version. The current stable versions are defaults, not a closed version list.
+Packages are designed to be relocatable and self-contained with respect to non-system
+host runtime dependencies. Platform-owned prerequisites that cannot belong to the
+package are explicit metadata rather than hidden build-runner assumptions.
+
+## Building and validating
+
+GitHub Actions is the canonical native build surface. The workflows build one package
+identity at a time, or the full LLVM tool/platform matrix, using the same family
+builders and package finalizer available in the repository.
+
+The builders can also be invoked directly inside a prepared platform environment.
+See [Build](docs/BUILD.md) for workflow inputs and command lines, and
+[Dependencies](docs/DEPENDENCIES.md) for the required environments.
+
+Repository regressions can be run with:
+
+```sh
+tests/run.sh
+```
+
+The common package contract can be exercised with:
+
+```sh
+bash scripts/test/test-package-contract.sh
+```
+
+Those local checks validate repository mechanics; native package behavior is proved by
+the platform-specific product tests run after a real package build.
 
 ## Documentation
 
-Start with [docs/INDEX.md](docs/INDEX.md). It explains the repository model and links each technical document by responsibility.
+Start with the [documentation index](docs/INDEX.md). In particular:
+
+- [Concepts](docs/CONCEPTS.md) explains the producer model and terminology;
+- [Specification](docs/SPECIFICATION.md) defines supported identities and version rules;
+- [Packages](docs/PACKAGES.md) defines the shared package format and runtime closure;
+- [Tool packages](docs/TOOLS.md) explains what each producer deliberately ships;
+- [Build](docs/BUILD.md) and [Dependencies](docs/DEPENDENCIES.md) cover build operation;
+- [Testing](docs/TESTING.md) explains repository and native package validation;
+- [Build records](docs/BUILD_RECORDS.md) explains the diagnostic evidence saved per run.
+
+## Project boundary
+
+`cup-components` owns source acquisition, tool builds, package composition, package
+metadata, archive production, native package validation and optional publication.
+CUP owns catalog selection, package download/admission, installation, local state,
+defaults, command wrappers and recovery on the user's machine.

@@ -1,23 +1,12 @@
 # Tool packages
 
-This document describes the package policy owned by each tool-family builder.
+This page defines the product surface owned by each tool-family producer: public commands, deliberately retained runtime/target material, important exclusions and the capabilities that native package tests must prove.
 
-The common archive, metadata, manifest and runtime-closure rules are defined in [Packages](PACKAGES.md). Supported host/target combinations and version rules are defined in [Specification](SPECIFICATION.md).
+The shared package mechanics are in [Packages](PACKAGES.md); supported identities and versions are in [Specification](SPECIFICATION.md).
 
-## General package-selection rule
+## Package-selection rule
 
-Each upstream project can install more files than the final command-line package needs. The tool builder therefore selects a deliberate set of package roots before common runtime closure.
-
-A package-selection root is kept because it is one of the following:
-
-- a public command;
-- a helper required by a public command;
-- required runtime data;
-- a required target runtime or sysroot;
-- a deliberate public header or metadata file;
-- a library required at runtime by one of those roots.
-
-Runtime closure can add a required non-system library, but it does not turn unrelated files from the upstream staging tree into package content.
+The upstream install is only staging. Each producer starts from deliberate package-selection roots—public commands plus the runtime data, target files, helpers and public headers those commands own—before common runtime closure. Runtime closure can complete those roots with required non-system libraries; it cannot promote unrelated staging payload into the product. See [Concepts](CONCEPTS.md#package-ownership).
 
 ## GCC
 

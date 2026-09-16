@@ -1,8 +1,6 @@
 # Packages
 
-A `cup-components` package is the complete directory tree that `cup` downloads and installs for one tool identity.
-
-This document describes the rules shared by every package. The files and capabilities specific to GCC, GNU ld, GDB, the LLVM-family tools and Valgrind are documented in [Tool packages](TOOLS.md).
+A `cup-components` package is the finalized directory tree that CUP can validate and install for one tool identity. This page is the shared physical and metadata contract. Read [Concepts](CONCEPTS.md) first for the producer model; tool-specific ownership belongs to [Tool packages](TOOLS.md).
 
 ## Package root
 
@@ -153,7 +151,7 @@ GCC also carries `package.revision` because GCC is revision-bearing. Revisionles
 
 A GCC package must also record the composition identified by that revision. Native GCC packages require `bundle.components=binutils` plus `bundle.binutils.version`, `bundle.binutils.url` and `bundle.binutils.sha256`. Windows-target GCC packages require `bundle.components=binutils,mingw-w64` and the corresponding `bundle.mingw-w64.*` fields as well. Component versions are numeric dotted versions and component digests are lowercase SHA-256 values. This metadata records the composition actually selected for the build; it is not reconstructed from the GCC version.
 
-`package.mode` must be `self-contained`, `package.formats` must match the archive formats produced for the host, and `source.primary.sha256` must be a lowercase 64-character SHA-256 value.
+`package.mode` must be `self-contained`. `package.formats` records all three output formats in the producer's host order: `tar.xz,tar.gz,zip` on POSIX and `zip,tar.xz,tar.gz` on Windows. `source.primary.sha256` must be a lowercase 64-character SHA-256 value.
 
 The primary source metadata is also bound to the package being finalized. `source.primary.name` must identify the upstream project for the selected tool, and `source.primary.version` must equal the selected main package version. GCC therefore records the GCC source version without the package `revN` suffix; GNU ld records Binutils; every LLVM-family package records `llvm-project`.
 
@@ -284,7 +282,7 @@ After all three archives are created, the finalizer writes `SHA256SUMS` with exa
 
 ## Self-contained package boundary
 
-Self-contained means that the packaged host process does not require undeclared non-system runtime files from the build machine.
+The conceptual definition is in [Concepts](CONCEPTS.md#self-contained-and-relocatable). At the package boundary, self-contained means that the packaged host process does not require undeclared non-system runtime files from the build machine.
 
 The operating system still supplies its normal base runtime:
 
@@ -304,7 +302,7 @@ Target runtimes are a separate concept. For example, a GCC package that runs on 
 
 ## Relocatability
 
-A completed package must work after `cup` extracts it below the installation directory chosen for that package.
+A completed package must work after CUP extracts it below the installation directory chosen for that package.
 
 The temporary source, build and staging paths must therefore not become runtime requirements.
 

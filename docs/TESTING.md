@@ -1,12 +1,8 @@
 # Testing
 
-Testing in `cup-components` has three separate responsibilities:
+`cup-components` uses different test layers for different claims. Common package tests prove shared format/mechanism rules, tool-specific tests exercise the finished native package, and repository regressions protect producer decisions that can be tested without rebuilding an upstream tool. No one layer substitutes for the others.
 
-1. validate the common package format and shared package mechanics;
-2. validate the finished package produced for a specific tool;
-3. protect repository build/package behavior with focused regression checks.
-
-These checks are part of the repository itself. They are not a substitute for actually building each supported package on its target runner, but they keep the package rules and build interfaces consistent before and during those builds.
+The model is summarized in [Concepts](CONCEPTS.md#validation-layers); this page defines the concrete test surfaces.
 
 ## Common package validation
 

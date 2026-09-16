@@ -141,10 +141,8 @@ llvm_common_cmake_args() {
         printf '%s\n' -DLLVM_ENABLE_LIBXML2=OFF
     fi
 
-    # Clang runtime construction needs LLVM utility targets such as llvm-ar,
-    # while the smaller standalone tools do not need the full llvm-* toolbox.
-    # These utilities are build-time dependencies and are pruned from the final
-    # Clang package surface.
+    # Clang runtime construction needs selected llvm-* utilities as build tools;
+    # they are pruned from the final compiler package.
     if [ "$TOOL" != clang ]; then
         printf '%s\n' -DLLVM_BUILD_TOOLS=OFF
     fi
@@ -692,9 +690,8 @@ prune_bin_except() {
 
     [ -d "$bin_dir" ] || return 0
 
-    # Keep the physical in-bin backing chain of every deliberately retained
-    # symlink. The tool keep-set remains the semantic root set; this only closes
-    # it over existing objects required for those retained aliases to stay valid.
+    # Close retained symlinks over their physical in-bin backing chain without
+    # expanding the semantic tool keep-set.
     for entry in "$bin_dir"/*; do
         [ -e "$entry" ] || [ -L "$entry" ] || continue
         base="$(basename "$entry")"
@@ -812,9 +809,8 @@ prune_llvm_package_bins() {
             ;;
         lldb)
             if is_macos_platform "$HOST_PLATFORM"; then
-                # Darwin's normal LLDB `run` path uses lldb-argdumper for
-                # argument expansion. Keep it as a private runtime helper; it is
-                # not a separate public CUP command.
+                # Darwin LLDB `run` needs lldb-argdumper; keep it as a private
+                # runtime helper, not a public CUP entry.
                 prune_bin_except lldb lldb-dap lldb-argdumper
             else
                 prune_bin_except lldb lldb-server lldb-dap
@@ -908,10 +904,8 @@ prepare_lldb_package_seed() {
         [ -d "$python_dir" ] || continue
         llvm_copy_path_into_seed "lib/$(basename "$python_dir")"
 
-        # Some LLVM releases bind the Python extension through the unversioned
-        # development liblldb.so link. Rebind only that known alias to the
-        # packaged runtime SONAME; support both Python package-directory
-        # conventions used by the deliberate Linux/macOS builders.
+        # Some LLVM releases bind _lldb through development liblldb.so; rebind
+        # only that alias to the packaged SONAME across supported Python layouts.
         for python_packages_dir in site-packages dist-packages; do
             for lldb_python_link in "$PACKAGE_PREFIX/lib/$(basename "$python_dir")/$python_packages_dir/lldb/native"/_lldb*.so; do
                 [ -L "$lldb_python_link" ] || continue
@@ -988,10 +982,8 @@ prune_llvm_auxiliary_share_payload() {
             rmdir "$PREFIX/share" 2>/dev/null || true
             ;;
         clang|lldb|clangd|clang-format|clang-tidy)
-            # The monorepo install contributes sibling analyzer/editor payload
-            # to several standalone packages. None of these paths is runtime
-            # responsibility of these CUP tools. Deliberate Clang data such as
-            # share/libc++ and sanitizer ignorelists is not matched.
+            # Prune sibling analyzer/editor payload from standalone packages;
+            # deliberate Clang runtime data is not matched here.
             rm -rf \
                 "$PREFIX/share/clang" \
                 "$PREFIX/share/clang-doc" \
@@ -1086,11 +1078,8 @@ prune_llvm_development_payload() {
     local archive
     local base
 
-    # The monorepo-wide install target also installs the C/C++ SDK used to
-    # develop against LLVM/Clang/LLD/LLDB. Those APIs are not part of a CUP
-    # command-line tool package. Keep compiler/runtime headers (libc++, unwind,
-    # sanitizer/profile/fuzzer), lib/clang resources and runtime shared libraries;
-    # known embedding/development shared APIs are removed below.
+    # Prune monorepo development/embedding SDK payload while preserving
+    # compiler-runtime headers, Clang resources and load-bearing runtime libraries.
     rm -rf \
         "$PREFIX/include/llvm" \
         "$PREFIX/include/llvm-c" \
@@ -1130,10 +1119,8 @@ prune_llvm_development_payload() {
     esac
 
     if is_windows_platform "$HOST_PLATFORM"; then
-        # LLVM installs embedding/development DLLs in bin/ on Windows. They are
-        # not public command payload. Runtime closure runs after pruning and
-        # therefore restores any library that a deliberate executable actually
-        # imports.
+        # Prune Windows embedding/development DLLs first; runtime closure restores
+        # any DLL actually imported by a deliberate package executable.
         rm -f \
             "$PREFIX/bin"/libLTO.dll "$PREFIX/bin"/libLTO-[0-9]*.dll "$PREFIX/bin"/libLTO.[0-9]*.dll \
             "$PREFIX/bin"/libRemarks.dll "$PREFIX/bin"/libRemarks-[0-9]*.dll "$PREFIX/bin"/libRemarks.[0-9]*.dll \
@@ -1145,9 +1132,8 @@ prune_llvm_development_payload() {
     for lib_dir in "$PREFIX/lib" "$PREFIX/lib64"; do
         [ -d "$lib_dir" ] || continue
 
-        # Shared LLVM/Clang embedding APIs are development payload too. The
-        # command-line tools are built without runtime dependencies on these
-        # libraries; compiler runtimes under lib/clang are not matched here.
+        # Shared LLVM/Clang embedding APIs are development payload; compiler
+        # runtimes under lib/clang are intentionally outside this pattern.
         rm -f \
             "$lib_dir"/libLTO.so* "$lib_dir"/libLTO.dylib* "$lib_dir"/libLTO.*.dylib \
             "$lib_dir"/libRemarks.so* "$lib_dir"/libRemarks.dylib* "$lib_dir"/libRemarks.*.dylib \
@@ -2148,9 +2134,8 @@ prune_unowned_clang_runtime_payload() {
 
     [ "$TOOL" = clang ] || return 0
 
-    # CUP deliberately provides builtins, ASan, full UBSan, normal profiling
-    # and libc++. Remove compiler-rt variants whose separate modes are outside
-    # that product contract before the package runtime-closure step runs.
+    # Keep the declared compiler-rt surface (builtins, ASan, full UBSan, profile);
+    # remove unrelated runtime modes before closure.
     find "$PREFIX" -type f -name '*clang_rt*' \
         \( -name '*profile_rocm*' \
            -o -name '*ubsan_minimal*' \
@@ -2174,9 +2159,8 @@ prune_unowned_clang_runtime_payload() {
         done
     fi
 
-    # Runtime sub-builds install into a temporary top-level platform directory.
-    # Once copied into Clang's canonical resource directory it has no product
-    # ownership and would otherwise duplicate every runtime in the archive.
+    # After runtime files enter Clang's canonical resource directory, remove the
+    # temporary top-level platform install to avoid duplicate payload.
     platform_dir="$(clang_runtime_platform_dir)"
     rm -rf "$PREFIX/lib/$platform_dir" "$PREFIX/lib/clang_rt/$platform_dir"
 
@@ -2626,12 +2610,9 @@ write_llvm_info() {
                [ "$(find "$lldb_resource_dir/include" -type f -print -quit)" ]; then
                 has_lldb_clang_resources=true
             fi
-            # Entry presence is not equivalent to a qualified behavioral feature.
-            # Local process control and DAP are deliberate LLDB capabilities on all
-            # supported hosts. On macOS upstream intentionally uses Apple's system
-            # debugserver, so that external developer-platform prerequisite is made
-            # explicit below. CUP does not claim self-contained remote debugging on
-            # macOS because the remote target also needs a deployable debugserver.
+            # Presence is not a behavioral claim: local launch and DAP are tested
+            # everywhere. macOS uses system debugserver and therefore does not claim
+            # package-owned remote debugging.
             info+=(
                 "contents.python_runtime=packaged"
                 "contents.python_runtime.version=$PACKAGED_PYTHON_RUNTIME_VERSION"

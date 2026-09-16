@@ -1,10 +1,8 @@
 # Build records
 
-Every GitHub build saves a structured record of the run in addition to the package output.
+Every native workflow build saves structured diagnostic evidence alongside its package output. A successful record identifies what was built and from which source/repository state; a failed record preserves the reached phases and the configuration/output needed to diagnose the owning recipe.
 
-The purpose is practical: if a selected tool version succeeds, the record identifies what was built and how. If it fails, the record preserves the first failing phase, its output and the build/configuration files that are useful for correcting the family recipe.
-
-Build records are normal workflow output. They are not part of the package installed by `cup` and do not affect package identity.
+Build records are workflow artifacts, not CUP package payload and not part of package identity.
 
 ## Location
 
@@ -53,8 +51,6 @@ finish time
 For GCC, `run.txt` additionally records the requested Binutils version, requested MinGW-w64 version, requested GCC package revision and the optional SHA-256 values supplied for those bundled source archives. These values are captured before the build starts, so the intended composition remains visible even if source acquisition or configuration fails early.
 
 The commit and logical tree are both recorded. The commit identifies the repository state in Git, while the logical tree identifies the tracked paths, blob content and file modes independently of commit metadata. This allows a downloaded build record to be matched against a known source tree even when the corresponding commit object is not available locally.
-
-This makes the record self-describing when it is downloaded separately from the workflow page.
 
 ## Phase records
 

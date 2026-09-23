@@ -241,7 +241,7 @@ if find "$root" -type f -name 'valgrind-monitor.py' -print -quit | grep -q .; th
 fi
 
 # Client-request headers are deliberate public API.  The separate SDK for
-# developing new Valgrind tools is not part of the CUP package contract.
+# developing new Valgrind tools is not part of the cup package contract.
 verify_public_client_api "$root" primary
 
 for forbidden_header in \

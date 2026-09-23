@@ -2,7 +2,7 @@
 
 Every native workflow build saves structured diagnostic evidence alongside its package output. A successful record identifies what was built and from which source/repository state; a failed record preserves the reached phases and the configuration/output needed to diagnose the owning recipe.
 
-Build records are workflow artifacts, not CUP package payload and not part of package identity.
+Build records are workflow artifacts, not cup package payload and not part of package identity.
 
 ## Location
 

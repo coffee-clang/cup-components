@@ -1,7 +1,7 @@
 # Dependencies
 
 A dependency can be needed to **build** a tool without belonging to the package that
-CUP installs. `cup-components` keeps build inputs, logical package components, runtime
+cup installs. `cup-components` keeps build inputs, logical package components, runtime
 dependencies and operating-system responsibilities separate so the final package does
 not accidentally inherit its builder environment.
 

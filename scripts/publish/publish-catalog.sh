@@ -109,8 +109,8 @@ case "$mode" in
         fi
         gh release create "$tag" "$catalog" \
             --repo "$repo" \
-            --title 'CUP package catalog' \
-            --notes 'Rolling CUP package catalog delivery endpoint.' \
+            --title 'cup package catalog' \
+            --notes 'Rolling cup package catalog delivery endpoint.' \
             --latest=false
         verify_asset_digest catalog.cfg "$catalog"
         printf 'published initial catalog revision 0\n'

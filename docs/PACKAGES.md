@@ -1,6 +1,6 @@
 # Packages
 
-A `cup-components` package is the finalized directory tree that CUP can validate and install for one tool identity. This page is the shared physical and metadata contract. Read [Concepts](CONCEPTS.md) first for the producer model; tool-specific ownership belongs to [Tool packages](TOOLS.md).
+A `cup-components` package is the finalized directory tree that cup can validate and install for one tool identity. This page is the shared physical and metadata contract. Read [Concepts](CONCEPTS.md) first for the producer model; tool-specific ownership belongs to [Tool packages](TOOLS.md).
 
 ## Package root
 
@@ -96,7 +96,7 @@ A package path:
 - cannot use a segment ending in `.`;
 - cannot use Windows reserved device names such as `CON`, `PRN`, `AUX`, `NUL`, `COM1` or `LPT1`;
 - uses printable ASCII package-name characters without whitespace inside each segment;
-- must be shorter than the shared CUP package-path limit of 1024 bytes.
+- must be shorter than the shared cup package-path limit of 1024 bytes.
 
 The final package also rejects case-insensitive path collisions. For example, `bin/Tool` and `bin/tool` cannot both exist even if the current build filesystem would allow them.
 
@@ -149,7 +149,7 @@ package.revision_reason=<short single-line explanation>
 The revision number is not duplicated as another field because it is already encoded in
 `package.version`. Revisionless packages do not contain `package.revision_reason`.
 
-`source.primary.version` is always the upstream/base version and never contains the CUP
+`source.primary.version` is always the upstream/base version and never contains the cup
 `-revN` suffix. The finalizer checks that source identity against the selected producer
 family. `source.primary.sha256` is a lowercase 64-character SHA-256 value.
 
@@ -311,7 +311,7 @@ Target runtimes are a separate concept. For example, a GCC package that runs on 
 
 ## Relocatability
 
-A completed package must work after CUP extracts it below the installation directory chosen for that package.
+A completed package must work after cup extracts it below the installation directory chosen for that package.
 
 The temporary source, build and staging paths must therefore not become runtime requirements.
 
@@ -369,7 +369,7 @@ Windows packages use regular files rather than package symbolic links.
 
 Python can be a genuine runtime capability of a distributed tool.
 
-GDB and LLDB include Python support. The clang-tidy package also carries a package-owned Python runtime for the deliberate `run-clang-tidy` and `clang-tidy-diff` helpers. The standalone clang-format package does not include `git-clang-format`: that upstream integration helper requires an external Git runtime and would make the formatter package non-self-contained for a feature outside CUP's deliberate formatter surface.
+GDB and LLDB include Python support. The clang-tidy package also carries a package-owned Python runtime for the deliberate `run-clang-tidy` and `clang-tidy-diff` helpers. The standalone clang-format package does not include `git-clang-format`: that upstream integration helper requires an external Git runtime and would make the formatter package non-self-contained for a feature outside cup's deliberate formatter surface.
 
 When package-owned Python is required, the producer copies the interpreter and the standard-library/runtime material needed by the selected tool. Builder `site-packages`/`dist-packages`, development `config-*` directories, `Tools`, `__phello__`, caches, CPython tests and GUI/demo modules are excluded. Existing package-owned LLDB modules are preserved, so the runtime cannot inherit unrelated Clang/libxml2 Python packages from the builder.
 

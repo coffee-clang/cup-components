@@ -227,7 +227,7 @@ runs for one identity and the shared catalog writer are serialized. The complete
 source-authority and rolling-release recovery rules are documented in [Catalog](CATALOG.md).
 
 If package publication succeeds but catalog update fails, the package remains a valid
-immutable release but is not yet discoverable through CUP. Re-running the catalog update
+immutable release but is not yet discoverable through cup. Re-running the catalog update
 is safe and idempotent.
 
 ## Initial bootstrap and recovery

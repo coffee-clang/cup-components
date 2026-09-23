@@ -1,6 +1,6 @@
 # cup-components documentation
 
-`cup-components` is the producer repository for CUP tool packages. This documentation
+`cup-components` is the producer repository for cup tool packages. This documentation
 is organized around the package lifecycle and repository responsibilities rather than
 around individual scripts.
 
@@ -11,7 +11,7 @@ and workflow evidence.
 ## Understand the producer
 
 - [Concepts](CONCEPTS.md) — source, staging, package selection, runtime closure,
-  relocatability, self-containment, metadata and the boundary with CUP.
+  relocatability, self-containment, metadata and the boundary with cup.
 - [Specification](SPECIFICATION.md) — supported tools/platforms, version selection,
   host/target combinations, package identity, generic package revisions and source verification.
 - [Packages](PACKAGES.md) — package filesystem rules, `info.txt`, `manifest.txt`,

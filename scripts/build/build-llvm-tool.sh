@@ -809,7 +809,7 @@ prune_llvm_package_bins() {
         lldb)
             if is_macos_platform "$HOST_PLATFORM"; then
                 # Darwin LLDB `run` needs lldb-argdumper; keep it as a private
-                # runtime helper, not a public CUP entry.
+                # runtime helper, not a public cup entry.
                 prune_bin_except lldb lldb-dap lldb-argdumper
             else
                 prune_bin_except lldb lldb-server lldb-dap
@@ -1100,7 +1100,7 @@ prune_llvm_development_payload() {
         lldb|clangd|clang-format|clang-tidy)
             # The monorepo install also contributes clang-tidy development
             # headers and scan-build implementation helpers. They are not
-            # load-bearing for these standalone CUP command packages.
+            # load-bearing for these standalone cup command packages.
             rm -rf \
                 "$PREFIX/include/clang-tidy" \
                 "$PREFIX/lib/libear" \
@@ -1364,11 +1364,11 @@ verify_llvm_final_runtime_policy() {
 
     for forbidden in '*profile_rocm*' '*ubsan_minimal*' '*lsan*' '*stats*' '*ubsan_loop_detect*'; do
         if find "$package_root" -type f -name '*clang_rt*' -name "$forbidden" -print -quit | grep -q .; then
-            die "Clang package retained compiler-rt runtime outside CUP scope: $forbidden"
+            die "Clang package retained compiler-rt runtime outside cup scope: $forbidden"
         fi
     done
     if find "$package_root" -type f -name '*c++experimental*' -print -quit | grep -q .; then
-        die "Clang package retained libc++ experimental runtime outside CUP scope"
+        die "Clang package retained libc++ experimental runtime outside cup scope"
     fi
 
     [ ! -e "$package_root/include/fuzzer" ] || die "Clang package retained libFuzzer development headers"
@@ -2145,7 +2145,7 @@ prune_unowned_clang_runtime_payload() {
 
     rm -rf "$PREFIX/include/fuzzer"
 
-    # Keep the public interfaces for the runtimes CUP actually ships. The
+    # Keep the public interfaces for the runtimes cup actually ships. The
     # remaining sanitizer headers belong to independent runtimes/capabilities.
     if [ -d "$PREFIX/include/sanitizer" ]; then
         for header in "$PREFIX/include/sanitizer"/*; do

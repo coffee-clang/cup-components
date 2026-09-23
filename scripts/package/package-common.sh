@@ -2068,8 +2068,8 @@ package_write_path_list() {
         [ "$relative" != "manifest.txt" ] || continue
         [ "$relative" != ".manifest.paths" ] || continue
         package_relative_path_is_safe "$relative" ||
-            die "package contains a path outside the CUP package grammar: $relative"
-        [ "${#relative}" -lt 1024 ] || die "package path exceeds CUP path limit: $relative"
+            die "package contains a path outside the cup package grammar: $relative"
+        [ "${#relative}" -lt 1024 ] || die "package path exceeds cup path limit: $relative"
         printf '%s\n' "$relative" >> "$output"
     done < <(find "$package_root" ! -path "$package_root" -print0)
 
@@ -2175,7 +2175,7 @@ package_verify_info_structure() {
 
     [ -f "$info" ] || die "final package is missing info.txt"
     bytes="$(wc -c < "$info" | tr -d '[:space:]')"
-    [ "$bytes" -le 4194304 ] || die "info.txt exceeds CUP metadata size limit"
+    [ "$bytes" -le 4194304 ] || die "info.txt exceeds cup metadata size limit"
     [ "$bytes" -gt 0 ] || die "info.txt is empty"
     [ "$(tail -c 1 "$info" | wc -l | tr -d '[:space:]')" = 1 ] ||
         die "info.txt must end with a newline"
@@ -2185,7 +2185,7 @@ package_verify_info_structure() {
     while IFS= read -r line; do
         [ "${#line}" -lt 512 ] || {
             rm -f "$seen"
-            die "info.txt line exceeds CUP metadata line limit"
+            die "info.txt line exceeds cup metadata line limit"
         }
         case "$line" in
             *=*) ;;
@@ -2453,9 +2453,9 @@ package_verify_staging_paths() {
     while IFS= read -r -d '' path; do
         relative="${path#"$prefix"/}"
         package_relative_path_is_safe "$relative" ||
-            die "staging package contains a path outside the CUP path grammar: $relative"
+            die "staging package contains a path outside the cup path grammar: $relative"
         [ "${#relative}" -lt 1024 ] ||
-            die "staging package path exceeds CUP path limit: $relative"
+            die "staging package path exceeds cup path limit: $relative"
     done < <(find "$prefix" ! -path "$prefix" -print0)
 }
 
@@ -2475,7 +2475,7 @@ package_verify_staging_links() {
         package_relative_path_is_safe "$relative" ||
             die "staging package contains an unsafe symbolic-link path: $relative"
         target="$(package_read_link_target "$link")" ||
-            die "staging symbolic-link target is outside the CUP path grammar: $relative"
+            die "staging symbolic-link target is outside the cup path grammar: $relative"
         resolved="$(package_resolve_staging_link "$prefix" "$relative")" ||
             die "staging symbolic link is external, dangling, cyclic or not a regular-file alias: $relative -> $target"
         log "preserving package symlink: $relative -> $target (resolves to $resolved)"

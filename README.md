@@ -1,11 +1,11 @@
 # cup-components
 
-`cup-components` is the package producer for CUP.
+`cup-components` is the package producer for cup.
 It turns upstream C development-tool releases into verified, relocatable packages
-that CUP can download and install without building those tools on the user's machine.
+that cup can download and install without building those tools on the user's machine.
 
 A producer build does more than compile upstream source. It selects the payload that
-belongs to one CUP tool, closes required host runtime dependencies, removes unrelated
+belongs to one cup tool, closes required host runtime dependencies, removes unrelated
 build/install material, writes package metadata and an exact manifest, emits equivalent
 archives and runs native product checks against the finished package.
 
@@ -21,7 +21,7 @@ deliberate Linux x64 → Windows x64 cross-target package. The exact matrix is i
 
 ## Package model
 
-The central rule is that an upstream install tree is **not** automatically a CUP
+The central rule is that an upstream install tree is **not** automatically a cup
 package. Each tool producer owns the commands, runtime data, target files and helpers
 that belong to its product. Common package code then makes that selected payload
 complete and portable.
@@ -88,6 +88,6 @@ Start with the [documentation index](docs/INDEX.md). In particular:
 
 `cup-components` owns source acquisition, tool builds, package composition, package
 metadata, archive production, native package validation, immutable package publication and
-the concrete catalog source/publishing pipeline. CUP consumes published catalog snapshots
+the concrete catalog source/publishing pipeline. cup consumes published catalog snapshots
 and owns package download/admission, installation, local state, defaults, command wrappers
 and recovery on the user's machine.

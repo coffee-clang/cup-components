@@ -89,14 +89,26 @@ verify_local_publication() {
     fi
 }
 
-release_field() {
-    local field="$1"
-    gh api "repos/$repo/releases/tags/$tag" --jq "$field"
+find_release() {
+    local records count
+    # GitHub exposes drafts through the release list, while the release-by-tag
+    # endpoint is limited to published releases. Retries therefore resolve the
+    # package release here before deciding whether a draft can be recreated.
+    if ! records="$(gh api --paginate "repos/$repo/releases?per_page=100" \
+        --jq ".[] | select(.tag_name == \"$tag\") | [.id,.draft,.target_commitish] | @tsv")"; then
+        fail "failed to inspect package releases for: $tag"
+    fi
+    count="$(printf '%s\n' "$records" | awk 'NF {n++} END {print n+0}')"
+    case "$count" in
+        0) return 1 ;;
+        1) IFS=$'\t' read -r release_id release_draft release_target <<< "$records" ;;
+        *) fail "multiple releases use package tag: $tag" ;;
+    esac
 }
 
 verify_remote_release() {
-    local table expected_names actual_names name digest expected
-    table="$(gh api "repos/$repo/releases/tags/$tag" --jq '.assets[] | [.name,.digest] | @tsv')"
+    local id="$1" table expected_names actual_names name digest expected
+    table="$(gh api "repos/$repo/releases/$id" --jq '.assets[] | [.name,.digest] | @tsv')"
     expected_names="$(printf '%s\n' "${managed_names[@]}" | LC_ALL=C sort)"
     actual_names="$(printf '%s\n' "$table" | cut -f1 | LC_ALL=C sort)"
     [ "$actual_names" = "$expected_names" ] || fail "published release has an unexpected managed asset set: $tag"
@@ -117,29 +129,23 @@ command -v gh >/dev/null 2>&1 || fail 'gh is required'
 
 verify_local_publication
 
-lookup="$(mktemp)"
-trap 'rm -f "$lookup"' EXIT
-status=0
-gh api --include "repos/$repo/releases/tags/$tag" >"$lookup" 2>&1 || status=$?
-if [ "$status" -eq 0 ]; then
-    draft="$(release_field '.draft')"
-    target_commitish="$(release_field '.target_commitish')"
-    if [ "$draft" = false ]; then
+release_id=
+release_draft=
+release_target=
+if find_release; then
+    if [ "$release_draft" = false ]; then
         # Published identities are immutable: only exact remote data is accepted
         # as idempotent success; mismatches are never repaired in place.
-        [ "$target_commitish" = "$target_sha" ] || fail "published release targets a different commit: $tag"
-        verify_remote_release
+        [ "$release_target" = "$target_sha" ] || fail "published release targets a different commit: $tag"
+        verify_remote_release "$release_id"
         printf 'package publication already complete: %s\n' "$tag"
         exit 0
     fi
 
-    [ "$target_commitish" = "$target_sha" ] ||
-        fail "existing draft targets a different commit: $tag"
-    gh release delete "$tag" --repo "$repo" --cleanup-tag --yes
+    # A draft is not public package authority. The canonical tag already identifies
+    # the intended package, so a stale/incomplete draft can be recreated safely.
+    gh api --method DELETE "repos/$repo/releases/$release_id" >/dev/null
 else
-    http_status="$(sed -n 's#^HTTP/[^ ]* \([0-9][0-9][0-9]\).*#\1#p' "$lookup" | head -n 1)"
-    [ "$http_status" = 404 ] || { cat "$lookup" >&2; exit "$status"; }
-
     tag_status=0
     git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 || tag_status=$?
     case "$tag_status" in
@@ -149,7 +155,7 @@ else
     esac
 fi
 
-notes="Immutable CUP component package $tool@$version for $host -> $target."
+notes="Immutable cup component package $tool@$version for $host -> $target."
 if [ -n "$revision_reason" ]; then
     notes="$notes Revision: $revision_reason"
 fi
@@ -162,7 +168,13 @@ gh release create "$tag" "${assets[@]}" \
     --draft \
     --latest=false
 
-verify_remote_release
-gh release edit "$tag" --repo "$repo" --draft=false --latest=false >/dev/null
-verify_remote_release
+find_release || fail "created draft release cannot be found: $tag"
+[ "$release_draft" = true ] || fail "new package release is not a draft: $tag"
+[ "$release_target" = "$target_sha" ] || fail "new draft targets a different commit: $tag"
+verify_remote_release "$release_id"
+gh api --method PATCH "repos/$repo/releases/$release_id" \
+    -F draft=false -f make_latest=false >/dev/null
+find_release || fail "published package release cannot be found: $tag"
+[ "$release_draft" = false ] || fail "package release remained a draft: $tag"
+verify_remote_release "$release_id"
 printf 'published package: %s\n' "$tag"

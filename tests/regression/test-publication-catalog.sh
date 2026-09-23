@@ -29,6 +29,15 @@ set -euo pipefail
 remote="${GH_FIXTURE_REMOTE:?}"
 sha_file() { sha256sum "$1" | awk '{print $1}'; }
 release_dir() { printf '%s/releases/%s\n' "$remote" "$1"; }
+release_by_id() {
+    local wanted="$1" dir
+    for dir in "$remote"/releases/*; do
+        [ -d "$dir" ] || continue
+        [ -f "$dir/id" ] || continue
+        [ "$(cat "$dir/id")" = "$wanted" ] && { printf '%s\n' "$dir"; return 0; }
+    done
+    return 1
+}
 asset_table() {
     local dir="$1" mode="$2" name digest
     [ -d "$dir/assets" ] || return 0
@@ -40,26 +49,66 @@ asset_table() {
         fi
     done < <(find "$dir/assets" -maxdepth 1 -type f -print0 | sort -z)
 }
+next_release_id() {
+    local max=0 dir id
+    for dir in "$remote"/releases/*; do
+        [ -f "$dir/id" ] || continue
+        id="$(cat "$dir/id")"
+        [[ "$id" =~ ^[0-9]+$ ]] || continue
+        [ "$id" -gt "$max" ] && max="$id"
+    done
+    printf '%s\n' $((max + 1))
+}
 
 case "${1:-}" in
 api)
     shift
     method=GET
-    if [ "${1:-}" = --include ]; then include=1; shift; else include=0; fi
-    if [ "${1:-}" = --method ]; then method="$2"; shift 2; fi
+    include=0
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --include) include=1; shift ;;
+            --paginate) shift ;;
+            --method) method="$2"; shift 2 ;;
+            --*) break ;;
+            *) break ;;
+        esac
+    done
     endpoint="${1:-}"; shift || true
     jq_expr=""
     new_name=""
+    draft_value=""
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --jq) jq_expr="$2"; shift 2 ;;
-            -f) case "$2" in name=*) new_name="${2#name=}" ;; esac; shift 2 ;;
+            -f|-F)
+                case "$2" in
+                    name=*) new_name="${2#name=}" ;;
+                    draft=*) draft_value="${2#draft=}" ;;
+                esac
+                shift 2
+                ;;
             *) shift ;;
         esac
     done
+
+    if [[ "$endpoint" =~ ^repos/[^/]+/[^/]+/releases\?per_page=100$ ]]; then
+        wanted=""
+        if [[ "$jq_expr" =~ select\(\.tag_name\ ==\ \"([^\"]+)\"\) ]]; then
+            wanted="${BASH_REMATCH[1]}"
+        fi
+        [ -n "$wanted" ] || { echo "unsupported release-list jq: $jq_expr" >&2; exit 64; }
+        dir="$(release_dir "$wanted")"
+        if [ -d "$dir" ]; then
+            printf '%s\t%s\t%s\n' "$(cat "$dir/id")" "$(cat "$dir/draft")" "$(cat "$dir/target")"
+        fi
+        exit 0
+    fi
+
     if [[ "$endpoint" =~ ^repos/[^/]+/[^/]+/releases/tags/(.+)$ ]]; then
         tag="${BASH_REMATCH[1]}"; dir="$(release_dir "$tag")"
-        if [ ! -d "$dir" ]; then
+        # GitHub's release-by-tag endpoint exposes published releases, not drafts.
+        if [ ! -d "$dir" ] || [ "$(cat "$dir/draft")" = true ]; then
             [ "$include" -eq 0 ] || printf 'HTTP/2.0 404 Not Found\n\n{}\n'
             exit 1
         fi
@@ -74,6 +123,28 @@ api)
         esac
         exit 0
     fi
+
+    if [[ "$endpoint" =~ ^repos/[^/]+/[^/]+/releases/([0-9]+)$ ]]; then
+        id="${BASH_REMATCH[1]}"
+        dir="$(release_by_id "$id" || true)"
+        [ -n "$dir" ] || exit 1
+        case "$method" in
+            GET)
+                case "$jq_expr" in
+                    '.assets[] | [.name,.digest] | @tsv') asset_table "$dir" no-id ;;
+                    '') printf '{}\n' ;;
+                    *) echo "unsupported release-id jq: $jq_expr" >&2; exit 64 ;;
+                esac
+                ;;
+            PATCH)
+                [ -z "$draft_value" ] || printf '%s\n' "$draft_value" > "$dir/draft"
+                ;;
+            DELETE) rm -rf "$dir" ;;
+            *) exit 64 ;;
+        esac
+        exit 0
+    fi
+
     if [[ "$endpoint" =~ ^repos/[^/]+/[^/]+/releases/assets/(.+)$ ]]; then
         id="${BASH_REMATCH[1]}"
         found=""
@@ -97,6 +168,7 @@ release)
     case "$action" in
         create)
             mkdir -p "$dir/assets"
+            [ -f "$dir/id" ] || next_release_id > "$dir/id"
             draft=false; target=""
             assets=()
             while [ "$#" -gt 0 ]; do
@@ -124,9 +196,7 @@ release)
                 esac
             done
             ;;
-        delete)
-            rm -rf "$dir"
-            ;;
+        delete) rm -rf "$dir" ;;
         download)
             [ -d "$dir" ] || exit 1
             pattern=""; out=""
@@ -189,8 +259,18 @@ reasons=('Packaging revision ninety-nine' '' '' '' 'Packaging revision nine' 'Pa
 for i in "${!versions[@]}"; do
     version="${versions[$i]}"; reason="${reasons[$i]}"
     dist="$(make_dist "$version" "$reason" "v$i")"
-    bash "$PUBLISH_PACKAGE" "$REPO" "$TARGET_SHA" "$dist"
     tag="pkg-clang-$version-linux-x64-linux-x64"
+    if [ "$i" -eq 0 ]; then
+        # A failed previous run can leave an unpublished draft targeting an older
+        # commit. Retry must discard that draft before publishing this identity.
+        gh release create "$tag" --repo "$REPO" \
+            --target 1111111111111111111111111111111111111111 \
+            --title "$tag" --notes 'stale draft fixture' --draft --latest=false >/dev/null
+    fi
+    bash "$PUBLISH_PACKAGE" "$REPO" "$TARGET_SHA" "$dist"
+    if [ "$i" -eq 0 ]; then
+        bash "$PUBLISH_PACKAGE" "$REPO" "$TARGET_SHA" "$dist" >/dev/null
+    fi
     bash "$CATALOG_TOOL" activate "$catalog" "$REPO" "$tag"
 done
 

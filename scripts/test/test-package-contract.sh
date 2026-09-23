@@ -421,7 +421,7 @@ fi
 
 printf 'package link-admission tests passed\n'
 
-# Producer self-validation must reject metadata/path states that CUP cannot consume.
+# Producer self-validation must reject metadata/path states that cup cannot consume.
 assert_package_rejected() {
     local name="$1"
     local setup="$2"

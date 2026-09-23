@@ -2,7 +2,7 @@
 
 `catalog/catalog.cfg` is the source authority for package availability produced by
 `cup-components`. The rolling GitHub Release tagged `catalog` exposes the latest published
-snapshot to CUP through a stable `catalog.cfg` asset URL.
+snapshot to cup through a stable `catalog.cfg` asset URL.
 
 The two copies have different roles:
 
@@ -15,7 +15,7 @@ rolling Release "catalog"
         │
         │ consumer delivery
         ▼
-       CUP
+       cup
 ```
 
 Publication always moves in that direction. The release is never used to reconstruct or
@@ -36,7 +36,7 @@ version. Activating a newer package therefore moves `stable` automatically; acti
 older historical package does not.
 
 The catalog deliberately does not contain package-build policy, source-selection policy,
-CUP defaults or package manifest digests. Those values have different owners.
+cup defaults or package manifest digests. Those values have different owners.
 
 ## Activation
 
@@ -114,7 +114,7 @@ which is safe and recoverable. The inverse state is not intentionally produced: 
 availability must not advance ahead of its source authority.
 
 If package publication succeeds but catalog activation/publication fails, the package
-release remains valid and immutable. It is simply not discoverable through CUP until the
+release remains valid and immutable. It is simply not discoverable through cup until the
 catalog update is retried successfully.
 
 ## Rolling release update
@@ -149,7 +149,7 @@ remains, the publisher completes that interrupted rename before considering a ne
 snapshot.
 
 A short external gap between deleting the old canonical asset and renaming the verified
-candidate is accepted. CUP keeps its existing local catalog when a remote refresh cannot
+candidate is accepted. cup keeps its existing local catalog when a remote refresh cannot
 be downloaded or validated, so `cup-components` does not add a second catalog pointer or
 versioned catalog-release history solely to hide that external limitation.
 
@@ -180,9 +180,9 @@ source catalog, increment its revision, validate/commit the new snapshot and use
 sync path. Removing a catalog record does not delete the immutable package release; hard
 removal of historical bytes is a separate exceptional administrative action.
 
-## Boundary with CUP
+## Boundary with cup
 
-`cup-components` owns catalog production and publication. CUP consumes the published
-snapshot, chooses packages from it and manages the user's local catalog state. CUP does
+`cup-components` owns catalog production and publication. cup consumes the published
+snapshot, chooses packages from it and manages the user's local catalog state. cup does
 not decide producer `stable`, reconstruct archive URLs or infer package availability from
 GitHub releases on its own.

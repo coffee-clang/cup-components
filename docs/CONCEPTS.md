@@ -6,10 +6,10 @@ the repository understandable before reading individual builder scripts.
 ## Producer and consumer
 
 `cup-components` is the **producer**. It starts from an upstream tool release and ends
-with package archives that satisfy the CUP package contract.
+with package archives that satisfy the cup package contract.
 
-CUP is the **consumer**. It selects one of those package identities, downloads an
-archive, validates it and installs it below the user's CUP root.
+cup is the **consumer**. It selects one of those package identities, downloads an
+archive, validates it and installs it below the user's cup root.
 
 The producer decides how a tool is built and what belongs in the package. The consumer
 does not reconstruct those choices from upstream source or from the host system.
@@ -42,7 +42,7 @@ GNU `ld` package.
 
 ## Tool, host and target
 
-A **tool** is the command-line product represented by one CUP package, such as GCC,
+A **tool** is the command-line product represented by one cup package, such as GCC,
 GDB, Clang or `clang-format`.
 
 The **host platform** is where that packaged tool runs. The **target platform** is the
@@ -50,7 +50,7 @@ platform for which a compiler or linker produces code.
 
 Most packages are native and therefore have the same host and target. GCC and GNU `ld`
 also support a Linux x64 host with a Windows x64 target. Host and target are part of the
-package identity; internal upstream triples do not create additional CUP platforms.
+package identity; internal upstream triples do not create additional cup platforms.
 
 ## Version and package identity
 

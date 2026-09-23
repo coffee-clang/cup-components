@@ -8,9 +8,9 @@ This document defines the public producer identities and version rules used by
 
 `cup-components` acquires upstream sources, builds supported tools, selects and closes
 their package payload, validates the finished tree, emits equivalent archives, publishes
-immutable package releases and maintains the concrete package catalog consumed by CUP.
+immutable package releases and maintains the concrete package catalog consumed by cup.
 
-CUP owns package installation and local runtime state. It does not reconstruct producer
+cup owns package installation and local runtime state. It does not reconstruct producer
 build policy from upstream source.
 
 ## Tools
@@ -30,7 +30,7 @@ LLDB
 Valgrind
 ```
 
-Tool names are globally unambiguous. Their CUP components are:
+Tool names are globally unambiguous. Their cup components are:
 
 | Tool | Component |
 | --- | --- |
@@ -61,7 +61,7 @@ built-in source digest. A supplied `source_sha256` binds that build to exact sou
 
 ## Package version and revision
 
-A package version consists of the upstream/base version plus one optional terminal CUP
+A package version consists of the upstream/base version plus one optional terminal cup
 package revision:
 
 ```text
@@ -71,7 +71,7 @@ package revision:
 
 `N` is a canonical positive integer. Revision absence is revision zero for ordering.
 `-revN` is a package-distribution revision, not part of the upstream source version. It
-is used when the same upstream release intentionally gets another immutable CUP package,
+is used when the same upstream release intentionally gets another immutable cup package,
 for example because packaging, relocation, runtime closure or bundled composition
 changed.
 
@@ -99,7 +99,7 @@ revision only when the base is identical. Therefore:
 1.2-rev99 < 1.2.0
 ```
 
-The same comparator is used by producer catalog canonicalization and by CUP when it
+The same comparator is used by producer catalog canonicalization and by cup when it
 orders package versions.
 
 ## Package identity
@@ -169,7 +169,7 @@ The producer matrix is:
 | Valgrind | `linux-arm64` | `linux-arm64` |
 
 Current macOS packages use deployment target 15.0. Internal upstream target triples are
-producer details; the CUP platform identity remains the platform string above.
+producer details; the cup platform identity remains the platform string above.
 
 ## GCC composition
 
@@ -253,8 +253,8 @@ catalog deliberately; it does not mutate the immutable package release. The exac
 single-writer, anti-rollback and interrupted-publication rules are in
 [Catalog](CATALOG.md).
 
-## Relation to CUP
+## Relation to cup
 
-`cup-components` owns package bytes, package publication and catalog production. CUP
+`cup-components` owns package bytes, package publication and catalog production. cup
 consumes published catalog snapshots and owns package download/admission, installation,
 state, defaults, wrappers and local recovery.

@@ -68,7 +68,7 @@ A Linux x64 host can therefore run the package while the compiler emits Windows 
 
 ### GCC metadata
 
-The package separates public commands, retained payload and behavioral capabilities. `entry.*` records commands such as `cpp`, `gcov` and target-prefixed public tools; `contents.*` records retained LTO/Binutils/runtime layout; `features.*` is reserved for behavior CUP deliberately qualifies, including C/C++, LTO, OpenMP, pthread support, sanitizers and the target sysroot where applicable.
+The package separates public commands, retained payload and behavioral capabilities. `entry.*` records commands such as `cpp`, `gcov` and target-prefixed public tools; `contents.*` records retained LTO/Binutils/runtime layout; `features.*` is reserved for behavior cup deliberately qualifies, including C/C++, LTO, OpenMP, pthread support, sanitizers and the target sysroot where applicable.
 
 ## GNU ld
 
@@ -105,7 +105,7 @@ The package is rooted in:
 - the package-owned Python runtime;
 - optional installed runtime helpers required by the selected GDB build.
 
-Development headers and static build material are not included simply because the upstream install created them. The `libinproctrace.so` in-process agent used by GDB fast-tracepoint workflows is also not shipped: fast tracepoints are outside the deliberate CUP debugger contract, so that specialized helper has no production package responsibility.
+Development headers and static build material are not included simply because the upstream install created them. The `libinproctrace.so` in-process agent used by GDB fast-tracepoint workflows is also not shipped: fast tracepoints are outside the deliberate cup debugger contract, so that specialized helper has no production package responsibility.
 
 ### Python
 
@@ -220,7 +220,7 @@ Windows  -> lld-link.exe
 macOS    -> ld64.lld
 ```
 
-On Linux and macOS the installed frontend can be a symlink to a private `lld` backing executable; the backing file is package implementation rather than another public entry. CUP qualifies ELF linking on Linux, PE/COFF linking on Windows and Mach-O linking on macOS. Cross-format frontends such as `wasm-ld` and non-native ELF/COFF/Mach-O frontends are pruned instead of being shipped as unowned upstream convenience payload.
+On Linux and macOS the installed frontend can be a symlink to a private `lld` backing executable; the backing file is package implementation rather than another public entry. cup qualifies ELF linking on Linux, PE/COFF linking on Windows and Mach-O linking on macOS. Cross-format frontends such as `wasm-ld` and non-native ELF/COFF/Mach-O frontends are pruned instead of being shipped as unowned upstream convenience payload.
 
 ### LLDB
 
@@ -239,7 +239,7 @@ Linux and Windows additionally expose:
 bin/lldb-server
 ```
 
-because those packages deliberately provide package-owned platform-server remote debugging. The macOS package does not retain `lldb-server`: local process launch and `lldb-dap` use Apple's system `debugserver`, matching upstream's supported `LLDB_USE_SYSTEM_DEBUGSERVER=ON` model. That concrete runtime prerequisite is explicit as `requires.system_debugserver=true`. CUP does not declare macOS remote debugging because a deployable remote `debugserver` is not part of the package contract.
+because those packages deliberately provide package-owned platform-server remote debugging. The macOS package does not retain `lldb-server`: local process launch and `lldb-dap` use Apple's system `debugserver`, matching upstream's supported `LLDB_USE_SYSTEM_DEBUGSERVER=ON` model. That concrete runtime prerequisite is explicit as `requires.system_debugserver=true`. cup does not declare macOS remote debugging because a deployable remote `debugserver` is not part of the package contract.
 
 The Linux package seed additionally keeps:
 
@@ -280,7 +280,7 @@ The required public command is:
 clang-format
 ```
 
-The CUP package deliberately exposes `clang-format` itself. `git-clang-format` is not packaged: the upstream integration helper requires a separate Git runtime, while CUP's formatter package is self-contained and does not make Git a formatter dependency. This also avoids carrying Python solely for that optional integration helper. Compiler builtin resource headers are removed as well because formatting does not consume the Clang resource directory.
+The cup package deliberately exposes `clang-format` itself. `git-clang-format` is not packaged: the upstream integration helper requires a separate Git runtime, while cup's formatter package is self-contained and does not make Git a formatter dependency. This also avoids carrying Python solely for that optional integration helper. Compiler builtin resource headers are removed as well because formatting does not consume the Clang resource directory.
 
 ### clang-tidy
 
@@ -332,4 +332,4 @@ The following are intentionally outside the package:
 - the optional GDB Python front-end;
 - the internal SDK used to develop new Valgrind tools, including internal VEX/VKI headers and core development static archives.
 
-`contents.tools` records which Valgrind runtimes are actually retained, while `contents.vgdb` records the optional debugger-server command. CUP deliberately exposes Memcheck as the behavioral `features.memcheck` capability and exercises it in the product test; the mere presence of the other upstream runtimes does not create separate CUP feature promises.
+`contents.tools` records which Valgrind runtimes are actually retained, while `contents.vgdb` records the optional debugger-server command. cup deliberately exposes Memcheck as the behavioral `features.memcheck` capability and exercises it in the product test; the mere presence of the other upstream runtimes does not create separate cup feature promises.

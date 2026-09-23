@@ -8,15 +8,15 @@ source "$REPO_ROOT/scripts/package/package-common.sh"
 usage() {
     cat <<USAGE
 Usage:
-  $0 <clang|lld|lldb|clangd|clang-format|clang-tidy> <version|stable> <platform>
+  $0 <clang|lld|lldb|clangd|clang-format|clang-tidy> <version|default> <platform>
 
 Examples:
-  $0 clang stable linux-x64
-  $0 lld stable windows-x64
-  $0 lldb stable macos-arm64
-  $0 clangd stable linux-x64
-  $0 clang-format stable macos-x64
-  $0 clang-tidy stable windows-x64
+  $0 clang default linux-x64
+  $0 lld default windows-x64
+  $0 lldb default macos-arm64
+  $0 clangd default linux-x64
+  $0 clang-format default macos-x64
+  $0 clang-tidy default windows-x64
 USAGE
 }
 
@@ -29,17 +29,18 @@ TOOL="$1"
 REQUESTED_VERSION="$2"
 HOST_PLATFORM="$3"
 TARGET_PLATFORM="$3"
-REVISION=""
+REVISION="${CUP_PACKAGE_REVISION:-}"
+REVISION_REASON="${CUP_PACKAGE_REVISION_REASON:-}"
+package_revision_inputs_validate "$REVISION" "$REVISION_REASON"
 
 VERSION="$(resolve_version llvm "$REQUESTED_VERSION")"
-PACKAGE_VERSION="$(package_version_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
+PACKAGE_VERSION="$(package_version_name "$VERSION" "$REVISION")"
 HOST_TRIPLE="$(platform_triple "$HOST_PLATFORM")"
 TARGET_TRIPLE="$(platform_triple "$TARGET_PLATFORM")"
 TARGET_FAMILY="$(platform_family "$TARGET_PLATFORM")"
 TARGET_RUNTIME="$(platform_runtime "$TARGET_PLATFORM")"
 THREAD_MODEL="$(platform_thread_model "$TARGET_PLATFORM")"
 BUILD_ENVIRONMENT="${CUP_BUILD_ENVIRONMENT:-manual}"
-SOURCE_POLICY="source-release"
 SOURCE_URL="$(source_url_llvm_project "$VERSION")"
 
 case "$TOOL" in
@@ -643,10 +644,8 @@ PREFIX="$CUP_STAGE_DIR/$(package_base_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "
 PACKAGE_PREFIX="$PREFIX"
 
 validate_platforms() {
-    case "$HOST_PLATFORM" in
-        linux-x64|linux-arm64|windows-x64|macos-x64|macos-arm64) ;;
-        *) die "unsupported LLVM platform: $HOST_PLATFORM" ;;
-    esac
+    package_scope_is_supported "$TOOL" "$HOST_PLATFORM" "$TARGET_PLATFORM" ||
+        die "unsupported LLVM platform for $TOOL: $HOST_PLATFORM"
 }
 
 need_common_tools() {
@@ -2241,10 +2240,6 @@ build_llvm_tool() {
     local lldb_python_version=""
     local lldb_python_package_dir=""
 
-    if is_cross_build "$HOST_PLATFORM" "$TARGET_PLATFORM"; then
-        die "cross LLVM tool builds are not supported by this recipe yet: $HOST_PLATFORM -> $TARGET_PLATFORM"
-    fi
-
     if [ "$TOOL" = "lldb" ]; then
         cmake_extra_args+=(
             -DLLDB_INCLUDE_TESTS=OFF
@@ -2502,17 +2497,9 @@ write_llvm_info() {
         "package.component=$COMPONENT"
         "package.tool=$TOOL"
         "package.version=$PACKAGE_VERSION"
-        "package.mode=self-contained"
-        "package.formats=$(package_formats_csv "$HOST_PLATFORM")"
         "platform.host=$HOST_PLATFORM"
         "platform.target=$TARGET_PLATFORM"
-        "platform.host_triple=$HOST_TRIPLE"
-        "platform.target_triple=$TARGET_TRIPLE"
-        "platform.family=$TARGET_FAMILY"
-        "platform.runtime=$TARGET_RUNTIME"
-        "platform.thread_model=$THREAD_MODEL"
         "build.environment=$BUILD_ENVIRONMENT"
-        "build.source_policy=$SOURCE_POLICY"
         "source.primary.name=llvm-project"
         "source.primary.version=$VERSION"
         "source.primary.url=$SOURCE_URL"
@@ -2522,6 +2509,10 @@ write_llvm_info() {
         "config.zlib=$cmake_zlib"
         "config.zstd=$cmake_zstd"
     )
+
+    if [ -n "$REVISION" ]; then
+        info+=("package.revision_reason=$REVISION_REASON")
+    fi
 
     info+=("${CONTENTS_EXTRA[@]}")
 
@@ -2703,7 +2694,7 @@ main() {
     if [ "$TOOL" = lldb ]; then
         validate_llvm_package_layout "$PACKAGE_PREFIX"
     fi
-    create_packages "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION" "$PACKAGE_PREFIX"
+    create_packages "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION" "$PACKAGE_PREFIX" "$REVISION_REASON"
 }
 
 main "$@"

@@ -62,10 +62,6 @@ Assert-InfoValue -Root $root -Key 'contents.gcc_lto_plugin' -Expected 'false'
 Assert-InfoValue -Root $root -Key 'features.link' -Expected 'true'
 Assert-InfoValue -Root $root -Key 'features.link_pe' -Expected 'true'
 
-if (Get-Content (Join-Path $root 'info.txt') | Where-Object { $_ -like 'package.revision=*' }) {
-    throw 'Revisionless GNU ld package unexpectedly declares package.revision'
-}
-
 $pwsh = (Get-Command pwsh -ErrorAction Stop).Source
 Invoke-Native -FilePath $pwsh -ArgumentList @(
     'scripts/test/package-capabilities-windows.ps1',

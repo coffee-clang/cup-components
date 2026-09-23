@@ -37,6 +37,7 @@ requested version
 host platform
 target platform
 requested source SHA-256, when supplied
+requested package revision/revision reason, when supplied
 repository commit
 repository logical Git tree
 GitHub workflow
@@ -48,7 +49,7 @@ final workflow status
 finish time
 ```
 
-For GCC, `run.txt` additionally records the requested Binutils version, requested MinGW-w64 version, requested GCC package revision and the optional SHA-256 values supplied for those bundled source archives. These values are captured before the build starts, so the intended composition remains visible even if source acquisition or configuration fails early.
+For GCC, `run.txt` additionally records the independently requested Binutils and MinGW-w64 versions and optional source digests. Package revision/revision reason are common fields for every producer. These values are captured before the build starts, so the requested distribution and GCC composition remain visible even if acquisition/configuration fails early.
 
 The commit and logical tree are both recorded. The commit identifies the repository state in Git, while the logical tree identifies the tracked paths, blob content and file modes independently of commit metadata. This allows a downloaded build record to be matched against a known source tree even when the corresponding commit object is not available locally.
 
@@ -179,7 +180,7 @@ It also copies, when available:
 
 ```text
 release.env
-SHA256SUMS
+publication.txt
 ```
 
 ## Output and staging inventories
@@ -198,7 +199,7 @@ A useful order is:
 4. inspect `sources.tsv` if the failure occurred near download/extraction;
 5. inspect `diagnostics/` for configure or CMake failures;
 6. inspect copied `info.txt` / `manifest.txt` if package finalization was reached;
-7. inspect `outputs.txt` if archive generation or checksum handling was reached.
+7. inspect `outputs.txt` if archive generation or publication-descriptor handling was reached.
 
 This keeps version-specific corrections local to the point where the selected upstream release differs from the current family recipe.
 

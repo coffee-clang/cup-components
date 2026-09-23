@@ -99,9 +99,9 @@ function Show-InfoContract {
     Write-Host ""
     Write-Host '[package identity]'
     foreach ($key in @(
-        'package.component','package.tool','package.version','package.revision','package.mode','package.formats',
-        'platform.host','platform.target','platform.host_triple','platform.target_triple',
-        'source.primary.name','source.primary.version','source.primary.sha256','build.environment','build.source_policy'
+        'package.component','package.tool','package.version','package.revision_reason',
+        'platform.host','platform.target',
+        'source.primary.name','source.primary.version','source.primary.sha256','build.environment'
     )) {
         $value = Get-InfoValue $key
         if ($value) { Write-Host ("  {0,-30} {1}" -f $key, $value) }
@@ -150,7 +150,6 @@ switch ($Tool) {
         Show-Executable 'lto-dump.exe' 'contents.lto_dump'
         foreach ($exe in @('as.exe','ld.exe','ar.exe','ranlib.exe','strip.exe','objdump.exe','readelf.exe')) { Show-Executable $exe }
         $triple = Get-InfoValue 'config.gcc_target_triple'
-        if (-not $triple) { $triple = Get-InfoValue 'platform.target_triple' }
         if ($triple) {
             Write-Host ""
             Write-Host "[target-prefixed compiler driver probes: $triple]"

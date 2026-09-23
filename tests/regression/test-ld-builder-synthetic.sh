@@ -95,7 +95,7 @@ run_case() {
     [ -f "$out/$package_base.tar.xz" ]
     [ -f "$out/$package_base.tar.gz" ]
     [ -f "$out/$package_base.zip" ]
-    grep -Fx "release_tag=$package_base" "$out/release.env" >/dev/null
+    grep -Fx "release_tag=pkg-$package_base" "$out/release.env" >/dev/null
     tar -xJf "$out/$package_base.tar.xz" -C "$case_root/extracted"
 
     [ -x "$extracted/bin/ld" ]
@@ -108,11 +108,6 @@ run_case() {
     grep -Fx "source.primary.sha256=$sha" "$extracted/info.txt" >/dev/null
     grep -Fx 'contents.binutils_toolbox=false' "$extracted/info.txt" >/dev/null
     grep -Fx 'contents.gcc_lto_plugin=false' "$extracted/info.txt" >/dev/null
-    if grep -q '^package.revision=' "$extracted/info.txt"; then
-        echo "synthetic GNU ld package unexpectedly declares package.revision: $host -> $target" >&2
-        exit 1
-    fi
-
     if [ "$host" = "$target" ]; then
         if grep -q '^entry.target_ld=' "$extracted/info.txt"; then
             echo 'native synthetic GNU ld package declared a cross target entry' >&2

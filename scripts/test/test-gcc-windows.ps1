@@ -106,7 +106,7 @@ function Assert-NoNativeWindowsPrefixedBinutilsDuplicates {
         [string] $Root
     )
 
-    $targetTriple = Read-InfoValue -Root $Root -Key 'platform.target_triple'
+    $targetTriple = Read-InfoValue -Root $Root -Key 'config.gcc_target_triple'
     $hostPlatform = Read-InfoValue -Root $Root -Key 'platform.host'
     $targetPlatform = Read-InfoValue -Root $Root -Key 'platform.target'
 
@@ -115,7 +115,7 @@ function Assert-NoNativeWindowsPrefixedBinutilsDuplicates {
     }
 
     if (-not $targetTriple) {
-        throw 'platform.target_triple is missing from info.txt'
+        throw 'config.gcc_target_triple is missing from info.txt'
     }
 
     $binDir = Join-Path $Root 'bin'

@@ -1,22 +1,21 @@
 # Specification
 
-This document defines the package identities that `cup-components` can produce and the
-rules used to select their source versions and platforms. Read [Concepts](CONCEPTS.md)
-first for the producer model and [Packages](PACKAGES.md) for the physical package
-contract.
+This document defines the public producer identities and version rules used by
+`cup-components`. Read [Concepts](CONCEPTS.md) for the producer model and
+[Packages](PACKAGES.md) for the physical package contract.
 
 ## Scope
 
-`cup-components` accepts a supported tool, version and platform selection, obtains the
-upstream source, builds it in the corresponding environment, selects and closes the
-package payload, validates the finished package and optionally publishes its archives.
+`cup-components` acquires upstream sources, builds supported tools, selects and closes
+their package payload, validates the finished tree, emits equivalent archives, publishes
+immutable package releases and maintains the concrete package catalog consumed by CUP.
 
-Installation below a user's CUP root, local state, defaults, wrappers and PATH behavior
-belong to CUP rather than this repository.
+CUP owns package installation and local runtime state. It does not reconstruct producer
+build policy from upstream source.
 
-## Tools and versions
+## Tools
 
-The supported package families are:
+The operational package families are:
 
 ```text
 GCC
@@ -31,31 +30,105 @@ LLDB
 Valgrind
 ```
 
-A build accepts either `stable` or an explicit dotted numeric version. `stable` resolves
-to the repository default for that family; `latest` is intentionally not a supported
-symbolic selector.
+Tool names are globally unambiguous. Their CUP components are:
 
-The current defaults are:
-
-| Tool or component | `stable` |
+| Tool | Component |
 | --- | --- |
-| GCC | 16.2.0 |
-| Binutils bundled in the default GCC composition | 2.47 |
-| MinGW-w64 bundled in the default Windows-target GCC composition | 14.0.0 |
-| Default GCC package revision | 1 |
-| GNU ld / standalone Binutils package | 2.47 |
-| GDB | 17.2 |
-| LLVM family | 23.1.0 |
-| Valgrind | 3.27.1 |
+| GCC, Clang | `compiler` |
+| GDB, LLDB | `debugger` |
+| GNU ld, LLD | `linker` |
+| clang-format | `formatter` |
+| clang-tidy | `linter` |
+| clangd | `language-server` |
+| Valgrind | `analyzer` |
 
-These are defaults rather than a closed version list. An explicit release is passed to
-the general builder for its family. If an upstream release changes configure/CMake
-options, source layout, installed layout or runtime requirements, the family recipe may
-need an adaptation before that version can complete successfully.
+## Upstream version selection
 
-All LLVM-family packages use the same selected LLVM project release. Selecting LLVM
-`23.1.0`, for example, means Clang, LLD, LLDB, clangd, clang-format and clang-tidy are
-built from LLVM project `23.1.0` when requested.
+Producer commands accept either `default` or an explicit canonical numeric-dotted
+upstream version. `default` resolves to the repository-configured source version for the
+family; it does **not** mean catalog stable. `stable` and `latest` are not producer source
+selectors.
+
+Numeric versions have no leading zero in a segment except the segment `0` itself.
+Examples of valid source versions are `17.2`, `23.1.0` and `3.27.1`.
+
+Configured source defaults and their known digests live in
+`scripts/package/package-common.sh`, which is the operational authority used by every
+builder. Documentation does not duplicate that changing inventory.
+
+Explicit upstream versions remain possible even when the repository does not contain a
+built-in source digest. A supplied `source_sha256` binds that build to exact source bytes.
+
+## Package version and revision
+
+A package version consists of the upstream/base version plus one optional terminal CUP
+package revision:
+
+```text
+<base-version>
+<base-version>-revN
+```
+
+`N` is a canonical positive integer. Revision absence is revision zero for ordering.
+`-revN` is a package-distribution revision, not part of the upstream source version. It
+is used when the same upstream release intentionally gets another immutable CUP package,
+for example because packaging, relocation, runtime closure or bundled composition
+changed.
+
+Examples:
+
+```text
+23.1.0
+23.1.0-rev1
+23.1.0-rev2
+```
+
+A revision-bearing package requires one short `package.revision_reason`. A revisionless
+package has no revision-reason field. The reason is descriptive and never participates
+in ordering.
+
+Source acquisition always receives the unsuffixed base version. For example a
+`23.1.0-rev2` LLVM package still downloads/builds LLVM `23.1.0`.
+
+The comparator first compares the complete numeric base version, then the package
+revision only when the base is identical. Therefore:
+
+```text
+23.1.0 < 23.1.0-rev1 < 23.1.1
+23.1.0-rev9 < 23.1.0-rev10
+1.2-rev99 < 1.2.0
+```
+
+The same comparator is used by producer catalog canonicalization and by CUP when it
+orders package versions.
+
+## Package identity
+
+Public package identity is:
+
+```text
+(component, tool, package-version, host, target)
+```
+
+The package directory/archive base name is:
+
+```text
+<tool>-<package-version>-<host>-<target>
+```
+
+The canonical GitHub Release tag is:
+
+```text
+pkg-<tool>-<package-version>-<host>-<target>
+```
+
+Tag and archive names are derived renderings. Product logic does not recover structured
+identity by splitting them on `-`; hyphenated tool/platform names make that unnecessary
+and ambiguous.
+
+Published package identity is immutable. Publishing an identical already-published
+identity is an idempotent success; different data for the same identity is an error. A
+corrected distribution uses a new `-revN` identity and leaves the older release intact.
 
 ## Platforms
 
@@ -69,32 +142,10 @@ macos-x64
 macos-arm64
 ```
 
-Windows arm64 is not part of the current matrix. The current macOS deployment target is
-15.0 for both supported macOS architectures.
+The host is where the packaged program runs. The target is where compiler/linker output
+runs. Most packages are native; GCC and GNU ld also support Linux x64 -> Windows x64.
 
-### Host and target
-
-The **host** is the platform on which the packaged tool runs. The **target** is the
-platform for which a compiler or linker produces code.
-
-Most packages are native, so host and target are equal. GCC and GNU `ld` additionally
-support a Linux x64 package targeting Windows x64; their workflows therefore expose
-separate host and target inputs.
-
-The package-platform mapping is:
-
-| Platform | Toolchain triple |
-| --- | --- |
-| `linux-x64` | `x86_64-linux-gnu` |
-| `linux-arm64` | `aarch64-linux-gnu` |
-| `windows-x64` | `x86_64-w64-mingw32` |
-| `macos-x64` | `x86_64-apple-darwin` |
-| `macos-arm64` | `arm64-apple-darwin` |
-
-A producer can use a more specific upstream triple internally. That does not create a
-second CUP platform identity.
-
-## Supported combinations
+The producer matrix is:
 
 | Family | Host | Target |
 | --- | --- | --- |
@@ -117,113 +168,93 @@ second CUP platform identity.
 | Valgrind | `linux-x64` | `linux-x64` |
 | Valgrind | `linux-arm64` | `linux-arm64` |
 
-GDB, LLVM-family tools and Valgrind are native-only in the current repository. GNU `ld`
-is not produced for macOS, and Valgrind is Linux-only.
+Current macOS packages use deployment target 15.0. Internal upstream target triples are
+producer details; the CUP platform identity remains the platform string above.
 
-## Package identity
+## GCC composition
 
-Revisionless packages use:
+GCC packages deliberately include independently selected Binutils and, for Windows
+targets, MinGW-w64. Those versions remain explicit `bundle.*` metadata and producer
+inputs. They are independent of the generic package-revision number.
 
-```text
-<tool>-<version>-<host>-<target>
-```
+A composition change can justify a new package revision, but `revN` does not encode the
+component versions. Inspecting a GCC package therefore shows both its complete package
+version/revision reason and the concrete bundled component versions.
 
-GCC packages use:
+## Package release descriptor
 
-```text
-<tool>-<version>-revN-<host>-<target>
-```
-
-Examples:
+Every package publication manages exactly four assets:
 
 ```text
-gcc-16.2.0-rev1-linux-x64-linux-x64
-gcc-16.2.0-rev1-linux-x64-windows-x64
-ld-2.47-linux-x64-linux-x64
-gdb-17.2-linux-x64-linux-x64
-clang-23.1.0-macos-arm64-macos-arm64
-valgrind-3.27.1-linux-arm64-linux-arm64
+publication.txt
+<package-base>.tar.xz
+<package-base>.tar.gz
+<package-base>.zip
 ```
 
-Different main tool versions therefore have different identities and can coexist as
-separate published packages.
+`publication.txt` format 1 contains the structured package identity, optional revision
+reason, `manifest_sha256`, and the SHA-256 of each of the three archives in fixed order
+`tar.xz`, `tar.gz`, `zip`.
 
-### GCC composition revision
+`manifest_sha256` proves that all three distributable archives represent the same
+finalized package tree. Archive SHA-256 values authenticate the exact downloadable
+bytes. No separate `SHA256SUMS` or publication identifier is part of the package-release
+contract.
 
-GCC is revision-bearing because one logical GCC package contains independently
-versioned components:
+## Catalog
 
-- GCC;
-- Binutils;
-- MinGW-w64 for Windows targets.
+`catalog/catalog.cfg` is the repository source authority for package availability. Its
+published consumer endpoint is the `catalog.cfg` asset of the rolling GitHub Release
+with tag `catalog`.
 
-Their versions are selected independently. There is no repository rule that maps one
-GCC release to one Binutils or MinGW-w64 release, and the bundled Binutils default used
-by GCC is independent of the standalone GNU `ld` default.
-
-The revision identifies a deliberate composition; it does not select component versions.
-The configured `stable` revision is valid only when the resolved GCC release and all
-applicable bundled component versions equal the configured default composition. Any
-other composition requires an explicit positive revision.
-
-A revision is not a build counter. Rebuilding the same composition after a packaging,
-runtime-closure or publication change does not by itself create a new revision.
-
-GNU `ld`, GDB, LLVM-family packages and Valgrind are revisionless in the current model.
-Ordinary build/runtime dependencies do not create package revisions.
-
-## Package requirements
-
-Every archive contains exactly one top-level package directory with at least:
+Catalog format 1 contains:
 
 ```text
-info.txt
-manifest.txt
+format=1
+revision=<uint64>
+update_url=<stable rolling-release asset URL>
 ```
 
-`info.txt` describes semantic identity, entries, capabilities, requirements and source
-provenance. `manifest.txt` describes the exact finalized filesystem tree. The package
-can additionally contain the executables, libraries, runtime data, target files and
-helpers owned by that tool.
+followed by concrete package records. Each package record contains component, tool,
+host, target, complete package version, derived `stable`, optional `revision_reason`
+for `-revN`, and exactly three artifact records containing format, concrete URL and
+SHA-256.
 
-The shared filesystem, metadata, archive, self-containment and relocatability rules are
-defined in [Packages](PACKAGES.md). Tool-specific payload ownership is defined in
-[Tool packages](TOOLS.md).
+The catalog contains only packages proven against already-published immutable package
+releases. `stable=true` is materialized for readability/consumption but is derived as
+the semantic maximum package version in each `(component, tool, host, target)` scope.
+There is no independent promote/set-stable lifecycle.
 
-## Source selection and verification
+Canonical catalog order is component/tool/host/target followed by semantic package
+version ascending. A semantic change produces a strictly newer catalog revision; a
+no-op preserves revision and bytes.
 
-Versioned upstream source archives are downloaded from the family URL implemented by
-the common source layer or reused from the local source cache.
+## Catalog publication lifecycle
 
-The repository contains known SHA-256 values for the current `stable` sources. Those
-archives are verified before extraction, including when a cached copy is reused.
+The first empty revision-0 catalog endpoint is bootstrapped manually. Normal package
+publication is automatic after that:
 
-An explicit numeric version can be attempted without a repository-known digest. The
-optional `source_sha256` workflow input, forwarded as `CUP_SOURCE_SHA256`, binds that
-build to an exact source digest when supplied.
+```text
+build + qualify
+      -> immutable package release
+      -> serialized catalog activation
+      -> commit updated catalog.cfg
+      -> synchronize rolling catalog release
+```
 
-Every completed package records the SHA-256 of the source archive actually used. Build
-records additionally preserve the resolved URL, expected digest when one was supplied
-or known, actual digest and acquisition status. See [Build records](BUILD_RECORDS.md).
+Different package identities build in parallel. Duplicate published runs for one identity
+are serialized before package publication, and catalog mutation/publication is serialized
+so every activation starts from the latest source authority and cannot lose another
+package's update.
 
-`SHA256SUMS` serves a different boundary: it records digests of the finished package
-archives, not the upstream source archive.
-
-## Publication identity
-
-The package base name is also the GitHub Release tag used by the workflows.
-Re-publishing one package identity replaces that identity's release and assets; it does
-not remove other tool versions. Re-publication does not change the GCC composition
-revision.
-
-See [Build](BUILD.md#publication) for the exact workflow behavior.
+Manual catalog publication remains an administrative/recovery path, not a normal gate
+between package publication and visibility. A rare emergency removal edits the source
+catalog deliberately; it does not mutate the immutable package release. The exact
+single-writer, anti-rollback and interrupted-publication rules are in
+[Catalog](CATALOG.md).
 
 ## Relation to CUP
 
-`cup-components` ends at validated package assets and optional publication. CUP begins
-with package selection/download and owns package admission, installation, local state,
-defaults, wrappers and recovery.
-
-Both repositories implement the same package contract from opposite sides: the producer
-must emit bytes the consumer can validate without reconstructing producer-specific build
-logic.
+`cup-components` owns package bytes, package publication and catalog production. CUP
+consumes published catalog snapshots and owns package download/admission, installation,
+state, defaults, wrappers and local recovery.

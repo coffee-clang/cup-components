@@ -8,11 +8,11 @@ source "$REPO_ROOT/scripts/package/package-common.sh"
 usage() {
     cat <<USAGE
 Usage:
-  $0 <version|stable> <platform>
+  $0 <version|default> <platform>
 
 Examples:
-  $0 stable linux-x64
-  $0 stable windows-x64
+  $0 default linux-x64
+  $0 default windows-x64
 USAGE
 }
 
@@ -24,19 +24,20 @@ fi
 REQUESTED_VERSION="$1"
 HOST_PLATFORM="$2"
 TARGET_PLATFORM="$2"
-REVISION=""
+REVISION="${CUP_PACKAGE_REVISION:-}"
+REVISION_REASON="${CUP_PACKAGE_REVISION_REASON:-}"
+package_revision_inputs_validate "$REVISION" "$REVISION_REASON"
 
 TOOL="gdb"
 COMPONENT="debugger"
 VERSION="$(resolve_version gdb "$REQUESTED_VERSION")"
-PACKAGE_VERSION="$(package_version_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
+PACKAGE_VERSION="$(package_version_name "$VERSION" "$REVISION")"
 HOST_TRIPLE="$(platform_triple "$HOST_PLATFORM")"
 TARGET_TRIPLE="$(platform_triple "$TARGET_PLATFORM")"
 TARGET_FAMILY="$(platform_family "$TARGET_PLATFORM")"
 TARGET_RUNTIME="$(platform_runtime "$TARGET_PLATFORM")"
 THREAD_MODEL="$(platform_thread_model "$TARGET_PLATFORM")"
 BUILD_ENVIRONMENT="${CUP_BUILD_ENVIRONMENT:-manual}"
-SOURCE_POLICY="source-release"
 PREFIX="$CUP_STAGE_DIR/$(package_base_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
 SOURCE_URL="$(source_url_gdb "$VERSION")"
 PACKAGE_PREFIX="$PREFIX"
@@ -46,10 +47,8 @@ GDB_READLINE_POLICY=upstream-default
 GDB_ZLIB_POLICY=false
 
 validate_platforms() {
-    case "$HOST_PLATFORM" in
-        linux-x64|linux-arm64|windows-x64) ;;
-        *) die "unsupported GDB platform: $HOST_PLATFORM" ;;
-    esac
+    package_scope_is_supported gdb "$HOST_PLATFORM" "$TARGET_PLATFORM" ||
+        die "unsupported GDB platform: $HOST_PLATFORM"
 }
 
 python_command() {
@@ -251,10 +250,6 @@ build_gdb() {
 
     GDB_BUILD_DIR="$build_dir"
 
-    if is_cross_build "$HOST_PLATFORM" "$TARGET_PLATFORM"; then
-        die "cross GDB is not supported by this build recipe yet: $HOST_PLATFORM -> $TARGET_PLATFORM"
-    fi
-
     python_cmd="$(python_command)"
     gdb_configure_has_option "$source_dir" --disable-werror && configure_args+=(--disable-werror)
     configure_args+=(--with-python="$python_cmd")
@@ -417,17 +412,9 @@ write_gdb_info() {
         "package.component=$COMPONENT"
         "package.tool=$TOOL"
         "package.version=$PACKAGE_VERSION"
-        "package.mode=self-contained"
-        "package.formats=$(package_formats_csv "$HOST_PLATFORM")"
         "platform.host=$HOST_PLATFORM"
         "platform.target=$TARGET_PLATFORM"
-        "platform.host_triple=$HOST_TRIPLE"
-        "platform.target_triple=$TARGET_TRIPLE"
-        "platform.family=$TARGET_FAMILY"
-        "platform.runtime=$TARGET_RUNTIME"
-        "platform.thread_model=$THREAD_MODEL"
         "build.environment=$BUILD_ENVIRONMENT"
-        "build.source_policy=$SOURCE_POLICY"
         "source.primary.name=gdb"
         "source.primary.version=$VERSION"
         "source.primary.url=$SOURCE_URL"
@@ -468,6 +455,10 @@ write_gdb_info() {
         "features.remote_debugging=$has_gdbserver"
     )
 
+    if [ -n "$REVISION" ]; then
+        info+=("package.revision_reason=$REVISION_REASON")
+    fi
+
     write_info_file "$PREFIX" "${info[@]}"
 }
 
@@ -493,7 +484,7 @@ main() {
         [ -d "$python_dir" ] || continue
         prune_python_runtime_nonruntime_payload "$python_dir"
     done
-    create_packages "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION" "$PACKAGE_PREFIX"
+    create_packages "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION" "$PACKAGE_PREFIX" "$REVISION_REASON"
 }
 
 main "$@"

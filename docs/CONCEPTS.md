@@ -54,19 +54,26 @@ package identity; internal upstream triples do not create additional CUP platfor
 
 ## Version and package identity
 
-`stable` is a repository-owned default that resolves to a concrete upstream version.
-An explicit dotted version selects that release directly.
+`default` is the producer source selector for the repository-configured upstream release.
+An explicit canonical numeric-dotted version selects that upstream release directly. The
+word `stable` is reserved for the catalog's derived current package, not producer source
+selection.
 
-Most package identities are:
+Every operational tool can add one optional package revision:
 
 ```text
-<tool>-<version>-<host>-<target>
+23.1.0
+23.1.0-rev1
+23.1.0-rev2
 ```
 
-GCC additionally carries a `revN` package revision because one GCC package deliberately
-contains independently versioned logical components such as Binutils and, for Windows
-targets, MinGW-w64. A revision identifies that package composition; it is not a build
-counter and does not choose the component versions by itself.
+The suffix means that `cup-components` intentionally produced another immutable package
+distribution from the same upstream version. Its reason is recorded separately. Source
+acquisition always uses the unsuffixed upstream version.
+
+The package base is `<tool>-<package-version>-<host>-<target>` and the public release tag
+is `pkg-<package-base>`. GCC bundle versions remain separate metadata; they do not form a
+second revision system.
 
 ## Package ownership
 
@@ -128,7 +135,8 @@ Every finalized package contains two complementary files:
 exactly which package objects implement it.
 
 The producer emits the same logical package as `tar.xz`, `tar.gz` and `zip`, verifies
-each archive against the finalized tree and writes their digests to `SHA256SUMS`.
+each archive against the finalized tree and records their digests plus the common
+manifest digest in `publication.txt`.
 
 ## Validation layers
 
@@ -139,7 +147,7 @@ Validation happens at several different boundaries:
    runtime-closure mechanics;
 3. **tool-specific product tests** execute the completed package and prove the declared
    capabilities on the selected native platform;
-4. **checksum verification** confirms the final archive bytes before upload/publication.
+4. **publication validation** binds the final archive bytes and common manifest before upload.
 
 A parser or synthetic fixture cannot substitute for a native product test. Conversely,
 a native command succeeding does not replace the package-contract checks that protect

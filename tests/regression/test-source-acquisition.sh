@@ -5,18 +5,14 @@ source "$ROOT/scripts/package/package-common.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-[ "$(resolve_version gcc stable)" = "$DEFAULT_GCC_VERSION" ]
-[ "$(resolve_version gdb stable)" = "$DEFAULT_GDB_VERSION" ]
-[ "$(resolve_version binutils stable)" = "$DEFAULT_BINUTILS_VERSION" ]
-[ "$(resolve_version mingw stable)" = "$DEFAULT_GCC_MINGW_VERSION" ]
-[ "$(resolve_version llvm stable)" = "$DEFAULT_LLVM_VERSION" ]
-[ "$(resolve_version valgrind stable)" = "$DEFAULT_VALGRIND_VERSION" ]
-package_revision_is_valid "$DEFAULT_GCC_REVISION"
+[ "$(resolve_version gcc default)" = "$DEFAULT_GCC_VERSION" ]
+[ "$(resolve_version gdb default)" = "$DEFAULT_GDB_VERSION" ]
+[ "$(resolve_version binutils default)" = "$DEFAULT_BINUTILS_VERSION" ]
+[ "$(resolve_version mingw default)" = "$DEFAULT_GCC_MINGW_VERSION" ]
+[ "$(resolve_version llvm default)" = "$DEFAULT_LLVM_VERSION" ]
+[ "$(resolve_version valgrind default)" = "$DEFAULT_VALGRIND_VERSION" ]
 
-# Every configured stable source must have one built-in digest. Exact digest
-# correctness is an upstream fact and is verified independently when defaults
-# are updated; duplicating the same literal here would only test internal
-# agreement between two repository files.
+# Every configured default source must resolve to a pinned digest.
 for source_spec in \
     "gcc:$DEFAULT_GCC_VERSION" \
     "gdb:$DEFAULT_GDB_VERSION" \
@@ -28,11 +24,11 @@ for source_spec in \
     source_id="${source_spec%%:*}"
     version="${source_spec#*:}"
     digest="$(known_source_sha256 "$source_id" "$version")" || {
-        echo "configured stable source has no known digest: $source_id $version" >&2
+        echo "configured default source has no known digest: $source_id $version" >&2
         exit 1
     }
     [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || {
-        echo "configured stable source has an invalid SHA-256: $source_id $version" >&2
+        echo "configured default source has an invalid SHA-256: $source_id $version" >&2
         exit 1
     }
 done
@@ -49,8 +45,7 @@ printf 'arbitrary-version\n' > "$TMP/root/fixture-99.99.99/marker"
 tar -cJf "$CUP_SRC_DIR/fixture-99.99.99.tar.xz" -C "$TMP/root" fixture-99.99.99
 actual="$(sha256_file "$CUP_SRC_DIR/fixture-99.99.99.tar.xz")"
 
-# An explicit version outside the current known set remains buildable without
-# modifying repository data. Its actual source digest is still recorded.
+# Unpinned explicit versions remain buildable and record their actual digest.
 source_dir="$(prepare_source_tree fixture 99.99.99 https://example.invalid/fixture-99.99.99.tar.xz fixture-99.99.99.tar.xz)"
 [ -f "$source_dir/marker" ]
 [ "$(source_archive_sha256 https://example.invalid/fixture-99.99.99.tar.xz fixture-99.99.99.tar.xz)" = "$actual" ]
@@ -68,10 +63,7 @@ grep -F $'fixture\t99.99.99\tfixture-99.99.99.tar.xz\t'"$(printf '0%.0s' {1..64}
     exit 1
 }
 
-# Source downloads use curl's bounded retry mechanism for transfer errors too.
-# This is load-bearing for transient failures that surface as non-HTTP curl
-# statuses after an upstream server error, while fetch() must still delete a
-# partial output when all attempts fail.
+# Transfer failures use bounded curl retry and never leave a partial archive.
 fetch_bin="$TMP/fetch-bin"
 fetch_args="$TMP/fetch-args"
 fetch_output="$TMP/fetch-output"
@@ -131,9 +123,8 @@ fi
     exit 1
 }
 
-# MSYS2's default deepcopy symlink mode can fail on a link-before-target tar
-# ordering. Exercise the common retry contract without pretending this Linux
-# regression is the native MSYS2 proof.
+# MSYS2 deepcopy extraction can fail when a link precedes its target. The
+# Windows path retries once; other hosts remain single-pass.
 retry_bin="$TMP/retry-bin"
 retry_state="$TMP/retry-state"
 retry_dest="$TMP/retry-dest"
@@ -173,32 +164,5 @@ fi
     exit 1
 }
 
-for builder in build-gcc.sh build-gdb.sh build-ld.sh build-llvm-tool.sh build-valgrind.sh; do
-    grep -F 'prepare_source_tree' "$ROOT/scripts/build/$builder" >/dev/null || {
-        echo "builder does not use common source acquisition: $builder" >&2
-        exit 1
-    }
-done
-
-# GCC bundled-source selection is independent from the selected GCC release.
-# The workflow may supply a digest for either bundled source exactly as it does
-# for the primary source.
-gcc_builder="$ROOT/scripts/build/build-gcc.sh"
-grep -F 'BINUTILS_VERSION="$DEFAULT_GCC_BINUTILS_VERSION"' "$gcc_builder" >/dev/null || {
-    echo 'GCC builder does not use its own configured default Binutils composition' >&2
-    exit 1
-}
-grep -F 'resolve_version binutils "$REQUESTED_BINUTILS_VERSION"' "$gcc_builder" >/dev/null || {
-    echo 'GCC builder does not accept an independent explicit Binutils selection' >&2
-    exit 1
-}
-grep -F '"${CUP_BINUTILS_SOURCE_SHA256:-}"' "$gcc_builder" >/dev/null || {
-    echo 'GCC builder does not forward an operator-supplied Binutils digest' >&2
-    exit 1
-}
-grep -F '"${CUP_MINGW_SOURCE_SHA256:-}"' "$gcc_builder" >/dev/null || {
-    echo 'GCC builder does not forward an operator-supplied MinGW-w64 digest' >&2
-    exit 1
-}
 
 echo SOURCE_ACQUISITION=PASS

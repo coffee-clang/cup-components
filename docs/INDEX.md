@@ -13,13 +13,15 @@ and workflow evidence.
 - [Concepts](CONCEPTS.md) — source, staging, package selection, runtime closure,
   relocatability, self-containment, metadata and the boundary with CUP.
 - [Specification](SPECIFICATION.md) — supported tools/platforms, version selection,
-  host/target combinations, package identity, GCC revisions and source verification.
+  host/target combinations, package identity, generic package revisions and source verification.
 - [Packages](PACKAGES.md) — package filesystem rules, `info.txt`, `manifest.txt`,
   archive formats, runtime closure and package-owned Python.
 - [Tool packages](TOOLS.md) — the payload and deliberate capabilities owned by GCC,
   GNU `ld`, GDB, the LLVM-family tools and Valgrind.
+- [Catalog](CATALOG.md) — package activation, derived stable selection, serialized source
+  updates, rolling publication and administrative recovery.
 
-These documents describe stable producer contracts. Tool-specific implementation
+These documents describe producer contracts. Tool-specific implementation
 choices that do not affect a package contract remain in the builder scripts.
 
 ## Build and validate
@@ -38,7 +40,7 @@ choices that do not affect a package contract remain in the builder scripts.
 To understand a finished package:
 
 ```text
-Concepts → Specification → Packages → Tool packages
+Concepts → Specification → Packages → Tool packages → Catalog
 ```
 
 To work on a producer or diagnose a build:
@@ -52,12 +54,13 @@ Concepts → Build → Dependencies → Testing → Build records
 The documentation explains contracts and mechanisms. Inventories that change as part
 of normal maintenance stay with the files that own them:
 
-- stable versions and known source digests: `scripts/package/package-common.sh`;
-- supported workflow inputs and runner selection: `.github/workflows/`;
+- supported package scopes, default source versions and known source digests: `scripts/package/package-common.sh`;
+- workflow inputs and runner selection: `.github/workflows/`;
 - exact Linux builder packages: `docker/*.Dockerfile`;
 - exact Windows builder packages: `scripts/setup/msys2-*-packages.txt`;
 - exact macOS setup: `scripts/setup/setup-macos-builder.sh`;
 - repository regressions: `tests/regression/`.
 
 This avoids maintaining a second copy of operational inventories in prose while still
-documenting what those inventories mean.
+documenting what those inventories mean. Tests likewise protect observable producer
+behavior rather than the textual shape of the scripts that implement it.

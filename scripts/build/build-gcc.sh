@@ -8,17 +8,18 @@ source "$REPO_ROOT/scripts/package/package-common.sh"
 usage() {
     cat <<USAGE
 Usage:
-  $0 <version|stable> <host_platform> <target_platform>
+  $0 <version|default> <host_platform> <target_platform>
 
 Examples:
-  $0 stable linux-x64 linux-x64
-  $0 stable linux-x64 windows-x64
-  $0 stable windows-x64 windows-x64
+  $0 default linux-x64 linux-x64
+  $0 default linux-x64 windows-x64
+  $0 default windows-x64 windows-x64
 
 Optional GCC composition environment:
-  CUP_GCC_BINUTILS_VERSION=<version|stable>
-  CUP_GCC_MINGW_VERSION=<version|stable>      # Windows targets only
-  CUP_GCC_REVISION=<positive-integer|stable>
+  CUP_GCC_BINUTILS_VERSION=<version|default>
+  CUP_GCC_MINGW_VERSION=<version|default>      # Windows targets only
+  CUP_PACKAGE_REVISION=<positive-integer>
+  CUP_PACKAGE_REVISION_REASON=<single-line-text>
   CUP_BINUTILS_SOURCE_SHA256=<sha256>
   CUP_MINGW_SOURCE_SHA256=<sha256>            # Windows targets only
 USAGE
@@ -37,11 +38,13 @@ TOOL="gcc"
 COMPONENT="compiler"
 
 VERSION="$(resolve_version gcc "$REQUESTED_VERSION")"
-REQUESTED_BINUTILS_VERSION="${CUP_GCC_BINUTILS_VERSION:-stable}"
-REQUESTED_MINGW_VERSION="${CUP_GCC_MINGW_VERSION:-stable}"
-REQUESTED_REVISION="${CUP_GCC_REVISION:-stable}"
+REQUESTED_BINUTILS_VERSION="${CUP_GCC_BINUTILS_VERSION:-default}"
+REQUESTED_MINGW_VERSION="${CUP_GCC_MINGW_VERSION:-default}"
+REVISION="${CUP_PACKAGE_REVISION:-}"
+REVISION_REASON="${CUP_PACKAGE_REVISION_REASON:-}"
+package_revision_inputs_validate "$REVISION" "$REVISION_REASON"
 
-if [ "$REQUESTED_BINUTILS_VERSION" = stable ]; then
+if [ "$REQUESTED_BINUTILS_VERSION" = default ]; then
     BINUTILS_VERSION="$DEFAULT_GCC_BINUTILS_VERSION"
 else
     BINUTILS_VERSION="$(resolve_version binutils "$REQUESTED_BINUTILS_VERSION")"
@@ -49,26 +52,14 @@ fi
 if is_windows_platform "$TARGET_PLATFORM"; then
     MINGW_VERSION="$(resolve_version mingw "$REQUESTED_MINGW_VERSION")"
 else
-    [ "$REQUESTED_MINGW_VERSION" = stable ] ||
+    [ "$REQUESTED_MINGW_VERSION" = default ] ||
         die "MinGW-w64 version is only applicable to a Windows target"
     [ -z "${CUP_MINGW_SOURCE_SHA256:-}" ] ||
         die "MinGW-w64 source SHA-256 is only applicable to a Windows target"
     MINGW_VERSION=""
 fi
 
-if [ "$REQUESTED_REVISION" = stable ]; then
-    [ "$VERSION" = "$DEFAULT_GCC_VERSION" ] &&
-        [ "$BINUTILS_VERSION" = "$DEFAULT_GCC_BINUTILS_VERSION" ] &&
-        { ! is_windows_platform "$TARGET_PLATFORM" || [ "$MINGW_VERSION" = "$DEFAULT_GCC_MINGW_VERSION" ]; } ||
-        die "revision=stable is only valid for the configured default GCC composition; select an explicit revision for a custom composition"
-    REVISION="$DEFAULT_GCC_REVISION"
-else
-    package_revision_is_valid "$REQUESTED_REVISION" ||
-        die "invalid GCC package revision: $REQUESTED_REVISION"
-    REVISION="$REQUESTED_REVISION"
-fi
-
-PACKAGE_VERSION="$(package_version_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
+PACKAGE_VERSION="$(package_version_name "$VERSION" "$REVISION")"
 
 HOST_TRIPLE="$(platform_triple "$HOST_PLATFORM")"
 TARGET_TRIPLE="$(platform_triple "$TARGET_PLATFORM")"
@@ -77,7 +68,6 @@ TARGET_RUNTIME="$(platform_runtime "$TARGET_PLATFORM")"
 THREAD_MODEL="$(platform_thread_model "$TARGET_PLATFORM")"
 
 BUILD_ENVIRONMENT="${CUP_BUILD_ENVIRONMENT:-manual}"
-SOURCE_POLICY="source-release"
 
 PREFIX="$CUP_STAGE_DIR/$(package_base_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
 
@@ -90,10 +80,8 @@ fi
 
 
 validate_platforms() {
-    case "$HOST_PLATFORM:$TARGET_PLATFORM" in
-        linux-x64:linux-x64|linux-arm64:linux-arm64|windows-x64:windows-x64|linux-x64:windows-x64) ;;
-        *) die "unsupported GCC build combination: $HOST_PLATFORM -> $TARGET_PLATFORM" ;;
-    esac
+    package_scope_is_supported gcc "$HOST_PLATFORM" "$TARGET_PLATFORM" ||
+        die "unsupported GCC build combination: $HOST_PLATFORM -> $TARGET_PLATFORM"
 }
 
 need_common_tools() {
@@ -1214,18 +1202,9 @@ write_gcc_info() {
         "package.component=$COMPONENT"
         "package.tool=$TOOL"
         "package.version=$PACKAGE_VERSION"
-        "package.revision=$REVISION"
-        "package.mode=self-contained"
-        "package.formats=$(package_formats_csv "$HOST_PLATFORM")"
         "platform.host=$HOST_PLATFORM"
         "platform.target=$TARGET_PLATFORM"
-        "platform.host_triple=$HOST_TRIPLE"
-        "platform.target_triple=$TARGET_TRIPLE"
-        "platform.family=$TARGET_FAMILY"
-        "platform.runtime=$TARGET_RUNTIME"
-        "platform.thread_model=$THREAD_MODEL"
         "build.environment=$BUILD_ENVIRONMENT"
-        "build.source_policy=$SOURCE_POLICY"
         "source.primary.name=gcc"
         "source.primary.version=$VERSION"
         "source.primary.url=$GCC_SOURCE_URL"
@@ -1264,6 +1243,10 @@ write_gcc_info() {
         "features.sanitizers=$includes_sanitizers"
         "features.sysroot=$has_sysroot"
     )
+
+    if [ -n "$REVISION" ]; then
+        info+=("package.revision_reason=$REVISION_REASON")
+    fi
 
     if is_windows_platform "$TARGET_PLATFORM"; then
         info+=(
@@ -1335,7 +1318,7 @@ main() {
     if is_linux_platform "$HOST_PLATFORM"; then
         export CUP_REPRODUCIBLE_ARCHIVES=true
     fi
-    create_packages "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION" "$PREFIX"
+    create_packages "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION" "$PREFIX" "$REVISION_REASON"
 }
 
 main "$@"

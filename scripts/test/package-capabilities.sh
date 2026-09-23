@@ -128,9 +128,9 @@ show_info_contract() {
     echo ""
     echo "[package identity]"
     for key in \
-        package.component package.tool package.version package.revision package.mode package.formats \
-        platform.host platform.target platform.host_triple platform.target_triple \
-        source.primary.name source.primary.version source.primary.sha256 build.environment build.source_policy; do
+        package.component package.tool package.version package.revision_reason \
+        platform.host platform.target \
+        source.primary.name source.primary.version source.primary.sha256 build.environment; do
         value="$(info_value "$key")"
         if [ -n "$value" ]; then
             printf '  %-30s %s\n' "$key" "$value"
@@ -176,9 +176,6 @@ show_gcc() {
     local tool_naming
 
     target_triple="$(info_value config.gcc_target_triple)"
-    if [ -z "$target_triple" ]; then
-        target_triple="$(info_value platform.target_triple)"
-    fi
     tool_naming="$(info_value config.tool_naming)"
 
     echo ""
@@ -235,9 +232,9 @@ show_ld() {
     mark_exe ld.bfd entry.ld_bfd
 
     if [ "$(info_value config.cross)" = "true" ]; then
-        target_triple="$(info_value platform.target_triple)"
-        if [ -n "$target_triple" ]; then
-            mark_exe "$target_triple-ld" entry.target_ld
+        target_entry="$(info_value entry.target_ld)"
+        if [ -n "$target_entry" ]; then
+            mark_exe "${target_entry##*/}" entry.target_ld
         fi
     fi
 

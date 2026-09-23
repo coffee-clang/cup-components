@@ -57,11 +57,6 @@ require_info contents.binutils_toolbox false
 require_info contents.gcc_lto_plugin false
 require_info features.link true
 
-if grep -q '^package.revision=' "$root/info.txt"; then
-    echo "revisionless GNU ld package unexpectedly declares package.revision" >&2
-    exit 1
-fi
-
 case "$TARGET_PLATFORM" in
     linux-x64|linux-arm64)
         require_info features.link_elf true
@@ -93,10 +88,12 @@ printf 'cup-gnu-ld-functional-payload\n' > "$tmpdir/payload.bin"
 }
 file "$tmpdir/linked.o"
 
+target_entry=""
 if [ "$HOST_PLATFORM" != "$TARGET_PLATFORM" ]; then
-    target_triple="$(info_value platform.target_triple)"
-    target_entry="bin/$target_triple-ld"
-    require_info entry.target_ld "$target_entry"
+    target_entry="$(info_value entry.target_ld)" || {
+        echo 'cross GNU ld package is missing entry.target_ld metadata' >&2
+        exit 1
+    }
     [ -x "$root/$target_entry" ] || {
         echo "cross GNU ld package is missing target-prefixed entry: $target_entry" >&2
         exit 1
@@ -114,8 +111,8 @@ for path in "$root/bin"/*; do
     name="$(basename "$path")"
     case "$name" in
         ld|ld.bfd) ;;
-        "$(info_value platform.target_triple)-ld")
-            [ "$HOST_PLATFORM" != "$TARGET_PLATFORM" ] || {
+        "${target_entry##*/}")
+            [ -n "$target_entry" ] || {
                 echo "native GNU ld package contains unnecessary target-prefixed linker: $name" >&2
                 exit 1
             }

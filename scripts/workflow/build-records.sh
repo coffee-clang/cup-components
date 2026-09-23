@@ -94,12 +94,13 @@ init_records() {
         printf 'platform.host=%s\n' "$host_platform"
         printf 'platform.target=%s\n' "$target_platform"
         printf 'source.sha256.requested=%s\n' "${CUP_SOURCE_SHA256:-}"
+        printf 'package.revision.requested=%s\n' "${CUP_PACKAGE_REVISION:-}"
+        printf 'package.revision_reason.requested=%s\n' "${CUP_PACKAGE_REVISION_REASON:-}"
         if [ "$tool" = gcc ]; then
-            printf 'gcc.binutils.version.requested=%s\n' "${CUP_GCC_BINUTILS_VERSION:-stable}"
+            printf 'gcc.binutils.version.requested=%s\n' "${CUP_GCC_BINUTILS_VERSION:-default}"
             printf 'gcc.binutils.source.sha256.requested=%s\n' "${CUP_BINUTILS_SOURCE_SHA256:-}"
-            printf 'gcc.mingw-w64.version.requested=%s\n' "${CUP_GCC_MINGW_VERSION:-stable}"
+            printf 'gcc.mingw-w64.version.requested=%s\n' "${CUP_GCC_MINGW_VERSION:-default}"
             printf 'gcc.mingw-w64.source.sha256.requested=%s\n' "${CUP_MINGW_SOURCE_SHA256:-}"
-            printf 'gcc.revision.requested=%s\n' "${CUP_GCC_REVISION:-stable}"
         fi
         printf 'repository.commit=%s\n' "${commit:-unknown}"
         printf 'repository.tree=%s\n' "${tree:-unknown}"
@@ -207,7 +208,7 @@ finalize_records() {
     } >> "$RECORDS_DIR/run.txt"
 
     copy_if_present "$CUP_OUT_DIR/release.env" "$RECORDS_DIR/release.env"
-    copy_if_present "$CUP_OUT_DIR/SHA256SUMS" "$RECORDS_DIR/SHA256SUMS"
+    copy_if_present "$CUP_OUT_DIR/publication.txt" "$RECORDS_DIR/publication.txt"
     collect_package_metadata
     collect_build_diagnostics
     write_output_inventory

@@ -4,33 +4,37 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: GCC version, or stable
+        description: GCC version, or default
         required: true
-        default: stable
+        default: default
       source_sha256:
         description: Optional SHA-256 to verify the selected source archive
         required: false
         default: ''
       binutils_version:
-        description: Bundled Binutils version, or stable
+        description: Bundled Binutils version, or default
         required: true
-        default: stable
+        default: default
       binutils_source_sha256:
         description: Optional SHA-256 to verify the selected Binutils source archive
         required: false
         default: ''
       mingw_version:
-        description: MinGW-w64 version for Windows targets, or stable
+        description: MinGW-w64 version for Windows targets, or default
         required: true
-        default: stable
+        default: default
       mingw_source_sha256:
         description: Optional SHA-256 to verify the selected MinGW-w64 source archive
         required: false
         default: ''
       revision:
-        description: GCC package revision, or stable for the default stable composition
-        required: true
-        default: stable
+        description: Optional package revision number
+        required: false
+        default: ''
+      revision_reason:
+        description: Required short reason when revision is set
+        required: false
+        default: ''
       host_platform:
         description: Host platform
         required: true
@@ -57,6 +61,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   select:
@@ -66,6 +71,9 @@ jobs:
       host_platform: ${{ steps.platform.outputs.host_platform }}
       target_platform: ${{ steps.platform.outputs.target_platform }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
       - id: platform
         shell: bash
         run: |
@@ -81,20 +89,15 @@ jobs:
               ;;
           esac
 
-          case "$host_platform:$target_platform" in
-            linux-x64:linux-x64|linux-x64:windows-x64|linux-arm64:linux-arm64|windows-x64:windows-x64) ;;
-            *)
-              echo "Unsupported GCC build combination: $host_platform -> $target_platform" >&2
-              exit 1
-              ;;
-          esac
+          source scripts/package/package-common.sh
+          package_scope_is_supported gcc "$host_platform" "$target_platform" || {
+            echo "Unsupported GCC build combination: $host_platform -> $target_platform" >&2
+            exit 1
+          }
 
           echo "runner=$runner" >> "$GITHUB_OUTPUT"
           echo "host_platform=$host_platform" >> "$GITHUB_OUTPUT"
           echo "target_platform=$target_platform" >> "$GITHUB_OUTPUT"
-
-      - name: Checkout for package-contract verification
-        uses: actions/checkout@v5
 
       - name: Verify common package contract
         shell: bash
@@ -102,7 +105,13 @@ jobs:
 
   build:
     needs: select
+    concurrency:
+      group: ${{ inputs.publish && format('package-gcc-{0}-{1}-{2}-{3}', inputs.version, inputs.revision, needs.select.outputs.host_platform, needs.select.outputs.target_platform) || format('package-gcc-run-{0}', github.run_id) }}
+      queue: max
     runs-on: ${{ needs.select.outputs.runner }}
+    env:
+      CUP_PACKAGE_REVISION: ${{ inputs.revision }}
+      CUP_PACKAGE_REVISION_REASON: ${{ inputs.revision_reason }}
 
     steps:
       - name: Checkout
@@ -116,7 +125,6 @@ jobs:
           CUP_BINUTILS_SOURCE_SHA256: ${{ inputs.binutils_source_sha256 }}
           CUP_GCC_MINGW_VERSION: ${{ inputs.mingw_version }}
           CUP_MINGW_SOURCE_SHA256: ${{ inputs.mingw_source_sha256 }}
-          CUP_GCC_REVISION: ${{ inputs.revision }}
         run: |
           bash scripts/workflow/build-records.sh init \
             gcc \
@@ -134,11 +142,12 @@ jobs:
           docker run --rm \
             -e CUP_BUILD_ENVIRONMENT=docker-toolchain \
             -e CUP_SOURCE_SHA256="${{ inputs.source_sha256 }}" \
+            -e CUP_PACKAGE_REVISION \
+            -e CUP_PACKAGE_REVISION_REASON \
             -e CUP_GCC_BINUTILS_VERSION="${{ inputs.binutils_version }}" \
             -e CUP_BINUTILS_SOURCE_SHA256="${{ inputs.binutils_source_sha256 }}" \
             -e CUP_GCC_MINGW_VERSION="${{ inputs.mingw_version }}" \
             -e CUP_MINGW_SOURCE_SHA256="${{ inputs.mingw_source_sha256 }}" \
-            -e CUP_GCC_REVISION="${{ inputs.revision }}" \
             -v "$PWD:/workspace" \
             -w /workspace \
             cup-toolchain-builder \
@@ -182,7 +191,6 @@ jobs:
           export CUP_BINUTILS_SOURCE_SHA256="${{ inputs.binutils_source_sha256 }}"
           export CUP_GCC_MINGW_VERSION="${{ inputs.mingw_version }}"
           export CUP_MINGW_SOURCE_SHA256="${{ inputs.mingw_source_sha256 }}"
-          export CUP_GCC_REVISION="${{ inputs.revision }}"
           bash scripts/workflow/build-records.sh run build \
             bash scripts/build/build-gcc.sh \
               "${{ inputs.version }}" \
@@ -201,12 +209,6 @@ jobs:
           source dist/release.env
           echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
 
-      - name: Verify package checksums before upload
-        shell: bash
-        run: |
-          bash scripts/workflow/build-records.sh run checksum-verification \
-            bash -c 'source dist/release.env; source scripts/package/package-common.sh; verify_package_checksums "$package_base" "$GITHUB_WORKSPACE/dist"'
-
       - name: Upload workflow artifact
         if: ${{ !inputs.publish }}
         uses: actions/upload-artifact@v6
@@ -216,50 +218,36 @@ jobs:
             dist/*.tar.xz
             dist/*.tar.gz
             dist/*.zip
-            dist/SHA256SUMS
+            dist/publication.txt
             dist/release.env
           if-no-files-found: error
           compression-level: 1
 
-      - name: Publish GitHub Release
+      - name: Publish immutable package
         if: ${{ inputs.publish }}
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          tag="${{ steps.release.outputs.tag }}"
-          repo="${GITHUB_REPOSITORY}"
+          expected_ref="refs/heads/${{ github.event.repository.default_branch }}"
+          [ "$GITHUB_REF" = "$expected_ref" ] || {
+            echo "Package publication is allowed only from $expected_ref" >&2
+            exit 1
+          }
+          bash scripts/publish/publish-package.sh \
+            "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$GITHUB_WORKSPACE/dist"
 
-          release_lookup="$(mktemp)"
-          release_status=0
-          gh api --include "repos/$repo/releases/tags/$tag" >"$release_lookup" 2>&1 || release_status=$?
+      - name: Queue catalog update
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh workflow run update-catalog.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "${{ github.event.repository.default_branch }}" \
+            -f package_tag="${{ steps.release.outputs.tag }}"
 
-          if [ "$release_status" -eq 0 ]; then
-            rm -f "$release_lookup"
-            gh release delete "$tag" --repo "$repo" --cleanup-tag --yes
-          else
-            http_status="$(sed -n 's#^HTTP/[^ ]* \([0-9][0-9][0-9]\).*#\1#p' "$release_lookup")"
-            if [ "$http_status" != 404 ]; then
-              cat "$release_lookup" >&2
-              rm -f "$release_lookup"
-              exit "$release_status"
-            fi
-            rm -f "$release_lookup"
-
-            tag_status=0
-            git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 || tag_status=$?
-            case "$tag_status" in
-              0) git push origin ":refs/tags/$tag" ;;
-              2) ;;
-              *) echo "failed to determine remote tag state for '$tag'" >&2; exit "$tag_status" ;;
-            esac
-          fi
-
-          gh release create "$tag" dist/*.tar.xz dist/*.tar.gz dist/*.zip dist/SHA256SUMS \
-            --repo "$repo" \
-            --target "$GITHUB_SHA" \
-            --title "$tag" \
-            --notes "Automated cup component build for $tag"
       - name: Finalize build records
         if: ${{ always() }}
         shell: bash

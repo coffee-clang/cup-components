@@ -17,7 +17,7 @@ The repository produces GCC, GNU `ld`, GDB, Clang, `clang-format`, `clang-tidy`,
 Supported package hosts are Linux x64/ARM64, Windows x64 and macOS x64/ARM64.
 Availability is tool-specific. GCC and standalone GNU `ld` additionally support the
 deliberate Linux x64 → Windows x64 cross-target package. The exact matrix is in the
-[specification](docs/SPECIFICATION.md#supported-combinations).
+[specification](docs/SPECIFICATION.md#platforms).
 
 ## Package model
 
@@ -32,11 +32,19 @@ Every finished package contains:
 - `info.txt`, which records package identity, entries, capabilities and provenance;
 - `manifest.txt`, which describes the exact finalized package tree;
 - equivalent `tar.xz`, `tar.gz` and `zip` archives;
-- archive digests in `SHA256SUMS`.
+- `publication.txt`, which authenticates the common manifest and all three archive bytes.
 
 Packages are designed to be relocatable and self-contained with respect to non-system
 host runtime dependencies. Platform-owned prerequisites that cannot belong to the
 package are explicit metadata rather than hidden build-runner assumptions.
+
+## Publication and catalog
+
+A qualified package is published once under a readable immutable `pkg-...` release tag.
+Successful package publication then queues the serialized catalog workflow, which updates
+`catalog/catalog.cfg` and the rolling `catalog` release. The initial empty revision-0
+catalog and exceptional recovery can be published manually; normal package visibility is
+automatic.
 
 ## Building and validating
 
@@ -70,6 +78,7 @@ Start with the [documentation index](docs/INDEX.md). In particular:
 - [Concepts](docs/CONCEPTS.md) explains the producer model and terminology;
 - [Specification](docs/SPECIFICATION.md) defines supported identities and version rules;
 - [Packages](docs/PACKAGES.md) defines the shared package format and runtime closure;
+- [Catalog](docs/CATALOG.md) explains availability activation, automatic publication and recovery;
 - [Tool packages](docs/TOOLS.md) explains what each producer deliberately ships;
 - [Build](docs/BUILD.md) and [Dependencies](docs/DEPENDENCIES.md) cover build operation;
 - [Testing](docs/TESTING.md) explains repository and native package validation;
@@ -78,6 +87,7 @@ Start with the [documentation index](docs/INDEX.md). In particular:
 ## Project boundary
 
 `cup-components` owns source acquisition, tool builds, package composition, package
-metadata, archive production, native package validation and optional publication.
-CUP owns catalog selection, package download/admission, installation, local state,
-defaults, command wrappers and recovery on the user's machine.
+metadata, archive production, native package validation, immutable package publication and
+the concrete catalog source/publishing pipeline. CUP consumes published catalog snapshots
+and owns package download/admission, installation, local state, defaults, command wrappers
+and recovery on the user's machine.

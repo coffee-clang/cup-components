@@ -20,10 +20,14 @@ The GCC package composition is:
 selected GCC
 selected Binutils
 selected MinGW-w64 for Windows targets
-selected package revision
+optional package revision
 ```
 
-The component versions are independent workflow selections rather than a GCC-version mapping. The revision identifies the selected logical composition. Current defaults and the revision rule are documented in [GCC composition revision](SPECIFICATION.md#gcc-composition-revision).
+The component versions are independent producer selections rather than a GCC-version
+mapping. Package revision has the same meaning as for every other tool: another
+intentional immutable distribution of the same upstream GCC version. A composition
+change can be the reason for a revision, but the selected Binutils/MinGW-w64 versions
+remain explicit metadata. See [Package version and revision](SPECIFICATION.md#package-version-and-revision).
 
 ### Native Linux GCC
 

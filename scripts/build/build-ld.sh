@@ -8,12 +8,12 @@ source "$REPO_ROOT/scripts/package/package-common.sh"
 usage() {
     cat <<USAGE
 Usage:
-  $0 <version|stable> <host_platform> <target_platform>
+  $0 <version|default> <host_platform> <target_platform>
 
 Examples:
-  $0 stable linux-x64 linux-x64
-  $0 stable linux-x64 windows-x64
-  $0 stable windows-x64 windows-x64
+  $0 default linux-x64 linux-x64
+  $0 default linux-x64 windows-x64
+  $0 default windows-x64 windows-x64
 USAGE
 }
 
@@ -25,28 +25,27 @@ fi
 REQUESTED_VERSION="$1"
 HOST_PLATFORM="$2"
 TARGET_PLATFORM="$3"
-REVISION=""
+REVISION="${CUP_PACKAGE_REVISION:-}"
+REVISION_REASON="${CUP_PACKAGE_REVISION_REASON:-}"
+package_revision_inputs_validate "$REVISION" "$REVISION_REASON"
 
 TOOL="ld"
 COMPONENT="linker"
 VERSION="$(resolve_version ld "$REQUESTED_VERSION")"
-PACKAGE_VERSION="$(package_version_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
+PACKAGE_VERSION="$(package_version_name "$VERSION" "$REVISION")"
 HOST_TRIPLE="$(platform_triple "$HOST_PLATFORM")"
 TARGET_TRIPLE="$(platform_triple "$TARGET_PLATFORM")"
 TARGET_FAMILY="$(platform_family "$TARGET_PLATFORM")"
 TARGET_RUNTIME="$(platform_runtime "$TARGET_PLATFORM")"
 THREAD_MODEL="$(platform_thread_model "$TARGET_PLATFORM")"
 BUILD_ENVIRONMENT="${CUP_BUILD_ENVIRONMENT:-manual}"
-SOURCE_POLICY="source-release"
 SOURCE_URL="$(source_url_binutils "$VERSION")"
 UPSTREAM_PREFIX="$CUP_STAGE_DIR/ld-$PACKAGE_VERSION-$HOST_PLATFORM-$TARGET_PLATFORM-upstream"
 PREFIX="$CUP_STAGE_DIR/$(package_base_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
 
 validate_platforms() {
-    case "$HOST_PLATFORM:$TARGET_PLATFORM" in
-        linux-x64:linux-x64|linux-arm64:linux-arm64|windows-x64:windows-x64|linux-x64:windows-x64) ;;
-        *) die "unsupported GNU ld build combination: $HOST_PLATFORM -> $TARGET_PLATFORM" ;;
-    esac
+    package_scope_is_supported ld "$HOST_PLATFORM" "$TARGET_PLATFORM" ||
+        die "unsupported GNU ld build combination: $HOST_PLATFORM -> $TARGET_PLATFORM"
 }
 
 need_common_tools() {
@@ -234,17 +233,9 @@ write_ld_info() {
         "package.component=$COMPONENT"
         "package.tool=$TOOL"
         "package.version=$PACKAGE_VERSION"
-        "package.mode=self-contained"
-        "package.formats=$(package_formats_csv "$HOST_PLATFORM")"
         "platform.host=$HOST_PLATFORM"
         "platform.target=$TARGET_PLATFORM"
-        "platform.host_triple=$HOST_TRIPLE"
-        "platform.target_triple=$TARGET_TRIPLE"
-        "platform.family=$TARGET_FAMILY"
-        "platform.runtime=$TARGET_RUNTIME"
-        "platform.thread_model=$THREAD_MODEL"
         "build.environment=$BUILD_ENVIRONMENT"
-        "build.source_policy=$SOURCE_POLICY"
         "source.primary.name=binutils"
         "source.primary.version=$VERSION"
         "source.primary.url=$SOURCE_URL"
@@ -264,6 +255,10 @@ write_ld_info() {
         "features.link_elf=$link_elf"
         "features.link_pe=$link_pe"
     )
+
+    if [ -n "$REVISION" ]; then
+        info+=("package.revision_reason=$REVISION_REASON")
+    fi
 
     write_info_file "$PREFIX" "${info[@]}"
 }
@@ -288,7 +283,7 @@ main() {
     prepare_ld_package_seed
     write_ld_info
     prepare_windows_ld_runtime
-    create_packages "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION" "$PREFIX"
+    create_packages "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION" "$PREFIX" "$REVISION_REASON"
 }
 
 main "$@"

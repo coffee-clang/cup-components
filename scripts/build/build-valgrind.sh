@@ -8,11 +8,11 @@ source "$REPO_ROOT/scripts/package/package-common.sh"
 usage() {
     cat <<USAGE
 Usage:
-  $0 <version|stable> <platform>
+  $0 <version|default> <platform>
 
 Examples:
-  $0 stable linux-x64
-  $0 stable linux-arm64
+  $0 default linux-x64
+  $0 default linux-arm64
 USAGE
 }
 
@@ -24,19 +24,20 @@ fi
 REQUESTED_VERSION="$1"
 HOST_PLATFORM="$2"
 TARGET_PLATFORM="$HOST_PLATFORM"
-REVISION=""
+REVISION="${CUP_PACKAGE_REVISION:-}"
+REVISION_REASON="${CUP_PACKAGE_REVISION_REASON:-}"
+package_revision_inputs_validate "$REVISION" "$REVISION_REASON"
 
 TOOL="valgrind"
 COMPONENT="analyzer"
 VERSION="$(resolve_version valgrind "$REQUESTED_VERSION")"
-PACKAGE_VERSION="$(package_version_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
+PACKAGE_VERSION="$(package_version_name "$VERSION" "$REVISION")"
 HOST_TRIPLE="$(platform_triple "$HOST_PLATFORM")"
 TARGET_TRIPLE="$(platform_triple "$TARGET_PLATFORM")"
 TARGET_FAMILY="$(platform_family "$TARGET_PLATFORM")"
 TARGET_RUNTIME="$(platform_runtime "$TARGET_PLATFORM")"
 THREAD_MODEL="$(platform_thread_model "$TARGET_PLATFORM")"
 BUILD_ENVIRONMENT="${CUP_BUILD_ENVIRONMENT:-manual}"
-SOURCE_POLICY="source-release"
 SOURCE_URL="$(source_url_valgrind "$VERSION")"
 PREFIX="$CUP_STAGE_DIR/$(package_base_name "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION")"
 VALGRIND_ONLY64BIT=false
@@ -56,17 +57,8 @@ need_valgrind_tools() {
 
 
 validate_platforms() {
-    case "$HOST_PLATFORM" in
-        linux-x64|linux-arm64)
-            ;;
-        *)
-            die "Valgrind packages are currently supported only for linux-x64 and linux-arm64 hosts"
-            ;;
-    esac
-
-    if [ "$TARGET_PLATFORM" != "$HOST_PLATFORM" ]; then
-        die "Valgrind packages use only a host platform and do not support cross builds: $HOST_PLATFORM -> $TARGET_PLATFORM"
-    fi
+    package_scope_is_supported valgrind "$HOST_PLATFORM" "$TARGET_PLATFORM" ||
+        die "Valgrind packages are currently supported only for linux-x64 and linux-arm64 hosts"
 }
 
 find_valgrind_runtime_dir() {
@@ -289,17 +281,9 @@ write_valgrind_info() {
         "package.component=$COMPONENT"
         "package.tool=$TOOL"
         "package.version=$PACKAGE_VERSION"
-        "package.mode=self-contained"
-        "package.formats=$(package_formats_csv "$HOST_PLATFORM")"
         "platform.host=$HOST_PLATFORM"
         "platform.target=$TARGET_PLATFORM"
-        "platform.host_triple=$HOST_TRIPLE"
-        "platform.target_triple=$TARGET_TRIPLE"
-        "platform.family=$TARGET_FAMILY"
-        "platform.runtime=$TARGET_RUNTIME"
-        "platform.thread_model=$THREAD_MODEL"
         "build.environment=$BUILD_ENVIRONMENT"
-        "build.source_policy=$SOURCE_POLICY"
         "source.primary.name=valgrind"
         "source.primary.version=$VERSION"
         "source.primary.url=$SOURCE_URL"
@@ -316,6 +300,10 @@ write_valgrind_info() {
         "contents.vgdb=$has_vgdb"
         "features.memcheck=$has_memcheck"
     )
+
+    if [ -n "$REVISION" ]; then
+        info+=("package.revision_reason=$REVISION_REASON")
+    fi
 
     if [ "$has_exp_bbv" = true ]; then
         info+=("contents.experimental_tools=exp-bbv")
@@ -338,7 +326,7 @@ main() {
 
     build_valgrind "$source_dir"
     write_valgrind_info
-    create_packages "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION" "$PREFIX"
+    create_packages "$TOOL" "$VERSION" "$HOST_PLATFORM" "$TARGET_PLATFORM" "$REVISION" "$PREFIX" "$REVISION_REASON"
 }
 
 main "$@"

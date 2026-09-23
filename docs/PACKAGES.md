@@ -130,30 +130,39 @@ The common required fields are:
 package.component
 package.tool
 package.version
-package.mode
-package.formats
 platform.host
 platform.target
-platform.host_triple
-platform.target_triple
-platform.family
-platform.runtime
-platform.thread_model
 build.environment
-build.source_policy
 source.primary.name
 source.primary.version
 source.primary.url
 source.primary.sha256
 ```
 
-GCC also carries `package.revision` because GCC is revision-bearing. Revisionless packages do not write that key.
+At least one `entry.*` field must declare a public package entry. A revision-bearing
+package additionally carries:
 
-A GCC package must also record the composition identified by that revision. Native GCC packages require `bundle.components=binutils` plus `bundle.binutils.version`, `bundle.binutils.url` and `bundle.binutils.sha256`. Windows-target GCC packages require `bundle.components=binutils,mingw-w64` and the corresponding `bundle.mingw-w64.*` fields as well. Component versions are numeric dotted versions and component digests are lowercase SHA-256 values. This metadata records the composition actually selected for the build; it is not reconstructed from the GCC version.
+```text
+package.revision_reason=<short single-line explanation>
+```
 
-`package.mode` must be `self-contained`. `package.formats` records all three output formats in the producer's host order: `tar.xz,tar.gz,zip` on POSIX and `zip,tar.xz,tar.gz` on Windows. `source.primary.sha256` must be a lowercase 64-character SHA-256 value.
+The revision number is not duplicated as another field because it is already encoded in
+`package.version`. Revisionless packages do not contain `package.revision_reason`.
 
-The primary source metadata is also bound to the package being finalized. `source.primary.name` must identify the upstream project for the selected tool, and `source.primary.version` must equal the selected main package version. GCC therefore records the GCC source version without the package `revN` suffix; GNU ld records Binutils; every LLVM-family package records `llvm-project`.
+`source.primary.version` is always the upstream/base version and never contains the CUP
+`-revN` suffix. The finalizer checks that source identity against the selected producer
+family. `source.primary.sha256` is a lowercase 64-character SHA-256 value.
+
+GCC records its real bundled composition independently of the package revision. Native
+GCC packages require `bundle.components=binutils` and the corresponding Binutils
+version/URL/SHA fields. Windows-target GCC packages additionally record MinGW-w64. A
+composition change can justify a new package revision, but the bundle versions remain
+explicit metadata rather than being encoded in `revN`.
+
+Fields that merely repeat producer invariants or transport state are deliberately not
+stored in the extracted package. Archive formats belong to `publication.txt`; platform
+triples are derived/producer-specific configuration when needed; self-containment is a
+package contract rather than a `package.mode` flag.
 
 When Python becomes package-owned runtime payload, `info.txt` also records:
 
@@ -278,7 +287,7 @@ Hardlink inode sharing does not have to be identical between formats.
 
 POSIX ZIP packages preserve admitted symbolic links instead of replacing them with the target bytes. Windows packages do not contain symbolic links.
 
-After all three archives are created, the finalizer writes `SHA256SUMS` with exactly one SHA-256 entry for each archive. The workflow verifies that checksum file after the tool-specific product test and before upload or publication.
+After all three archives are created and semantically verified, the finalizer writes `publication.txt`. It records the common `manifest_sha256` plus one SHA-256 for each archive in fixed `tar.xz`, `tar.gz`, `zip` order. The descriptor is validated before publication and becomes one of the four managed assets of the immutable package release.
 
 ## Self-contained package boundary
 

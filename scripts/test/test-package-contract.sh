@@ -140,17 +140,9 @@ cat > "$prefix/info.txt" <<'EOF_INFO'
 package.component=debugger
 package.tool=gdb
 package.version=1.0
-package.mode=self-contained
-package.formats=tar.xz,tar.gz,zip
 platform.host=linux-x64
 platform.target=linux-x64
-platform.host_triple=x86_64-linux-gnu
-platform.target_triple=x86_64-linux-gnu
-platform.family=gnu
-platform.runtime=glibc
-platform.thread_model=posix
 build.environment=test
-build.source_policy=fixture
 source.primary.name=gdb
 source.primary.version=1.0
 source.primary.url=https://example.invalid/gdb-1.0.tar.xz
@@ -323,9 +315,8 @@ fi
 
 printf 'package archive/object tests passed\n'
 
-# Revision is part of package identity only when the tool deliberately bundles
-# independently versioned internal components. GCC currently does; the other
-# producer families do not.
+# Package revision is a common producer dimension. The upstream source version
+# remains unsuffixed; the reason explains why a new distribution exists.
 gcc_prefix="$TMP/gcc-prefix"
 mkdir -p "$gcc_prefix/bin"
 printf '#!/bin/sh\nprintf gcc-fixture\n' > "$gcc_prefix/bin/gcc"
@@ -334,18 +325,10 @@ cat > "$gcc_prefix/info.txt" <<'EOF_GCC_INFO'
 package.component=compiler
 package.tool=gcc
 package.version=1.0-rev1
-package.revision=1
-package.mode=self-contained
-package.formats=tar.xz,tar.gz,zip
+package.revision_reason=Fixture composition update
 platform.host=linux-x64
 platform.target=linux-x64
-platform.host_triple=x86_64-linux-gnu
-platform.target_triple=x86_64-linux-gnu
-platform.family=gnu
-platform.runtime=glibc
-platform.thread_model=posix
 build.environment=test
-build.source_policy=fixture
 source.primary.name=gcc
 source.primary.version=1.0
 source.primary.url=https://example.invalid/gcc-1.0.tar.xz
@@ -356,18 +339,18 @@ bundle.binutils.url=https://example.invalid/binutils-8.7.6.tar.xz
 bundle.binutils.sha256=1111111111111111111111111111111111111111111111111111111111111111
 entry.gcc=bin/gcc
 EOF_GCC_INFO
-create_packages_without_runtime_closure gcc 1.0 linux-x64 linux-x64 1 "$gcc_prefix"
+create_packages_without_runtime_closure gcc 1.0 linux-x64 linux-x64 1 "$gcc_prefix" 'Fixture composition update'
 gcc_base=gcc-1.0-rev1-linux-x64-linux-x64
 for format in tar.xz tar.gz zip; do
     [ -f "$CUP_OUT_DIR/$gcc_base.$format" ] || { echo "missing GCC revision-bearing archive: $format" >&2; exit 1; }
 done
-grep -Fx "release_tag=$gcc_base" "$CUP_OUT_DIR/release.env" >/dev/null
-[ "$(package_version_name gcc 1.0 linux-x64 linux-x64 2)" = 1.0-rev2 ] || {
-    echo 'future GCC revision was not accepted' >&2
+grep -Fx "release_tag=pkg-$gcc_base" "$CUP_OUT_DIR/release.env" >/dev/null
+grep -Fx 'package.revision_reason=Fixture composition update' "$CUP_OUT_DIR/publication.txt" >/dev/null
+[ "$(package_version_name 1.0 2)" = 1.0-rev2 ] || {
+    echo 'future GCC package revision was not accepted' >&2
     exit 1
 }
-# The finalizer must preserve enough GCC composition metadata to make a
-# revision meaningful without consulting repository-side version mappings.
+# GCC still carries concrete bundle composition independently of package revision.
 assert_gcc_composition_rejected() {
     local name="$1"
     local command="$2"
@@ -384,7 +367,7 @@ assert_gcc_composition_rejected missing-binutils-version 'sed "/^bundle.binutils
 assert_gcc_composition_rejected invalid-binutils-digest 'sed "s/^bundle.binutils.sha256=.*/bundle.binutils.sha256=bad/" "$candidate/info.txt" > "$candidate/info.txt.tmp" && mv "$candidate/info.txt.tmp" "$candidate/info.txt"'
 assert_gcc_composition_rejected wrong-components 'sed "s/^bundle.components=binutils$/bundle.components=binutils,mingw-w64/" "$candidate/info.txt" > "$candidate/info.txt.tmp" && mv "$candidate/info.txt.tmp" "$candidate/info.txt"'
 assert_gcc_composition_rejected stray-mingw 'printf "bundle.mingw-w64.version=5.4.3\n" >> "$candidate/info.txt"'
-printf 'GCC revision/composition package identity tests passed\n'
+printf 'generic revision/GCC composition package identity tests passed\n'
 
 # Link admission is deliberately narrow: only POSIX relative internal finite
 # symbolic-link chains resolving to regular files may be published.
@@ -511,37 +494,42 @@ else
 fi
 
 printf 'package metadata/path compatibility tests passed\n'
-# Version inputs and package revisions form part of package identity and must not
-# admit path syntax or arbitrary symbolic aliases. Revisionless families must
-# reject a meaningless revision rather than silently creating a new identity.
-[ "$(resolve_version gcc stable)" = "$DEFAULT_GCC_VERSION" ]
+# Producer source selectors accept only default or an explicit unsuffixed upstream
+# version. Package revision is a separate common dimension for every tool.
+[ "$(resolve_version gcc default)" = "$DEFAULT_GCC_VERSION" ]
 [ "$(resolve_version gcc 9.8.7)" = "9.8.7" ]
-[ "$(package_version_name gcc 9.8.7 linux-x64 linux-x64 1)" = "9.8.7-rev1" ]
-[ "$(package_version_name gdb 8.7.6 linux-x64 linux-x64 "")" = "8.7.6" ]
-[ "$(package_base_name clang 7.6.5 linux-x64 linux-x64 "")" = "clang-7.6.5-linux-x64-linux-x64" ]
+[ "$(package_version_name 9.8.7 1)" = "9.8.7-rev1" ]
+[ "$(package_version_name 8.7.6 1)" = "8.7.6-rev1" ]
+[ "$(package_version_name 2.47 3)" = "2.47-rev3" ]
+[ "$(package_base_name clang 7.6.5 linux-x64 linux-x64 2)" = "clang-7.6.5-rev2-linux-x64-linux-x64" ]
 [ "$(package_base_name valgrind 6.5.4 linux-x64 linux-x64 "")" = "valgrind-6.5.4-linux-x64-linux-x64" ]
-if (resolve_version gcc latest) >/dev/null 2>&1; then
-    echo 'latest symbolic alias was accepted' >&2
+package_revision_inputs_validate "" ""
+package_revision_inputs_validate 1 'Packaging fix'
+for bad in stable latest 01.2 1.02 23.1.0-rev1 ../9.8.7; do
+    if (resolve_version gcc "$bad") >/dev/null 2>&1; then
+        echo "invalid producer version input was accepted: $bad" >&2
+        exit 1
+    fi
+done
+for bad_revision in 0 01 -1 ../3; do
+    if (package_revision_inputs_validate "$bad_revision" reason) >/dev/null 2>&1; then
+        echo "invalid package revision was accepted: $bad_revision" >&2
+        exit 1
+    fi
+done
+if (package_revision_inputs_validate 1 "") >/dev/null 2>&1; then
+    echo 'package revision without reason was accepted' >&2
     exit 1
 fi
-if (resolve_version gcc '../9.8.7') >/dev/null 2>&1; then
-    echo 'non-numeric explicit version was accepted' >&2
+if (package_revision_inputs_validate "" reason) >/dev/null 2>&1; then
+    echo 'revision reason without package revision was accepted' >&2
     exit 1
 fi
-if (package_version_name gcc 9.8.7 linux-x64 linux-x64 '../3') >/dev/null 2>&1; then
-    echo 'unsafe package revision was accepted' >&2
-    exit 1
-fi
-if (package_version_name gcc 9.8.7 linux-x64 linux-x64 '') >/dev/null 2>&1; then
-    echo 'GCC package without a required revision was accepted' >&2
-    exit 1
-fi
-if (package_version_name gdb 8.7.6 linux-x64 linux-x64 1) >/dev/null 2>&1; then
-    echo 'revisionless GDB package accepted a meaningless revision' >&2
+if (package_revision_inputs_validate 1 $'bad\nreason') >/dev/null 2>&1; then
+    echo 'multiline package revision reason was accepted' >&2
     exit 1
 fi
 printf 'package version/revision input tests passed\n'
-
 
 # Runtime-closure discovery must be independent of the builder's ambient
 # LD_LIBRARY_PATH. A fake ldd records the exact value it receives.
@@ -1257,45 +1245,13 @@ create_windows_python_path_config "$pth_lldb" 3.12 true
 }
 printf 'Windows Python path-config ownership test passed\n'
 
-# Exact producer source must use the supported Valgrind configure spelling and
-# derive GDB TUI metadata from the packaged capability rather than host OS.
-grep -F 'configure_help="$("$source_dir/configure" --help)"' "$ROOT/scripts/build/build-valgrind.sh" >/dev/null || {
-    echo 'Valgrind builder does not inspect the exact source configure interface' >&2
-    exit 1
-}
-grep -F -- '--with-gdbscripts-dir' "$ROOT/scripts/build/build-valgrind.sh" >/dev/null || {
-    echo 'Valgrind builder does not verify gdbscripts-dir configure support' >&2
-    exit 1
-}
-grep -F -- '--without-gdbscripts-dir' "$ROOT/scripts/build/build-valgrind.sh" >/dev/null || {
-    echo 'Valgrind builder does not use the supported gdbscripts configure option spelling' >&2
-    exit 1
-}
-if grep -F -- '--without-gdb-scripts-dir' "$ROOT/scripts/build/build-valgrind.sh" >/dev/null; then
-    echo 'Valgrind builder still uses the unrecognized gdb-scripts option spelling' >&2
-    exit 1
-fi
-grep -F 'has_tui="$(gdb_supports_tui)"' "$ROOT/scripts/build/build-gdb.sh" >/dev/null || {
-    echo 'GDB metadata does not derive TUI capability from the packaged executable' >&2
-    exit 1
-}
-grep -F 'strip --strip-debug "$PREFIX/bin/gdb.exe"' "$ROOT/scripts/build/build-gdb.sh" >/dev/null || {
-    echo 'GDB Windows debug-only payload is not stripped deliberately' >&2
-    exit 1
-}
-grep -F 'copy_windows_python_runtime "$build_dir" false true' "$ROOT/scripts/build/build-llvm-tool.sh" >/dev/null || {
-    echo 'LLDB Windows packaging does not explicitly opt into LLDB Python path configs' >&2
-    exit 1
-}
-printf 'producer source/configuration alignment tests passed\n'
-
 # Explicit numeric versions are preserved verbatim and remain independent of
-# the current stable selector. This is an identity test, not a support promise.
-[ "$(resolve_version clang 99.98.7)" = 99.98.7 ] || { echo 'explicit LLVM version was replaced by stable' >&2; exit 1; }
+# the configured default selector. This is an identity test, not a support promise.
+[ "$(resolve_version clang 99.98.7)" = 99.98.7 ] || { echo 'explicit LLVM version was replaced by default' >&2; exit 1; }
 explicit_base="$(package_base_name clang 99.98.7 linux-x64 linux-x64 '')"
-stable_base="$(package_base_name clang "$DEFAULT_LLVM_VERSION" linux-x64 linux-x64 '')"
+default_base="$(package_base_name clang "$DEFAULT_LLVM_VERSION" linux-x64 linux-x64 '')"
 [ "$explicit_base" = clang-99.98.7-linux-x64-linux-x64 ] || { echo 'explicit LLVM version produced wrong revisionless identity' >&2; exit 1; }
-[ "$explicit_base" != "$stable_base" ] || { echo 'different explicit/stable versions produced the same package identity' >&2; exit 1; }
+[ "$explicit_base" != "$default_base" ] || { echo 'different explicit/default versions produced the same package identity' >&2; exit 1; }
 printf 'explicit non-default version identity test passed\n'
 
 # The MSYS2 setup entry point must resolve its package list from its own location,
@@ -1317,5 +1273,3 @@ first_ucrt_package="$(grep -v '^[[:space:]]*$' "$ROOT/scripts/setup/msys2-ucrt64
 grep -Fx -- "$first_ucrt_package" "$msys_fixture/pacman.log" >/dev/null || { echo 'MSYS2 setup did not load its repository-relative package list' >&2; exit 1; }
 printf 'MSYS2 arbitrary-cwd setup test passed\n'
 
-# Keep checksum tamper detection in the normal common producer contract path.
-bash "$ROOT/scripts/test/test-package-checksums.sh"

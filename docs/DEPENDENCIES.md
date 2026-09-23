@@ -19,10 +19,10 @@ see [Tool packages](TOOLS.md).
 | Operating-system runtime | runtime deliberately supplied by the host OS | no |
 | Builder environment | Docker/MSYS2/Homebrew/runner configuration | no |
 
-GCC is currently the only revision-bearing family because its logical composition owns
-independently selected Binutils and, for Windows targets, MinGW-w64. Ordinary build or
-runtime dependencies do not create package revisions. See
-[Specification](SPECIFICATION.md#gcc-composition-revision).
+Package revision is a common producer dimension and is independent of dependency type.
+GCC additionally owns independently selected Binutils and, for Windows targets,
+MinGW-w64 as logical package composition. Those concrete component versions remain
+explicit metadata; they do not create a second revision scheme.
 
 LLVM subprojects such as Clang, LLD, LLDB, compiler-rt, libc++, libc++abi, libunwind and
 clang-tools-extra all come from the same selected LLVM project release and therefore do
@@ -98,10 +98,10 @@ LLVM project
 Valgrind
 ```
 
-Family URL construction and stable source digests are owned by
+Family URL construction and configured default-source digests are owned by
 `scripts/package/package-common.sh`. The source cache is `.cup-build/src`.
 
-The current stable archives are digest-verified before extraction. An explicit numeric
+Configured default archives are digest-verified before extraction. An explicit numeric
 version remains a valid build input even when the repository has no built-in digest for
 it; the caller can supply `source_sha256` to bind that build to exact source bytes. See
 [Build](BUILD.md#source-acquisition).

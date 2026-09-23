@@ -1,197 +1,117 @@
 # Testing
 
-`cup-components` uses different test layers for different claims. Common package tests prove shared format/mechanism rules, tool-specific tests exercise the finished native package, and repository regressions protect producer decisions that can be tested without rebuilding an upstream tool. No one layer substitutes for the others.
+`cup-components` separates package-format checks from native product qualification.
+A synthetic fixture can prove a parser, archive or closure rule; it cannot prove that a
+real compiler, debugger or linker built for a platform actually works there. Conversely,
+a successful tool invocation does not prove that the archive, metadata and publication
+contract are correct.
 
-The model is summarized in [Concepts](CONCEPTS.md#validation-layers); this page defines the concrete test surfaces.
+The test surfaces therefore follow the same ownership split as the producer itself:
+shared package mechanics are checked once, finished packages are tested natively, and a
+small regression suite covers repository behavior that can be exercised without an
+upstream rebuild.
 
-## Common package validation
+## Shared package contract
 
-The shared package contract is checked by:
+The common contract is exercised with:
 
-```text
-scripts/test/test-package-contract.sh
+```sh
+bash scripts/test/test-package-contract.sh
 ```
 
-Each GitHub workflow runs this script once in its Ubuntu `select` job, before any host-specific build job starts. The synthetic fixtures therefore validate the abstract package contract in one predictable POSIX environment; finished-package checks remain native to the platform that built the tool.
+It uses small package trees and locally generated objects to exercise common behavior:
+source acquisition and failure propagation, package identity/revision validation,
+`info.txt` and `manifest.txt`, path/object admission, archive equivalence, runtime
+closure/search-path rewriting, package-owned Python support and other mechanisms owned by
+`scripts/package/package-common.sh`.
 
-It checks common behavior such as:
+These fixtures intentionally stop at the common boundary. Tool-specific payload choices
+and platform behavior belong to the native package checks.
 
-- source acquisition, bounded transfer-error retry configuration and failure cleanup/propagation;
-- package identity and revision rules;
-- `info.txt` field/path compatibility;
-- `manifest.txt` format and regeneration;
-- final archive stored-mode and object parity across `tar.xz`, `tar.gz` and `zip`;
-- checksum generation and checksum tamper rejection;
-- admissible POSIX symbolic-link behavior;
-- rejection of unsupported filesystem objects and unsafe paths;
-- runtime-dependency name safety;
-- recursive Linux and macOS runtime closure;
-- runtime search-path rewriting;
-- package-owned versus operating-system-provided runtime dependency rules;
-- Windows Python path-file ownership;
-- removal of non-relocatable libtool metadata;
-- explicit numeric version preservation.
+## Native package qualification
 
-Some common checks use small local package trees or locally built sample objects so one mechanism can be checked without building an entire compiler or debugger first.
+Every completed package is tested on the host that produced it before publication.
+The family entry points are:
 
-## Tool-specific package checks
-
-After a real package is built and finalized, the corresponding tool package script checks the actual result.
-
-| Package family | POSIX check | Windows check |
+| Family | POSIX | Windows |
 | --- | --- | --- |
 | GCC | `scripts/test/test-gcc.sh` | `scripts/test/test-gcc-windows.ps1` |
 | GNU ld | `scripts/test/test-ld.sh` | `scripts/test/test-ld-windows.ps1` |
 | GDB | `scripts/test/test-gdb.sh` | `scripts/test/test-gdb-windows.ps1` |
 | LLVM family | `scripts/test/test-llvm-tool.sh` | `scripts/test/test-llvm-tool-windows.ps1` |
-| Valgrind | `scripts/test/test-valgrind.sh` | not applicable |
+| Valgrind | `scripts/test/test-valgrind.sh` | — |
 
-The Windows scripts are executed with PowerShell. POSIX scripts are executed with Bash.
+These checks execute the package rather than infer capability from builder text. They
+verify the public entries and the behavior promised by `features.*`, plus the ownership
+and relocation properties needed by that tool.
 
-### GCC checks
+GCC compiles and links representative C/C++ programs, exercises LTO and declared runtime
+features, checks target-prefixed tools/sysroots where applicable, and validates physical
+relocation. GNU ld performs a real native-format link and checks the deliberately small
+standalone linker surface. GDB exercises Python/TUI/runtime ownership, packaged
+`gdbserver` remote debugging and relocation.
 
-Depending on host and target, the GCC package check validates capabilities such as:
+The LLVM-family check selects the relevant product contract. Clang performs real
+compile/link/runtime probes, package-owned resource and compiler-runtime checks, LTO and
+relocation. LLD performs a real ELF, PE/COFF or Mach-O link through the public frontend
+for its host. LLDB exercises Python, target/process behavior, DAP and package-owned remote
+server behavior where declared. clangd runs a bounded LSP session with a real compilation
+database; clang-format checks formatting/style behavior; clang-tidy exercises its Python
+helpers and source-rewrite path. Valgrind exercises the public wrapper, Memcheck, retained
+runtime tooling, client headers/pkg-config metadata and relocation.
 
-- required compiler entries;
-- C and C++ compilation;
-- target-prefixed compiler/binutils entries;
-- package-owned `lto-wrapper` and its adjacent LTO plugin, followed by a real LTO compile/link;
-- OpenMP;
-- pthread support;
-- native Linux sanitizer use when declared;
-- Windows-target PE output;
-- target sysroot/runtime availability;
-- physical package relocation.
+A relocation test makes the previous package root physically unavailable before the
+relocated command is accepted. This prevents a package from passing while still reading
+its original staging path.
 
-The native Linux relocation checks move the package through multiple physical roots and ensure previous roots are unavailable, so a successful command cannot silently depend on the original staging location.
+## Diagnostic capability reporters
 
-### GNU ld checks
+`scripts/test/package-capabilities.sh` and
+`scripts/test/package-capabilities-windows.ps1` summarize `info.txt` together with the
+physical package. They are diagnostic helpers shared by native checks, not an independent
+source of product truth. Tool-specific qualification decides pass/fail from actual
+package behavior.
 
-The GNU ld package check verifies:
+## Repository regressions
 
-- linker metadata and public entry paths;
-- ELF or PE target capability according to the selected target;
-- creation of a real linker output;
-- the absence of unrelated Binutils command payload;
-- target-prefixed linker behavior for the cross-target package.
+Run the local regression suite with:
 
-### GDB checks
-
-The GDB package check verifies:
-
-- `gdb` and `gdbserver` package entries;
-- required Python support;
-- GDB data-directory ownership;
-- package-owned Python identity and runtime-version provenance;
-- isolated Python search paths where the platform provides packaged path configuration;
-- declared debugger feature metadata;
-- packaged `gdbserver` remote debugging over loopback;
-- relocation through multiple physical package roots, including paths with spaces and with the previous root unavailable.
-
-### LLVM-family checks
-
-`scripts/test/test-llvm-tool.sh` selects checks according to the requested package.
-
-Clang checks include:
-
-- `clang` and `clang++` plus package-owned resource-directory discovery;
-- C and C++ compilation, linking and execution through the platform's declared driver defaults, with separate syntax/compile checks on Windows;
-- packaged libc++ as an explicit capability, including STL, exceptions and RTTI; on Windows the default `clang++` path must use the packaged C++ runtime/unwinder without falling back to target-side libc++ DLLs;
-- LTO through packaged LLD where declared;
-- compiler-rt builtins resolving to a package-owned archive at both the original and relocated roots;
-- sanitizer and profile-runtime behavior where declared;
-- relocation with the previous package root unavailable, including paths with spaces where the platform path exercises them;
-- Windows MinGW sysroot/driver behavior and macOS SDK/minimum-OS/signature requirements.
-
-LLD performs a real native-format link through the only public frontend retained for the package host: ELF through `ld.lld` on Linux, PE/COFF through `lld-link.exe` on Windows and Mach-O through `ld64.lld` on macOS. The Windows test reads the PE header and requires `IMAGE_FILE_MACHINE_AMD64`, then exercises embedded manifest handling. Non-native upstream frontends are absent from the final package.
-
-LLDB checks include:
-
-- required `lldb` and `lldb-dap` public commands, plus `lldb-server` on Linux/Windows; macOS additionally requires the private `lldb-argdumper` helper used by the normal `run` path, while Linux/Windows reject it as unused package payload;
-- package-owned Python interpreter/module identity and runtime-version provenance;
-- isolated package-owned Python search paths on Windows;
-- Clang resource-directory ownership;
-- target creation, breakpoint and symbol lookup behavior;
-- process launch whenever `features.process_launch=true`; an environment restriction is a test failure rather than a package PASS;
-- a real `lldb-dap` protocol session when DAP is declared; protocol waits are deadline-bounded and treat EOF/closed transport as termination instead of spinning until the deadline;
-- on Linux and Windows, a real packaged `lldb-server platform` session when remote debugging is declared, with native remote launch, breakpoint/expression and bounded cleanup;
-- on macOS, the declared system `debugserver` prerequisite is exercised by real local process launch/DAP rather than by a separate filesystem lookup proxy, while remote debugging remains undeclared;
-- POSIX relocation with previous roots unavailable; the final path contains real spaces and repeats the local process-launch check after relocation.
-
-clangd checks the language-server entry, matching package-owned Clang resource headers, compile-command consumption and a real bounded LSP initialize/document-symbol/shutdown session. The source consumes a representative builtin header (`stddef.h`), the LSP test requires a valid compilation database to be loaded and rejects fallback parsing, and the full behavior is repeated after relocation. `clangd-indexer` is deliberately absent; background indexing is not a separate CUP capability claim.
-
-clang-format checks formatting behavior, style-file discovery, dry-run failure semantics and relocation; `git-clang-format`, Python solely used by that helper and compiler builtin resource headers are deliberately absent from the standalone self-contained package.
-
-clang-tidy checks the main analyzer command, package-owned Clang resources, real `run-clang-tidy`/`clang-tidy-diff` operations and a real `clang-tidy --export-fixes` -> `clang-apply-replacements` source modification. Its package-owned Python runtime and relocation with previous roots unavailable are also exercised.
-
-### Valgrind checks
-
-The Valgrind package check verifies:
-
-- the public relocatable wrapper;
-- installed core tool capabilities reported by metadata;
-- `vgdb` when present;
-- public client headers and representative client-request compilation;
-- relocatable `valgrind.pc` metadata;
-- operation after moving the package root;
-- absence of intentionally excluded development/internal payload.
-
-## Package capability reporters
-
-Two helper scripts read `info.txt` and inspect package content in a platform-appropriate way:
-
-```text
-scripts/test/package-capabilities.sh
-scripts/test/package-capabilities-windows.ps1
-```
-
-They are shared by tool-specific checks so package metadata and physical package capabilities are interpreted consistently. `entry.*` is interpreted as an exact package-relative command path, while boolean `features.*`/boolean content probes are compared with executable presence; the reporters remain diagnostic and the tool-specific acceptance tests own pass/fail behavior.
-
-## Archive checksum check
-
-The finished archive checksums can also be verified directly with:
-
-```text
-scripts/test/test-package-checksums.sh <package-base> <output-directory>
-```
-
-The workflows additionally call the common checksum verifier before upload or publication.
-
-## Repository regression suite
-
-Focused repository checks live in:
-
-```text
-tests/regression/
-```
-
-Run all of them with:
-
-```text
+```sh
 tests/run.sh
 ```
 
-The runner discovers the regression scripts in that directory rather than maintaining a second filename inventory in the documentation. Together they protect repository-level decisions that are easy to break without noticing, including:
+The suite is intentionally small. It exercises observable repository behavior that does
+not require rebuilding a full upstream tool: supported-input rejection before build
+state is created, build-record lifecycle/provenance, a synthetic end-to-end GNU ld build/finalizer,
+source acquisition/retry behavior, package-owned Python pruning, deterministic archives,
+and package/catalog publication semantics including revision ordering, immutability,
+idempotence and rolling-catalog recovery.
 
-- package ownership, pruning and tool-specific final-scope rules;
-- source acquisition, version input handling and workflow/producer interfaces;
-- manifest/object semantics, archive reproducibility and package-capability reporting;
-- Python runtime selection and exclusion of development or ambient interpreter material;
-- LLVM resource/runtime ownership and the distinction between build-time utilities and final package surface.
+Regression tests must not freeze implementation spelling. They do not grep builders or
+workflow YAML for particular lines, extract private functions by name, or mutate source
+text to prove that another test notices the edit. A property that is only meaningful on
+a finished tool package belongs to the native package qualification instead.
 
-These checks deliberately target repository contracts and synthetic edge cases. They complement, rather than replace, the native tool-package tests described above.
+## Publication checks
 
-## What local checks cannot establish
+The package publisher validates `publication.txt`, the three archive digests and the
+managed release-asset set before a draft becomes public. The catalog activation path
+then proves the already-published package release and copies only its concrete discovery
+data into `catalog.cfg`.
 
-A repository-level check can validate syntax, package algorithms and local fixtures, but it cannot replace a native upstream build that has not actually been run.
+Catalog tests use a local GitHub fixture to exercise the public scripts as a lifecycle:
+immutable package publication, idempotent re-entry, semantic version ordering, derived
+`stable`, source-catalog revision changes, rolling publication anti-rollback and
+post-delete/pre-rename recovery.
 
-For example:
+## Evidence boundary
 
-- a Linux machine cannot establish that a Windows-native compiler build completes successfully;
-- parsing a PowerShell file does not establish that every Windows executable behaves correctly;
-- a local Mach-O mechanism check does not replace a complete macOS LLVM build;
-- a supported explicit upstream version can still expose a build-system change that requires a family-specific adjustment.
+Local checks can establish shell/package algorithms and synthetic failure behavior, but
+they cannot substitute for the final native matrix. In particular, parsing PowerShell is
+not Windows execution, Linux fixtures do not qualify Mach-O behavior, and a synthetic
+builder cannot prove that a new upstream release still configures and builds successfully.
 
-For that reason, the GitHub workflows combine repository checks with actual platform builds and then run the tool-specific package checks on the produced package.
-
-When a workflow fails, [Build records](BUILD_RECORDS.md) describes the information saved for diagnosing the failed phase.
+For that reason the release evidence is the combination of repository checks, the actual
+platform build, the final package contract and the tool-specific native qualification.
+[Build records](BUILD_RECORDS.md) describes the diagnostic evidence retained when one of
+those phases fails.

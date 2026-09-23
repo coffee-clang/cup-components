@@ -22,11 +22,9 @@ if [ -z "${CUP_JOBS:-}" ]; then
 fi
 
 DEFAULT_GCC_VERSION="16.2.0"
-# GCC composition defaults are independent of standalone GNU ld; change the
-# component defaults and GCC revision together when that composition changes.
+# GCC composition defaults are independent of the package revision.
 DEFAULT_GCC_BINUTILS_VERSION="2.47"
 DEFAULT_GCC_MINGW_VERSION="14.0.0"
-DEFAULT_GCC_REVISION="1"
 DEFAULT_GDB_VERSION="17.2"
 DEFAULT_BINUTILS_VERSION="2.47"
 DEFAULT_LLVM_VERSION="23.1.0"
@@ -53,15 +51,50 @@ make_dirs() {
 }
 
 numeric_version_is_valid() {
-    [[ "$1" =~ ^[0-9]+([.][0-9]+)*$ ]]
+    [[ "$1" =~ ^(0|[1-9][0-9]*)([.](0|[1-9][0-9]*))*$ ]]
 }
 
 package_revision_is_valid() {
     [[ "$1" =~ ^[1-9][0-9]*$ ]]
 }
 
-package_revision_is_applicable() {
-    [ "$1" = gcc ]
+package_version_is_valid() {
+    local value="$1" base
+
+    if [[ "$value" =~ ^(.+)-rev([1-9][0-9]*)$ ]]; then
+        base="${BASH_REMATCH[1]}"
+    else
+        base="$value"
+    fi
+    numeric_version_is_valid "$base"
+}
+
+package_version_has_revision() {
+    [[ "$1" =~ -rev[1-9][0-9]*$ ]]
+}
+
+package_revision_reason_is_valid() {
+    local reason="$1"
+
+    [ -n "$reason" ] || return 1
+    [ "${#reason}" -le 256 ] || return 1
+    [[ "$reason" != *$'\n'* && "$reason" != *$'\r'* && "$reason" != *$'\t'* ]] || return 1
+    LC_ALL=C grep -q '[[:cntrl:]]' <<<"$reason" && return 1
+    return 0
+}
+
+package_revision_inputs_validate() {
+    local revision="$1"
+    local reason="$2"
+
+    if [ -z "$revision" ]; then
+        [ -z "$reason" ] || die "package revision reason requires a package revision"
+        return 0
+    fi
+
+    package_revision_is_valid "$revision" || die "invalid package revision: $revision"
+    package_revision_reason_is_valid "$reason" ||
+        die "package revision requires a non-empty single-line reason of at most 256 characters"
 }
 
 resolve_version() {
@@ -69,9 +102,12 @@ resolve_version() {
     local requested="$2"
     local resolved
 
-    if [ "$requested" != "stable" ]; then
-        [ "$requested" != "latest" ] ||
-            die "unsupported symbolic version: latest; use stable or an explicit numeric version"
+    if [ "$requested" != "default" ]; then
+        case "$requested" in
+            stable|latest)
+                die "unsupported symbolic version: $requested; use default or an explicit numeric version"
+                ;;
+        esac
         numeric_version_is_valid "$requested" ||
             die "invalid explicit version: $requested; expected a numeric dotted version"
         printf '%s\n' "$requested"
@@ -89,7 +125,7 @@ resolve_version() {
     esac
 
     numeric_version_is_valid "$resolved" ||
-        die "invalid configured stable version for $tool: $resolved"
+        die "invalid configured default version for $tool: $resolved"
     printf '%s\n' "$resolved"
 }
 
@@ -163,19 +199,14 @@ is_cross_build() {
 }
 
 package_version_name() {
-    local tool="$1"
-    local version="$2"
-    local host_platform="$3"
-    local target_platform="$4"
-    local revision="$5"
+    local version="$1"
+    local revision="$2"
 
-    : "$host_platform" "$target_platform"
     numeric_version_is_valid "$version" || die "invalid package version: $version"
-    if package_revision_is_applicable "$tool"; then
+    if [ -n "$revision" ]; then
         package_revision_is_valid "$revision" || die "invalid package revision: $revision"
         printf '%s-rev%s\n' "$version" "$revision"
     else
-        [ -z "$revision" ] || die "package revision is not applicable to tool: $tool"
         printf '%s\n' "$version"
     fi
 }
@@ -193,6 +224,24 @@ package_component_for_tool() {
     esac
 }
 
+package_scope_is_supported() {
+    local tool="$1" host_platform="$2" target_platform="$3"
+
+    case "$tool:$host_platform:$target_platform" in
+        gcc:linux-x64:linux-x64|gcc:linux-arm64:linux-arm64|gcc:windows-x64:windows-x64|gcc:linux-x64:windows-x64) return 0 ;;
+        ld:linux-x64:linux-x64|ld:linux-arm64:linux-arm64|ld:windows-x64:windows-x64|ld:linux-x64:windows-x64) return 0 ;;
+        gdb:linux-x64:linux-x64|gdb:linux-arm64:linux-arm64|gdb:windows-x64:windows-x64) return 0 ;;
+        valgrind:linux-x64:linux-x64|valgrind:linux-arm64:linux-arm64) return 0 ;;
+        clang:linux-x64:linux-x64|clang:linux-arm64:linux-arm64|clang:windows-x64:windows-x64|clang:macos-x64:macos-x64|clang:macos-arm64:macos-arm64) return 0 ;;
+        lld:linux-x64:linux-x64|lld:linux-arm64:linux-arm64|lld:windows-x64:windows-x64|lld:macos-x64:macos-x64|lld:macos-arm64:macos-arm64) return 0 ;;
+        lldb:linux-x64:linux-x64|lldb:linux-arm64:linux-arm64|lldb:windows-x64:windows-x64|lldb:macos-x64:macos-x64|lldb:macos-arm64:macos-arm64) return 0 ;;
+        clangd:linux-x64:linux-x64|clangd:linux-arm64:linux-arm64|clangd:windows-x64:windows-x64|clangd:macos-x64:macos-x64|clangd:macos-arm64:macos-arm64) return 0 ;;
+        clang-format:linux-x64:linux-x64|clang-format:linux-arm64:linux-arm64|clang-format:windows-x64:windows-x64|clang-format:macos-x64:macos-x64|clang-format:macos-arm64:macos-arm64) return 0 ;;
+        clang-tidy:linux-x64:linux-x64|clang-tidy:linux-arm64:linux-arm64|clang-tidy:windows-x64:windows-x64|clang-tidy:macos-x64:macos-x64|clang-tidy:macos-arm64:macos-arm64) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 package_base_name() {
     local tool="$1"
     local version="$2"
@@ -201,13 +250,13 @@ package_base_name() {
     local revision="$5"
 
     local package_version
-    package_version="$(package_version_name "$tool" "$version" "$host_platform" "$target_platform" "$revision")"
+    package_version="$(package_version_name "$version" "$revision")"
 
     printf '%s-%s-%s-%s\n' "$tool" "$package_version" "$host_platform" "$target_platform"
 }
 
 release_tag_for_package() {
-    package_base_name "$@"
+    printf 'pkg-%s\n' "$(package_base_name "$@")"
 }
 
 source_url_gcc() {
@@ -659,10 +708,6 @@ package_formats_for_host() {
     fi
 }
 
-package_formats_csv() {
-    local host_platform="$1"
-    package_formats_for_host "$host_platform" | paste -sd, -
-}
 
 
 linux_runtime_library_name_is_base() {
@@ -2196,14 +2241,12 @@ package_verify_info_contract() {
     local value
     local entry_count=0
 
-    package_version="$(package_version_name "$tool" "$version" "$host_platform" "$target_platform" "$revision")"
+    package_version="$(package_version_name "$version" "$revision")"
     package_verify_info_structure "$info"
 
     for key in \
-        package.component package.tool package.version package.mode package.formats \
-        platform.host platform.target platform.host_triple platform.target_triple \
-        platform.family platform.runtime platform.thread_model \
-        build.environment build.source_policy \
+        package.component package.tool package.version \
+        platform.host platform.target build.environment \
         source.primary.name source.primary.version source.primary.url source.primary.sha256; do
         package_info_value "$info" "$key" >/dev/null || die "info.txt is missing required field: $key"
     done
@@ -2214,13 +2257,16 @@ package_verify_info_contract() {
         die "info.txt package.tool does not match package identity"
     [ "$(package_info_value "$info" package.version)" = "$package_version" ] ||
         die "info.txt package.version does not match package identity"
-    if package_revision_is_applicable "$tool"; then
-        package_info_value "$info" package.revision >/dev/null ||
-            die "info.txt is missing required field: package.revision"
-        [ "$(package_info_value "$info" package.revision)" = "$revision" ] ||
-            die "info.txt package.revision does not match package identity"
-    elif package_info_value "$info" package.revision >/dev/null 2>&1; then
-        die "info.txt package.revision is not valid for a revisionless package"
+    if [ -n "$revision" ]; then
+        package_info_value "$info" package.revision_reason >/dev/null ||
+            die "info.txt is missing required field: package.revision_reason"
+        package_revision_reason_is_valid "$(package_info_value "$info" package.revision_reason)" ||
+            die "info.txt package.revision_reason is invalid"
+    elif package_info_value "$info" package.revision_reason >/dev/null 2>&1; then
+        die "info.txt package.revision_reason is not valid for a revisionless package"
+    fi
+    if package_info_value "$info" package.revision >/dev/null 2>&1; then
+        die "info.txt must not duplicate the revision number outside package.version"
     fi
     [[ "$(package_info_value "$info" source.primary.sha256)" =~ ^[0-9a-f]{64}$ ]] ||
         die "info.txt source.primary.sha256 is not a lowercase SHA-256"
@@ -2281,24 +2327,10 @@ package_verify_info_contract() {
         fi
     fi
 
-    [ "$(package_info_value "$info" package.mode)" = "self-contained" ] ||
-        die "info.txt package.mode must be self-contained"
-    [ "$(package_info_value "$info" package.formats)" = "$(package_formats_csv "$host_platform")" ] ||
-        die "info.txt package.formats does not match host package formats"
     [ "$(package_info_value "$info" platform.host)" = "$host_platform" ] ||
         die "info.txt platform.host does not match package identity"
     [ "$(package_info_value "$info" platform.target)" = "$target_platform" ] ||
         die "info.txt platform.target does not match package identity"
-    [ "$(package_info_value "$info" platform.host_triple)" = "$(platform_triple "$host_platform")" ] ||
-        die "info.txt platform.host_triple does not match package identity"
-    [ "$(package_info_value "$info" platform.target_triple)" = "$(platform_triple "$target_platform")" ] ||
-        die "info.txt platform.target_triple does not match package identity"
-    [ "$(package_info_value "$info" platform.family)" = "$(platform_family "$target_platform")" ] ||
-        die "info.txt platform.family does not match package identity"
-    [ "$(package_info_value "$info" platform.runtime)" = "$(platform_runtime "$target_platform")" ] ||
-        die "info.txt platform.runtime does not match package identity"
-    [ "$(package_info_value "$info" platform.thread_model)" = "$(platform_thread_model "$target_platform")" ] ||
-        die "info.txt platform.thread_model does not match package identity"
 
     while IFS='=' read -r key value; do
         case "$key" in
@@ -2656,65 +2688,115 @@ verify_package_archives() {
     done
 }
 
-generate_package_checksums() {
-    local package_base="$1"
-    local output_dir="$2"
-    local checksum_file="$output_dir/SHA256SUMS"
-    local temporary="$checksum_file.tmp.$$"
-    local digest
-    local file
-    local format
+publication_descriptor_validate() {
+    local descriptor="$1"
+    local seen line key value bytes component tool version reason host target manifest
+    local format sha index
 
-    : > "$temporary"
-    for format in tar.xz tar.gz zip; do
-        file="$output_dir/$package_base.$format"
-        [ -f "$file" ] || die "missing package archive for checksum: $file"
-        if command -v sha256sum >/dev/null 2>&1; then
-            (cd "$output_dir" && sha256sum "$package_base.$format") >> "$temporary"
-        elif command -v shasum >/dev/null 2>&1; then
-            digest="$(shasum -a 256 "$file" | awk '{print $1}')"
-            printf '%s  %s\n' "$digest" "$package_base.$format" >> "$temporary"
-        else
-            rm -f "$temporary"
-            die "sha256sum or shasum is required to package checksums"
+    [ -f "$descriptor" ] || die "publication descriptor is missing: $descriptor"
+    bytes="$(wc -c < "$descriptor" | tr -d '[:space:]')"
+    [ "$bytes" -gt 0 ] || die "publication descriptor is empty: $descriptor"
+    [ "$bytes" -le 4194304 ] || die 'publication descriptor exceeds 4 MiB'
+    [ "$(tail -c 1 "$descriptor" | wc -l | tr -d '[:space:]')" = 1 ] ||
+        die 'publication descriptor must end with a newline'
+
+    seen="$(mktemp)"
+    : > "$seen"
+    while IFS= read -r line; do
+        [ "${#line}" -lt 512 ] || { rm -f "$seen"; die 'publication descriptor line is too long'; }
+        case "$line" in *=*) ;; *) rm -f "$seen"; die "invalid publication descriptor line: $line" ;; esac
+        key="${line%%=*}"
+        value="${line#*=}"
+        [ -n "$key" ] && [ -n "$value" ] || { rm -f "$seen"; die "empty publication descriptor field: $key"; }
+        case "$key" in
+            format|package.component|package.tool|package.version|package.revision_reason|platform.host|platform.target|manifest_sha256|artifact.[012].format|artifact.[012].sha256) ;;
+            *) rm -f "$seen"; die "unknown publication descriptor field: $key" ;;
+        esac
+        if grep -Fx -- "$key" "$seen" >/dev/null 2>&1; then
+            rm -f "$seen"; die "duplicate publication descriptor field: $key"
         fi
-    done
-    LC_ALL=C sort -k2,2 "$temporary" > "$checksum_file"
-    rm -f "$temporary"
-    log "created checksums: $checksum_file"
-}
+        printf '%s\n' "$key" >> "$seen"
+    done < "$descriptor"
+    rm -f "$seen"
 
-verify_package_checksums() {
-    local package_base="$1"
-    local output_dir="$2"
-    local checksum_file="$output_dir/SHA256SUMS"
-    local expected_count=3
-    local actual
-    local actual_count
-    local digest
-    local format
-    local name
+    [ "$(package_info_value "$descriptor" format)" = 1 ] || die 'unsupported publication descriptor format'
+    component="$(package_info_value "$descriptor" package.component)" || die 'publication descriptor lacks package.component'
+    tool="$(package_info_value "$descriptor" package.tool)" || die 'publication descriptor lacks package.tool'
+    version="$(package_info_value "$descriptor" package.version)" || die 'publication descriptor lacks package.version'
+    host="$(package_info_value "$descriptor" platform.host)" || die 'publication descriptor lacks platform.host'
+    target="$(package_info_value "$descriptor" platform.target)" || die 'publication descriptor lacks platform.target'
+    manifest="$(package_info_value "$descriptor" manifest_sha256)" || die 'publication descriptor lacks manifest_sha256'
+    reason="$(package_info_value "$descriptor" package.revision_reason 2>/dev/null || true)"
 
-    [ -f "$checksum_file" ] || die "missing checksum file: $checksum_file"
-    actual_count="$(wc -l < "$checksum_file" | tr -d '[:space:]')"
-    [ "$actual_count" -eq "$expected_count" ] ||
-        die "SHA256SUMS must contain exactly $expected_count records"
+    [ "$(package_component_for_tool "$tool" 2>/dev/null || true)" = "$component" ] ||
+        die "publication component/tool mismatch: $component/$tool"
+    case "$host" in linux-x64|linux-arm64|windows-x64|macos-x64|macos-arm64) ;; *) die "invalid publication host: $host" ;; esac
+    case "$target" in linux-x64|linux-arm64|windows-x64|macos-x64|macos-arm64) ;; *) die "invalid publication target: $target" ;; esac
+    [[ "$manifest" =~ ^[0-9a-f]{64}$ ]] || die 'invalid publication manifest SHA-256'
 
-    if command -v sha256sum >/dev/null 2>&1; then
-        (cd "$output_dir" && sha256sum -c SHA256SUMS) ||
-            die "package checksum verification failed"
+    package_version_is_valid "$version" || die "invalid publication package version: $version"
+    if package_version_has_revision "$version"; then
+        package_revision_reason_is_valid "$reason" || die 'revision-bearing publication requires a valid package.revision_reason'
     else
-        while read -r digest name; do
-            name="${name#\*}"
-            actual="$(shasum -a 256 "$output_dir/$name" | awk '{print $1}')"
-            [ "$actual" = "$digest" ] || die "checksum mismatch: $name"
-        done < "$checksum_file"
+        [ -z "$reason" ] || die 'revisionless publication must not contain package.revision_reason'
     fi
 
-    for format in tar.xz tar.gz zip; do
-        grep -Eq "^[0-9a-f]{64} [ *]${package_base//./\\.}\\.${format//./\\.}$" \
-            "$checksum_file" || die "missing checksum entry for $package_base.$format"
+    for index in 0 1 2; do
+        case "$index" in 0) format=tar.xz ;; 1) format=tar.gz ;; 2) format=zip ;; esac
+        [ "$(package_info_value "$descriptor" "artifact.$index.format")" = "$format" ] ||
+            die "publication artifact $index must be $format"
+        sha="$(package_info_value "$descriptor" "artifact.$index.sha256")" ||
+            die "publication descriptor lacks artifact.$index.sha256"
+        [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || die "invalid publication artifact SHA-256: $index"
     done
+}
+
+publication_descriptor_generate() {
+    local tool="$1"
+    local version="$2"
+    local host_platform="$3"
+    local target_platform="$4"
+    local revision="$5"
+    local revision_reason="$6"
+    local package_base="$7"
+    local package_root="$8"
+    local output_dir="$9"
+    local descriptor="$output_dir/publication.txt"
+    local temporary="$descriptor.tmp.$$"
+    local package_version
+    local component
+    local manifest_sha
+    local format
+    local index=0
+    local archive
+
+    package_revision_inputs_validate "$revision" "$revision_reason"
+    package_version="$(package_version_name "$version" "$revision")"
+    component="$(package_component_for_tool "$tool")" || die "cannot derive component for publication: $tool"
+    manifest_sha="$(sha256_file "$package_root/manifest.txt")"
+
+    {
+        printf 'format=1\n'
+        printf 'package.component=%s\n' "$component"
+        printf 'package.tool=%s\n' "$tool"
+        printf 'package.version=%s\n' "$package_version"
+        if [ -n "$revision" ]; then
+            printf 'package.revision_reason=%s\n' "$revision_reason"
+        fi
+        printf 'platform.host=%s\n' "$host_platform"
+        printf 'platform.target=%s\n' "$target_platform"
+        printf 'manifest_sha256=%s\n' "$manifest_sha"
+        for format in tar.xz tar.gz zip; do
+            archive="$output_dir/$package_base.$format"
+            [ -f "$archive" ] || die "missing archive for publication descriptor: $archive"
+            printf 'artifact.%s.format=%s\n' "$index" "$format"
+            printf 'artifact.%s.sha256=%s\n' "$index" "$(sha256_file "$archive")"
+            index=$((index + 1))
+        done
+    } > "$temporary"
+    mv "$temporary" "$descriptor"
+    chmod 0644 "$descriptor"
+    publication_descriptor_validate "$descriptor"
 }
 
 package_prune_nonrelocatable_libtool_archives() {
@@ -2737,12 +2819,14 @@ create_packages() {
     local target_platform="$4"
     local revision="$5"
     local prefix="$6"
+    local revision_reason="${7:-}"
 
     local package_base
     local release_tag
     local package_root
     local format
 
+    package_revision_inputs_validate "$revision" "$revision_reason"
     package_base="$(package_base_name "$tool" "$version" "$host_platform" "$target_platform" "$revision")"
     release_tag="$(release_tag_for_package "$tool" "$version" "$host_platform" "$target_platform" "$revision")"
     package_root="$CUP_WORK_DIR/package-root/$package_base"
@@ -2768,7 +2852,9 @@ create_packages() {
         create_archive "$format" "$package_base" "$package_root" "$CUP_OUT_DIR" "$host_platform"
     done
     verify_package_archives "$package_base" "$package_root" "$CUP_OUT_DIR" "$host_platform"
-    generate_package_checksums "$package_base" "$CUP_OUT_DIR"
+    publication_descriptor_generate \
+        "$tool" "$version" "$host_platform" "$target_platform" "$revision" "$revision_reason" \
+        "$package_base" "$package_root" "$CUP_OUT_DIR"
 
     cat > "$CUP_OUT_DIR/release.env" <<EOF_ENV
 release_tag=$release_tag

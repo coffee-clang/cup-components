@@ -37,9 +37,6 @@ VERSION="$(resolve_version llvm "$REQUESTED_VERSION")"
 PACKAGE_VERSION="$(package_version_name "$VERSION" "$REVISION")"
 HOST_TRIPLE="$(platform_triple "$HOST_PLATFORM")"
 TARGET_TRIPLE="$(platform_triple "$TARGET_PLATFORM")"
-TARGET_FAMILY="$(platform_family "$TARGET_PLATFORM")"
-TARGET_RUNTIME="$(platform_runtime "$TARGET_PLATFORM")"
-THREAD_MODEL="$(platform_thread_model "$TARGET_PLATFORM")"
 BUILD_ENVIRONMENT="${CUP_BUILD_ENVIRONMENT:-manual}"
 SOURCE_URL="$(source_url_llvm_project "$VERSION")"
 
@@ -1564,16 +1561,8 @@ clang_runtime_platform_dir() {
         linux-*) printf '%s\n' "linux" ;;
         macos-*) printf '%s\n' "darwin" ;;
         windows-*) printf '%s\n' "windows" ;;
-        *) printf '%s\n' "$TARGET_FAMILY" ;;
+        *) die "unsupported Clang runtime platform: $HOST_PLATFORM" ;;
     esac
-}
-
-clang_resource_runtime_alias_dirs() {
-    local resource_dir="$1"
-    local platform_dir
-
-    platform_dir="$(clang_runtime_platform_dir)"
-    printf '%s\n' "$resource_dir/lib/$platform_dir"
 }
 
 copy_clang_runtimes_to_resource_dir() {

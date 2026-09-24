@@ -203,9 +203,10 @@ publication descriptor and archive digests, then reconciles that exact package i
 
 A published package release is never automatically replaced. Another intentional
 distribution of the same upstream version uses a new `-revN` package identity. Published
-runs for the same package identity are serialized at the build-job boundary, so duplicate
-requests cannot race while creating or reconciling the same draft/release. Different package
-identities remain independent and build in parallel.
+runs for the same resolved package identity are serialized at the build-job boundary. The
+selection job resolves `default` before computing that concurrency identity, so `default` and an
+explicit request for the same upstream version cannot race while creating or reconciling the same
+draft/release. Different package identities remain independent and build in parallel.
 
 The release points at the exact repository commit whose bytes produced and qualified
 the package. GitHub-generated source archives are outside the managed package asset set.
@@ -234,6 +235,7 @@ is safe and idempotent.
 
 `publish-catalog.yml` is the manual administrative path. `bootstrap` creates the rolling
 `catalog` release from the empty revision-0 source catalog once. `sync` can re-publish
-source-authority bytes for recovery/emergency use.
+source-authority bytes for recovery/emergency use, including recreating a missing rolling
+release from the current validated source catalog.
 
 Normal package publication reaches the rolling catalog through the automatic update path.

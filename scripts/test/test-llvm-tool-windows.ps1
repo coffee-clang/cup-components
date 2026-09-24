@@ -162,21 +162,6 @@ function Show-PEImports {
     }
 }
 
-function Invoke-OptionalNative {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $FilePath,
-
-        [string[]] $ArgumentList = @()
-    )
-
-    if (Test-Path $FilePath) {
-        Invoke-Native -FilePath $FilePath -ArgumentList $ArgumentList
-    } else {
-        Write-Host "warning: optional executable not present: $FilePath"
-    }
-}
-
 function Assert-FileExists {
     param([Parameter(Mandatory = $true)][string] $Path)
 

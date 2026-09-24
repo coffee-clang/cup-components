@@ -35,11 +35,6 @@ function Resolve-PackageExe {
     return ''
 }
 
-function Test-PackageExe {
-    param([Parameter(Mandatory = $true)][string] $Name)
-    return [bool](Resolve-PackageExe $Name)
-}
-
 function Show-Executable {
     param(
         [Parameter(Mandatory = $true)][string] $Name,

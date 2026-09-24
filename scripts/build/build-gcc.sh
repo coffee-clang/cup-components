@@ -61,11 +61,7 @@ fi
 
 PACKAGE_VERSION="$(package_version_name "$VERSION" "$REVISION")"
 
-HOST_TRIPLE="$(platform_triple "$HOST_PLATFORM")"
 TARGET_TRIPLE="$(platform_triple "$TARGET_PLATFORM")"
-TARGET_FAMILY="$(platform_family "$TARGET_PLATFORM")"
-TARGET_RUNTIME="$(platform_runtime "$TARGET_PLATFORM")"
-THREAD_MODEL="$(platform_thread_model "$TARGET_PLATFORM")"
 
 BUILD_ENVIRONMENT="${CUP_BUILD_ENVIRONMENT:-manual}"
 

@@ -85,8 +85,9 @@ commit/push catalog/catalog.cfg
 synchronize rolling Release "catalog"
 ```
 
-Builds for different package identities remain parallel. Published runs for the same
-identity are serialized before their immutable release boundary, while catalog
+Builds for different package identities remain parallel. Published runs for the same resolved
+identity are serialized before their immutable release boundary, including `default` and explicit
+selectors that resolve to the same version, while catalog
 mutation/publication uses the shared `cup-components-catalog` concurrency group because
 the source catalog and rolling release are single-writer resources.
 
@@ -168,9 +169,11 @@ update_url=https://github.com/coffee-clang/cup-components/releases/download/cata
 ```
 
 The manual `Publish Catalog` workflow exposes `bootstrap` for that one-time creation and
-`sync` for explicit recovery/administrative publication. It shares the same concurrency
-group as automatic updates so manual recovery cannot mutate the rolling asset concurrently
-with a normal package activation.
+`sync` for explicit recovery/administrative publication. If the rolling release itself is
+missing, `sync` recreates it directly from the validated current source catalog; recovery
+does not require reconstructing an obsolete revision-0 snapshot. It shares the same
+concurrency group as automatic updates so manual recovery cannot mutate the rolling asset
+concurrently with a normal package activation.
 
 Manual publication is not a normal visibility gate. New qualified packages become visible
 through the automatic path above.

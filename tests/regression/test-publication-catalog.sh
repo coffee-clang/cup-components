@@ -27,7 +27,7 @@ cat > "$BIN/gh" <<'EOF_GH'
 #!/usr/bin/env bash
 set -euo pipefail
 remote="${GH_FIXTURE_REMOTE:?}"
-sha_file() { sha256sum "$1" | awk '{print $1}'; }
+sha_file() { sha256sum < "$1" | awk '{print $1}'; }
 release_dir() { printf '%s/releases/%s\n' "$remote" "$1"; }
 release_by_id() {
     local wanted="$1" dir
@@ -239,7 +239,7 @@ make_dist() {
         printf 'platform.target=linux-x64\n'
         printf 'manifest_sha256=%064d\n' 0
         for format in tar.xz tar.gz zip; do
-            sha="$(sha256sum "$dir/$base.$format" | awk '{print $1}')"
+            sha="$(sha256sum < "$dir/$base.$format" | awk '{print $1}')"
             printf 'artifact.%s.format=%s\n' "$i" "$format"
             printf 'artifact.%s.sha256=%s\n' "$i" "$sha"
             i=$((i + 1))
@@ -254,11 +254,16 @@ bash "$PUBLISH_CATALOG" bootstrap "$REPO" "$catalog"
 [ -f "$REMOTE/releases/catalog/assets/catalog.cfg" ] || { echo 'catalog bootstrap did not publish catalog.cfg' >&2; exit 1; }
 cmp -s "$catalog" "$REMOTE/releases/catalog/assets/catalog.cfg" || { echo 'catalog bootstrap changed source bytes' >&2; exit 1; }
 
-versions=(1.2-rev99 1.2.0 9.10 10.0 10.0-rev9 10.0-rev10)
-reasons=('Packaging revision ninety-nine' '' '' '' 'Packaging revision nine' 'Packaging revision ten')
+versions=(1.2-rev99 1.2.0 9.10 10.0 10.0-rev9 10.0-rev10 10.1 10.2 10.3 10.4 10.5)
+reasons=('Packaging revision ninety-nine' '' '' '' 'Packaging revision nine' 'Packaging revision ten' '' '' '' '' '')
 for i in "${!versions[@]}"; do
     version="${versions[$i]}"; reason="${reasons[$i]}"
-    dist="$(make_dist "$version" "$reason" "v$i")"
+    seed="v$i"
+    # A backslash in the working path reproduces the GNU sha256sum output form
+    # encountered by Git Bash for Windows paths. Package digests must depend only
+    # on file bytes, never on how the path is rendered.
+    [ "$i" -ne 0 ] || seed='v0\windows-path'
+    dist="$(make_dist "$version" "$reason" "$seed")"
     tag="pkg-clang-$version-linux-x64-linux-x64"
     if [ "$i" -eq 0 ]; then
         # A failed previous run can leave an unpublished draft targeting an older
@@ -274,24 +279,24 @@ for i in "${!versions[@]}"; do
     bash "$CATALOG_TOOL" activate "$catalog" "$REPO" "$tag"
 done
 
-[ "$(awk -F= '$1=="revision"{print $2}' "$catalog")" = 6 ] || { echo 'catalog revision did not advance once per semantic activation' >&2; exit 1; }
+[ "$(awk -F= '$1=="revision"{print $2}' "$catalog")" = 11 ] || { echo 'catalog revision did not advance once per semantic activation' >&2; exit 1; }
 mapfile -t ordered < <(awk -F= '/^package\.[0-9]+\.version=/{print $2}' "$catalog")
-expected=(1.2-rev99 1.2.0 9.10 10.0 10.0-rev9 10.0-rev10)
+expected=(1.2-rev99 1.2.0 9.10 10.0 10.0-rev9 10.0-rev10 10.1 10.2 10.3 10.4 10.5)
 [ "${ordered[*]}" = "${expected[*]}" ] || { printf 'semantic catalog order is wrong: %s\n' "${ordered[*]}" >&2; exit 1; }
 [ "$(grep -c '=true$' "$catalog")" -eq 1 ] || { echo 'catalog does not have exactly one stable record for the scope' >&2; exit 1; }
-grep -A5 -F 'package.5.version=10.0-rev10' "$catalog" | grep -Fx 'package.5.stable=true' >/dev/null || { echo 'semantic maximum is not stable' >&2; exit 1; }
+grep -A5 -F 'package.10.version=10.5' "$catalog" | grep -Fx 'package.10.stable=true' >/dev/null || { echo 'semantic maximum is not stable' >&2; exit 1; }
 grep -F 'package.0.revision_reason=Packaging revision ninety-nine' "$catalog" >/dev/null || { echo 'revision reason was not propagated into catalog' >&2; exit 1; }
 
 # Re-activating an identical immutable package is a no-op.
 before="$(sha256sum "$catalog" | awk '{print $1}')"
-bash "$CATALOG_TOOL" activate "$catalog" "$REPO" pkg-clang-10.0-rev10-linux-x64-linux-x64
+bash "$CATALOG_TOOL" activate "$catalog" "$REPO" pkg-clang-10.5-linux-x64-linux-x64
 after="$(sha256sum "$catalog" | awk '{print $1}')"
 [ "$before" = "$after" ] || { echo 'idempotent activation changed catalog bytes' >&2; exit 1; }
 
 # A published package identity cannot be replaced with different bytes.
-conflict="$(make_dist 10.0-rev10 'Packaging revision ten' conflict)"
-printf 'changed\n' > "$conflict/clang-10.0-rev10-linux-x64-linux-x64.zip"
-zip_sha="$(sha256sum "$conflict/clang-10.0-rev10-linux-x64-linux-x64.zip" | awk '{print $1}')"
+conflict="$(make_dist 10.5 '' conflict)"
+printf 'changed\n' > "$conflict/clang-10.5-linux-x64-linux-x64.zip"
+zip_sha="$(sha256sum < "$conflict/clang-10.5-linux-x64-linux-x64.zip" | awk '{print $1}')"
 sed -i "s/^artifact.2.sha256=.*/artifact.2.sha256=$zip_sha/" "$conflict/publication.txt"
 if bash "$PUBLISH_PACKAGE" "$REPO" "$TARGET_SHA" "$conflict" >/dev/null 2>&1; then
     echo 'same package identity with different immutable data was accepted' >&2
@@ -317,5 +322,12 @@ bash "$PUBLISH_CATALOG" sync "$REPO" "$catalog"
     exit 1
 }
 cmp -s "$catalog" "$REMOTE/releases/catalog/assets/catalog.cfg" || { echo 'recovered rolling catalog bytes differ from source' >&2; exit 1; }
+
+# Manual sync is also the recovery path when the rolling release itself was
+# removed. Recreate it from current source authority without rolling back to r0.
+rm -rf "$REMOTE/releases/catalog"
+bash "$PUBLISH_CATALOG" sync "$REPO" "$catalog"
+[ -f "$REMOTE/releases/catalog/assets/catalog.cfg" ] || { echo 'missing catalog release was not recreated' >&2; exit 1; }
+cmp -s "$catalog" "$REMOTE/releases/catalog/assets/catalog.cfg" || { echo 'recreated rolling catalog bytes differ from source' >&2; exit 1; }
 
 printf 'PUBLICATION_CATALOG=PASS\n'

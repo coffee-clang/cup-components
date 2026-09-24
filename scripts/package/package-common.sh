@@ -142,37 +142,6 @@ platform_triple() {
     esac
 }
 
-platform_family() {
-    local platform="$1"
-
-    case "$platform" in
-        linux-x64|linux-arm64) printf '%s\n' "gnu" ;;
-        windows-x64) printf '%s\n' "gnu" ;;
-        macos-x64|macos-arm64) printf '%s\n' "darwin" ;;
-        *) die "unsupported platform: $platform" ;;
-    esac
-}
-
-platform_runtime() {
-    local platform="$1"
-
-    case "$platform" in
-        linux-x64|linux-arm64) printf '%s\n' "glibc" ;;
-        windows-x64) printf '%s\n' "ucrt" ;;
-        macos-x64|macos-arm64) printf '%s\n' "libSystem" ;;
-        *) die "unsupported platform: $platform" ;;
-    esac
-}
-
-platform_thread_model() {
-    local platform="$1"
-
-    case "$platform" in
-        linux-x64|linux-arm64|windows-x64|macos-x64|macos-arm64) printf '%s\n' "posix" ;;
-        *) die "unsupported platform: $platform" ;;
-    esac
-}
-
 is_windows_platform() {
     case "$1" in
         windows-x64) return 0 ;;
@@ -324,9 +293,9 @@ sha256_file() {
     local path="$1"
 
     if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$path" | awk '{print $1}'
+        sha256sum < "$path" | awk '{print $1}'
     elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "$path" | awk '{print $1}'
+        shasum -a 256 < "$path" | awk '{print $1}'
     else
         die "sha256sum or shasum is required for source authentication"
     fi
@@ -2005,9 +1974,9 @@ package_file_digest() {
     local path="$1"
 
     if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$path" | awk '{print $1}'
+        sha256sum < "$path" | awk '{print $1}'
     elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "$path" | awk '{print $1}'
+        shasum -a 256 < "$path" | awk '{print $1}'
     else
         die "sha256sum or shasum is required to generate package manifests"
     fi

@@ -116,10 +116,11 @@ catalog_to_tsv() {
         }
         END {
             if (NR < 3) bad("missing header")
-            n=0; for (i in seen_i) { if (i > max) max=i; n++ }
+            n=0; max=-1
+            for (i in seen_i) { idx=i+0; if (idx > max) max=idx; n++ }
             if (n == 0) exit 0
             if (n != max+1) bad("package indices must be contiguous from 0")
-            for (i=0; i<=max; i++) {
+            for (i=0; i<n; i++) {
                 req[1]="component"; req[2]="tool"; req[3]="host"; req[4]="target"; req[5]="version"; req[6]="stable"
                 for (r=1; r<=6; r++) if (!((i SUBSEP req[r]) in v) || v[i,req[r]] == "") bad("missing package." i "." req[r])
                 for (a=0; a<3; a++) {
@@ -253,7 +254,7 @@ release_asset_table() {
 publication_row_from_release() {
     local repo="$1" tag="$2" output="$3" temp publication
     local component tool version reason host target manifest base expected_tag
-    local f0 s0 f1 s1 f2 s2 names expected_names asset_name digest expected
+    local f0 s0 f1 s1 f2 s2 table names expected_names asset_name digest expected
 
     command -v gh >/dev/null 2>&1 || fail 'gh is required for catalog activation'
     [ "$(gh api "repos/$repo/releases/tags/$tag" --jq '.draft')" = false ] || fail "package release is still a draft: $tag"
@@ -291,7 +292,8 @@ publication_row_from_release() {
     if grep -Eq '^artifact\.[3-9][0-9]*\.' "$publication"; then fail 'publication declares more than three artifacts'; fi
 
     expected_names="$(printf '%s\n' publication.txt "$base.tar.xz" "$base.tar.gz" "$base.zip" | LC_ALL=C sort)"
-    names="$(release_asset_table "$repo" "$tag" | cut -f1 | LC_ALL=C sort)"
+    table="$(release_asset_table "$repo" "$tag")" || fail "failed to inspect package release assets: $tag"
+    names="$(printf '%s\n' "$table" | cut -f1 | LC_ALL=C sort)"
     [ "$names" = "$expected_names" ] || fail "package release has an unexpected managed asset set: $tag"
 
     while IFS=$'\t' read -r asset_name digest; do
@@ -303,7 +305,7 @@ publication_row_from_release() {
             *) fail "unexpected package release asset: $asset_name" ;;
         esac
         [ "$digest" = "$expected" ] || fail "release asset digest mismatch: $asset_name"
-    done < <(release_asset_table "$repo" "$tag")
+    done <<< "$table"
 
     printf '%s\t%s\t%s\t%s\t%s\t%s\tfalse\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$component" "$tool" "$host" "$target" "$version" "$reason" \

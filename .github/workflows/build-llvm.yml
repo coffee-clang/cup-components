@@ -64,13 +64,21 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.platform.outputs.matrix }}
+      package_version: ${{ steps.platform.outputs.package_version }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
       - id: platform
         shell: bash
         run: |
           full_matrix="${{ inputs.full_matrix }}"
           selected_tool="${{ inputs.tool }}"
           selected_platform="${{ inputs.platform }}"
+
+          source scripts/package/package-common.sh
+          package_revision_inputs_validate "${{ inputs.revision }}" "${{ inputs.revision_reason }}"
+          package_version="$(package_version_name "$(resolve_version llvm "${{ inputs.version }}")" "${{ inputs.revision }}")"
 
           runner_for_platform() {
             case "$1" in
@@ -112,9 +120,7 @@ jobs:
 
           matrix="${matrix}]}"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-
-      - name: Checkout for package-contract verification
-        uses: actions/checkout@v5
+          echo "package_version=$package_version" >> "$GITHUB_OUTPUT"
 
       - name: Verify common package contract
         shell: bash
@@ -124,7 +130,7 @@ jobs:
     needs: select
     name: ${{ matrix.tool }} ${{ inputs.version }} ${{ matrix.platform }}
     concurrency:
-      group: ${{ inputs.publish && format('package-{0}-{1}-{2}-{3}', matrix.tool, inputs.version, inputs.revision, matrix.platform) || format('package-llvm-run-{0}-{1}-{2}', github.run_id, matrix.tool, matrix.platform) }}
+      group: ${{ inputs.publish && format('package-{0}-{1}-{2}', matrix.tool, needs.select.outputs.package_version, matrix.platform) || format('package-llvm-run-{0}-{1}-{2}', github.run_id, matrix.tool, matrix.platform) }}
       queue: max
     strategy:
       fail-fast: false

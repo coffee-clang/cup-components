@@ -21,9 +21,9 @@ fail() {
 
 sha256_file() {
     if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1" | awk '{print $1}'
+        sha256sum < "$1" | awk '{print $1}'
     elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "$1" | awk '{print $1}'
+        shasum -a 256 < "$1" | awk '{print $1}'
     else
         fail 'sha256sum or shasum is required'
     fi
@@ -117,7 +117,19 @@ case "$mode" in
         ;;
 
     sync)
-        release_exists || fail 'catalog release does not exist; bootstrap revision 0 manually first'
+        if ! release_exists; then
+            # Manual sync is the administrative recovery path. If the rolling
+            # release itself was removed, rebuild it from the validated source
+            # authority instead of requiring an obsolete revision-0 snapshot.
+            gh release create "$tag" "$catalog" \
+                --repo "$repo" \
+                --title 'cup package catalog' \
+                --notes 'Rolling cup package catalog delivery endpoint.' \
+                --latest=false
+            verify_asset_digest catalog.cfg "$catalog"
+            printf 'recreated catalog release at revision %s\n' "$(single_value "$catalog" revision)"
+            exit 0
+        fi
         temp="$(mktemp -d)"
         trap 'rm -rf "$temp"' EXIT
 

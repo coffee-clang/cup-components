@@ -52,6 +52,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       runner: ${{ steps.platform.outputs.runner }}
+      package_version: ${{ steps.platform.outputs.package_version }}
       host_platform: ${{ steps.platform.outputs.host_platform }}
       target_platform: ${{ steps.platform.outputs.target_platform }}
     steps:
@@ -80,7 +81,11 @@ jobs:
             exit 1
           }
 
+          package_revision_inputs_validate "${{ inputs.revision }}" "${{ inputs.revision_reason }}"
+          package_version="$(package_version_name "$(resolve_version ld "${{ inputs.version }}")" "${{ inputs.revision }}")"
+
           echo "runner=$runner" >> "$GITHUB_OUTPUT"
+          echo "package_version=$package_version" >> "$GITHUB_OUTPUT"
           echo "host_platform=$host_platform" >> "$GITHUB_OUTPUT"
           echo "target_platform=$target_platform" >> "$GITHUB_OUTPUT"
 
@@ -91,7 +96,7 @@ jobs:
   build:
     needs: select
     concurrency:
-      group: ${{ inputs.publish && format('package-ld-{0}-{1}-{2}-{3}', inputs.version, inputs.revision, needs.select.outputs.host_platform, needs.select.outputs.target_platform) || format('package-ld-run-{0}', github.run_id) }}
+      group: ${{ inputs.publish && format('package-ld-{0}-{1}-{2}', needs.select.outputs.package_version, needs.select.outputs.host_platform, needs.select.outputs.target_platform) || format('package-ld-run-{0}', github.run_id) }}
       queue: max
     runs-on: ${{ needs.select.outputs.runner }}
     env:

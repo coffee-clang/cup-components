@@ -78,17 +78,6 @@ require_executable() {
     fi
 }
 
-run_optional_executable() {
-    local path="$1"
-    shift
-
-    if [ -x "$path" ]; then
-        "$path" "$@"
-    else
-        echo "warning: optional executable not present: $path"
-    fi
-}
-
 assert_output_contains() {
     local file_path="$1"
     local pattern="$2"
@@ -189,9 +178,9 @@ DIFF_TIDY_HELPER
 sha256_file() {
     local path="$1"
     if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$path" | awk '{print $1}'
+        sha256sum < "$path" | awk '{print $1}'
     else
-        shasum -a 256 "$path" | awk '{print $1}'
+        shasum -a 256 < "$path" | awk '{print $1}'
     fi
 }
 

@@ -42,7 +42,11 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       runner: ${{ steps.platform.outputs.runner }}
+      package_version: ${{ steps.platform.outputs.package_version }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
       - id: platform
         shell: bash
         run: |
@@ -55,10 +59,12 @@ jobs:
               ;;
           esac
 
-          echo "runner=$runner" >> "$GITHUB_OUTPUT"
+          source scripts/package/package-common.sh
+          package_revision_inputs_validate "${{ inputs.revision }}" "${{ inputs.revision_reason }}"
+          package_version="$(package_version_name "$(resolve_version valgrind "${{ inputs.version }}")" "${{ inputs.revision }}")"
 
-      - name: Checkout for package-contract verification
-        uses: actions/checkout@v5
+          echo "runner=$runner" >> "$GITHUB_OUTPUT"
+          echo "package_version=$package_version" >> "$GITHUB_OUTPUT"
 
       - name: Verify common package contract
         shell: bash
@@ -67,7 +73,7 @@ jobs:
   build:
     needs: select
     concurrency:
-      group: ${{ inputs.publish && format('package-valgrind-{0}-{1}-{2}', inputs.version, inputs.revision, inputs.platform) || format('package-valgrind-run-{0}', github.run_id) }}
+      group: ${{ inputs.publish && format('package-valgrind-{0}-{1}', needs.select.outputs.package_version, inputs.platform) || format('package-valgrind-run-{0}', github.run_id) }}
       queue: max
     runs-on: ${{ needs.select.outputs.runner }}
     env:

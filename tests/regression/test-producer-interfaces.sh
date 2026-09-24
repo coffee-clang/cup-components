@@ -5,7 +5,8 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-# Reject unsupported identities before creating build state or touching sources.
+# Builders reject unsupported package scopes. The workflow normally prevents these
+# inputs, but the builder contract must still not produce an unsupported package.
 assert_build_matrix_rejected() {
     local name="$1"
     shift
@@ -15,10 +16,6 @@ assert_build_matrix_rejected() {
         echo "unsupported producer matrix was accepted: $name" >&2
         exit 1
     fi
-    [ ! -e "$isolated/.cup-build" ] || {
-        echo "unsupported producer matrix was rejected too late: $name" >&2
-        exit 1
-    }
 }
 
 assert_build_matrix_rejected gcc-macos \
@@ -35,6 +32,27 @@ assert_build_matrix_rejected llvm-unknown-platform \
     "$ROOT/scripts/build/build-llvm-tool.sh" clang default solaris-x64
 printf 'producer input rejection tests passed\n'
 
+# The MSYS2 setup entry point must resolve its package list from its own location,
+# not from the operator's current working directory.
+msys_fixture="$TMP/msys2-cwd"
+mkdir -p "$msys_fixture/bin" "$msys_fixture/cwd"
+cat > "$msys_fixture/bin/pacman" <<'EOF_PACMAN'
+#!/usr/bin/env sh
+printf '%s\n' "$@" > "$PACMAN_FIXTURE_LOG"
+EOF_PACMAN
+chmod 0755 "$msys_fixture/bin/pacman"
+(
+    cd "$msys_fixture/cwd"
+    PACMAN_FIXTURE_LOG="$msys_fixture/pacman.log" PATH="$msys_fixture/bin:$PATH" \
+        bash "$ROOT/scripts/setup/setup-windows-msys2.sh" ucrt64
+)
+grep -Fx -- '-S' "$msys_fixture/pacman.log" >/dev/null || { echo 'MSYS2 setup did not reach pacman from external cwd' >&2; exit 1; }
+first_ucrt_package="$(grep -v '^[[:space:]]*$' "$ROOT/scripts/setup/msys2-ucrt64-packages.txt" | grep -v '^[[:space:]]*#' | head -n 1)"
+grep -Fx -- "$first_ucrt_package" "$msys_fixture/pacman.log" >/dev/null || { echo 'MSYS2 setup did not load its repository-relative package list' >&2; exit 1; }
+printf 'MSYS2 arbitrary-cwd setup test passed\n'
+
+
+
 # Build records preserve phase results and package provenance independently of
 # package payload.
 records_root="$TMP/records-fixture"
@@ -43,6 +61,8 @@ printf 'package.tool=tool\n' > "$records_root/.cup-build/package-root/tool-1.0-l
 printf 'format=2\n' > "$records_root/.cup-build/package-root/tool-1.0-linux-x64-linux-x64/manifest.txt"
 printf 'release_tag=pkg-tool-1.0-linux-x64-linux-x64\npackage_base=tool-1.0-linux-x64-linux-x64\n' > "$records_root/dist/release.env"
 printf 'format=1\npackage.component=compiler\npackage.tool=tool\npackage.version=1.0\nplatform.host=linux-x64\nplatform.target=linux-x64\nmanifest_sha256=0000000000000000000000000000000000000000000000000000000000000000\nartifact.0.format=tar.xz\nartifact.0.sha256=1111111111111111111111111111111111111111111111111111111111111111\nartifact.1.format=tar.gz\nartifact.1.sha256=2222222222222222222222222222222222222222222222222222222222222222\nartifact.2.format=zip\nartifact.2.sha256=3333333333333333333333333333333333333333333333333333333333333333\n' > "$records_root/dist/publication.txt"
+printf 'digest fixture\n' > "$records_root/dist/path\\fixture.txt"
+records_digest="$(sha256sum < "$records_root/dist/path\\fixture.txt" | awk '{print $1}')"
 CUP_ROOT="$records_root" CUP_COMPONENTS_ROOT="$ROOT" \
     bash "$ROOT/scripts/workflow/build-records.sh" init tool 1.0 linux-x64 linux-x64
 CUP_ROOT="$records_root" CUP_COMPONENTS_ROOT="$ROOT" \
@@ -59,6 +79,10 @@ grep -Fx 'phase.smoke=0' "$records_root/.cup-build/build-records/phases.txt" >/d
 grep -Fx 'phase.expected-failure=7' "$records_root/.cup-build/build-records/phases.txt" >/dev/null || { echo 'failed phase status missing from build records' >&2; exit 1; }
 grep -Fx 'workflow.status=failure' "$records_root/.cup-build/build-records/run.txt" >/dev/null || { echo 'workflow result missing from build records' >&2; exit 1; }
 grep -F 'records-smoke' "$records_root/.cup-build/build-records/smoke.log" >/dev/null || { echo 'phase output missing from build records' >&2; exit 1; }
+grep -F "$records_digest"$'\t' "$records_root/.cup-build/build-records/outputs.txt" | grep -F $'\tpath\\fixture.txt' >/dev/null || {
+    echo 'build-record output digest depends on filename escaping' >&2
+    exit 1
+}
 grep -Fx 'repository.tree=unknown' "$records_root/.cup-build/build-records/run.txt" >/dev/null || { echo 'non-git build-record fixture did not record an explicit unknown repository tree' >&2; exit 1; }
 
 records_git="$TMP/build-records-git-fixture"

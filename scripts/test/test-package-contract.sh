@@ -20,68 +20,6 @@ create_packages_without_runtime_closure() {
     )
 }
 
-# Source acquisition runs through command substitution, so failures must be
-# propagated explicitly rather than relying on errexit.
-(
-    source_test_root="$TMP/source-fetch-failure"
-    CUP_SRC_DIR="$source_test_root/src"
-    mkdir -p "$CUP_SRC_DIR"
-    extract_marker="$source_test_root/extract-reached"
-    downstream_marker="$source_test_root/downstream-reached"
-
-    fetch() { return 7; }
-    extract_archive() { : > "$extract_marker"; return 8; }
-
-    set +e
-    source_path="$(prepare_source_tree fixture 1.0 https://example.invalid/fixture-1.0.tar.xz fixture-1.0.tar.xz)"
-    prepare_status=$?
-    set -e
-    if [ "$prepare_status" -eq 0 ]; then
-        : > "$downstream_marker"
-    fi
-
-    [ "$prepare_status" -ne 0 ] || { echo 'source preparation accepted a failed fetch' >&2; exit 1; }
-    [ ! -e "$extract_marker" ] || { echo 'source extraction ran after a failed fetch' >&2; exit 1; }
-    [ -z "$source_path" ] || { echo 'source preparation returned a path after a failed fetch' >&2; exit 1; }
-    [ ! -e "$downstream_marker" ] || { echo 'downstream build phase was reached after a failed fetch' >&2; exit 1; }
-)
-printf 'source fetch-failure propagation test passed\n'
-
-(
-    source_test_root="$TMP/source-corrupt-cache"
-    CUP_SRC_DIR="$source_test_root/src"
-    mkdir -p "$CUP_SRC_DIR"
-    archive="$CUP_SRC_DIR/corrupt-1.0.tar.xz"
-    downstream_marker="$source_test_root/downstream-reached"
-    printf 'not-an-xz-archive' > "$archive"
-
-    set +e
-    source_path="$(prepare_source_tree corrupt 1.0 https://example.invalid/corrupt-1.0.tar.xz corrupt-1.0.tar.xz "$(sha256_file "$archive")" 2>"$source_test_root/extract.log")"
-    prepare_status=$?
-    set -e
-    if [ "$prepare_status" -eq 0 ]; then
-        : > "$downstream_marker"
-    fi
-
-    [ "$prepare_status" -ne 0 ] || { echo 'source preparation accepted a corrupt cached archive' >&2; exit 1; }
-    [ -z "$source_path" ] || { echo 'source preparation returned a path after extraction failure' >&2; exit 1; }
-    [ ! -e "$downstream_marker" ] || { echo 'downstream build phase was reached after extraction failure' >&2; exit 1; }
-)
-printf 'source corrupt-cache propagation test passed\n'
-
-(
-    source_test_root="$TMP/source-success"
-    CUP_SRC_DIR="$source_test_root/src"
-    mkdir -p "$CUP_SRC_DIR" "$source_test_root/archive-root/fixture-1.0"
-    printf 'source-ok\n' > "$source_test_root/archive-root/fixture-1.0/marker.txt"
-    tar -cJf "$CUP_SRC_DIR/fixture-1.0.tar.xz" -C "$source_test_root/archive-root" fixture-1.0
-
-    source_path="$(prepare_source_tree fixture 1.0 https://example.invalid/fixture-1.0.tar.xz fixture-1.0.tar.xz "$(sha256_file "$CUP_SRC_DIR/fixture-1.0.tar.xz")")"
-    [ "$source_path" = "$CUP_SRC_DIR/fixture-1.0" ] || { echo 'successful source preparation returned the wrong path' >&2; exit 1; }
-    [ "$(cat "$source_path/marker.txt")" = source-ok ] || { echo 'successful source preparation did not extract expected content' >&2; exit 1; }
-)
-printf 'source acquisition success-path test passed\n'
-
 # Executable capability metadata must mean executable on POSIX, while native
 # Windows command identity remains extension-based rather than dependent on
 # MSYS2 mode bits.
@@ -1253,23 +1191,4 @@ default_base="$(package_base_name clang "$DEFAULT_LLVM_VERSION" linux-x64 linux-
 [ "$explicit_base" = clang-99.98.7-linux-x64-linux-x64 ] || { echo 'explicit LLVM version produced wrong revisionless identity' >&2; exit 1; }
 [ "$explicit_base" != "$default_base" ] || { echo 'different explicit/default versions produced the same package identity' >&2; exit 1; }
 printf 'explicit non-default version identity test passed\n'
-
-# The MSYS2 setup entry point must resolve its package list from its own location,
-# not from the operator's current working directory.
-msys_fixture="$TMP/msys2-cwd"
-mkdir -p "$msys_fixture/bin" "$msys_fixture/cwd"
-cat > "$msys_fixture/bin/pacman" <<'EOF_PACMAN'
-#!/usr/bin/env sh
-printf '%s\n' "$@" > "$PACMAN_FIXTURE_LOG"
-EOF_PACMAN
-chmod 0755 "$msys_fixture/bin/pacman"
-(
-    cd "$msys_fixture/cwd"
-    PACMAN_FIXTURE_LOG="$msys_fixture/pacman.log" PATH="$msys_fixture/bin:$PATH" \
-        bash "$ROOT/scripts/setup/setup-windows-msys2.sh" ucrt64
-)
-grep -Fx -- '-S' "$msys_fixture/pacman.log" >/dev/null || { echo 'MSYS2 setup did not reach pacman from external cwd' >&2; exit 1; }
-first_ucrt_package="$(grep -v '^[[:space:]]*$' "$ROOT/scripts/setup/msys2-ucrt64-packages.txt" | grep -v '^[[:space:]]*#' | head -n 1)"
-grep -Fx -- "$first_ucrt_package" "$msys_fixture/pacman.log" >/dev/null || { echo 'MSYS2 setup did not load its repository-relative package list' >&2; exit 1; }
-printf 'MSYS2 arbitrary-cwd setup test passed\n'
 

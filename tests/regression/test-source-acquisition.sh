@@ -63,6 +63,41 @@ grep -F $'fixture\t99.99.99\tfixture-99.99.99.tar.xz\t'"$(printf '0%.0s' {1..64}
     exit 1
 }
 
+# Build scripts capture prepare_source_tree through command substitution. A fetch
+# failure must therefore propagate explicitly and must not reach extraction.
+(
+    fail_root="$TMP/prepare-fetch-failure"
+    CUP_SRC_DIR="$fail_root/src"
+    mkdir -p "$CUP_SRC_DIR"
+    extract_marker="$fail_root/extract-reached"
+    fetch() { return 7; }
+    extract_archive() { : > "$extract_marker"; return 8; }
+
+    set +e
+    source_path="$(prepare_source_tree fixture 1.0 https://example.invalid/fixture-1.0.tar.xz fixture-1.0.tar.xz)"
+    status=$?
+    set -e
+    [ "$status" -ne 0 ] || { echo 'source preparation accepted a failed fetch' >&2; exit 1; }
+    [ -z "$source_path" ] || { echo 'failed source preparation returned a path' >&2; exit 1; }
+    [ ! -e "$extract_marker" ] || { echo 'source extraction ran after a failed fetch' >&2; exit 1; }
+)
+
+# A cached archive with the expected digest is still rejected when its archive
+# structure is invalid; cache presence is not source-preparation success.
+(
+    corrupt_root="$TMP/prepare-corrupt-cache"
+    CUP_SRC_DIR="$corrupt_root/src"
+    mkdir -p "$CUP_SRC_DIR"
+    archive="$CUP_SRC_DIR/corrupt-1.0.tar.xz"
+    printf 'not-an-xz-archive' > "$archive"
+    set +e
+    source_path="$(prepare_source_tree corrupt 1.0 https://example.invalid/corrupt-1.0.tar.xz corrupt-1.0.tar.xz "$(sha256_file "$archive")" 2>"$corrupt_root/extract.log")"
+    status=$?
+    set -e
+    [ "$status" -ne 0 ] || { echo 'source preparation accepted a corrupt cached archive' >&2; exit 1; }
+    [ -z "$source_path" ] || { echo 'corrupt source preparation returned a path' >&2; exit 1; }
+)
+
 # Transfer failures use bounded curl retry and never leave a partial archive.
 fetch_bin="$TMP/fetch-bin"
 fetch_args="$TMP/fetch-args"

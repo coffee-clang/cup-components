@@ -20,10 +20,11 @@ bash scripts/test/test-package-contract.sh
 ```
 
 It uses small package trees and locally generated objects to exercise common behavior:
-source acquisition and failure propagation, package identity/revision validation,
-`info.txt` and `manifest.txt`, path/object admission, archive equivalence, runtime
-closure/search-path rewriting, package-owned Python support and other mechanisms owned by
-`scripts/package/package-common.sh`.
+package identity/revision validation, `info.txt` and `manifest.txt`, path/object admission,
+archive equivalence, runtime closure/search-path rewriting, package-owned Python support
+and other package mechanisms owned by `scripts/package/package-common.sh`. Source
+acquisition has its own repository regression because download/cache/retry behavior is a
+separate producer boundary.
 
 These fixtures intentionally stop at the common boundary. Tool-specific payload choices
 and platform behavior belong to the native package checks.

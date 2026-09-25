@@ -293,6 +293,17 @@ bash "$CATALOG_TOOL" activate "$catalog" "$REPO" pkg-clang-10.5-linux-x64-linux-
 after="$(sha256sum "$catalog" | awk '{print $1}')"
 [ "$before" = "$after" ] || { echo 'idempotent activation changed catalog bytes' >&2; exit 1; }
 
+# The release target is original publication provenance, not package identity.
+# Exact published bytes remain reusable from a later repository commit.
+identity_tag=pkg-clang-10.5-linux-x64-linux-x64
+printf '%s\n' 1111111111111111111111111111111111111111 > "$REMOTE/releases/$identity_tag/target"
+identity_dist="$(make_dist 10.5 '' v10)"
+bash "$PUBLISH_PACKAGE" "$REPO" "$TARGET_SHA" "$identity_dist" >/dev/null
+[ "$(cat "$REMOTE/releases/$identity_tag/target")" = 1111111111111111111111111111111111111111 ] || {
+    echo 'idempotent publication rewrote original release provenance' >&2
+    exit 1
+}
+
 # A published package identity cannot be replaced with different bytes.
 conflict="$(make_dist 10.5 '' conflict)"
 printf 'changed\n' > "$conflict/clang-10.5-linux-x64-linux-x64.zip"

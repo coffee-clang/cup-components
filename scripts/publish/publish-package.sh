@@ -134,9 +134,10 @@ release_draft=
 release_target=
 if find_release; then
     if [ "$release_draft" = false ]; then
-        # Published identities are immutable: only exact remote data is accepted
-        # as idempotent success; mismatches are never repaired in place.
-        [ "$release_target" = "$target_sha" ] || fail "published release targets a different commit: $tag"
+        # Published identities are immutable by managed package bytes. The release
+        # target records original publication provenance; later runs may reconcile
+        # the same identity from another repository commit only when all managed
+        # assets still match exactly.
         verify_remote_release "$release_id"
         printf 'package publication already complete: %s\n' "$tag"
         exit 0

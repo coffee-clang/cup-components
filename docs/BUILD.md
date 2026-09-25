@@ -208,8 +208,11 @@ selection job resolves `default` before computing that concurrency identity, so 
 explicit request for the same upstream version cannot race while creating or reconciling the same
 draft/release. Different package identities remain independent and build in parallel.
 
-The release points at the exact repository commit whose bytes produced and qualified
-the package. GitHub-generated source archives are outside the managed package asset set.
+When a package release is first created, its target commit records the repository provenance
+of that publication. A later run from another commit may reuse the already-published identity
+only when the complete managed asset set and every digest still match exactly; the original
+release target is not rewritten. GitHub-generated source archives are outside the managed
+package asset set.
 
 ## Automatic catalog update
 
